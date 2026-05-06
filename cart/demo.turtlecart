@@ -1,0 +1,5 @@
+TURTLECART:0
+ENTRY:main.lua
+---FILE:main.lua---
+print("hola mundo desde turtlecart v0")
+---END---
