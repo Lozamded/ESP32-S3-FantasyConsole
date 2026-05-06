@@ -28,6 +28,10 @@ Primer objetivo del proyecto:
 3. Flashea el sketch en tu ESP32-S3.
 4. Abre monitor serial a `115200`.
 
-Si todo sale bien, veras algo como:
+Si todo sale bien, vere algo como:
 - `TurtleCart cargado correctamente`
 - `Mensaje en main.lua: hola mundo desde turtlecart v0`
+
+## Specs ideales para mi consola
+- resolución: 240×180
+- paleta: 32 colores
