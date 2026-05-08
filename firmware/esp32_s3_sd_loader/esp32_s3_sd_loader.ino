@@ -1,15 +1,45 @@
 #include <Arduino.h>
 #include <SPI.h>
 #include <SD.h>
+#include <string.h>
 
-// Ajusta estos pines a tu cableado real de microSD.
-// Los valores de ejemplo son comunes en ESP32-S3 DevKit.
+#include "fantasy_gpu.h"
+
+extern "C" {
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+}
+
+// microSD (SPI). Ajusta a tu cableado.
 static const int SD_SCK_PIN = 36;
 static const int SD_MISO_PIN = 37;
-static const int SD_MOSI_PIN = 35;
-static const int SD_CS_PIN = 34;
+static const int SD_MOSI_PIN = 38;
+static const int SD_CS_PIN = 39;
 
 SPIClass sdSPI(FSPI);
+
+static bool mountSd(uint32_t frequencyHz) {
+  sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
+  return SD.begin(SD_CS_PIN, sdSPI, frequencyHz);
+}
+
+static bool mountSdWithRetries() {
+  const uint32_t speeds[] = {400000, 1000000, 100000};
+  constexpr int kAttempts = 8;
+  for (int attempt = 0; attempt < kAttempts; attempt++) {
+    for (uint32_t hz : speeds) {
+      if (mountSd(hz)) {
+        return true;
+      }
+      SD.end();
+      delay(50);
+    }
+    Serial.printf("SD: reintento %d/%d...\n", attempt + 1, kAttempts);
+    delay(150);
+  }
+  return false;
+}
 
 String readFile(const char* path) {
   File file = SD.open(path, FILE_READ);
@@ -39,6 +69,39 @@ String getHeaderValue(const String& cartContent, const String& key) {
   return cartContent.substring(start + key.length(), lineEnd);
 }
 
+/** Texto entre la linea siguiente a PALETTE: y el primer ---FILE: (opcional). */
+String extractPaletteSection(const String& cart) {
+  const char* tag = "PALETTE:";
+  int p = cart.indexOf(tag);
+  while (p >= 0) {
+    if (p > 0) {
+      const char prev = cart.charAt(static_cast<unsigned>(p - 1));
+      if (prev != '\n' && prev != '\r') {
+        p = cart.indexOf(tag, p + 1);
+        continue;
+      }
+    }
+    break;
+  }
+  if (p < 0) {
+    return "";
+  }
+  const int afterTag = static_cast<int>(p + strlen(tag));
+  int lineEnd = cart.indexOf('\n', afterTag);
+  if (lineEnd < 0) {
+    lineEnd = cart.length();
+  }
+  const int contentStart = lineEnd + 1;
+  if (contentStart > cart.length()) {
+    return "";
+  }
+  const int fileMark = cart.indexOf("---FILE:", contentStart);
+  if (fileMark < 0) {
+    return cart.substring(contentStart);
+  }
+  return cart.substring(contentStart, fileMark);
+}
+
 String extractEmbeddedFile(const String& cartContent, const String& filePath) {
   String markerStart = "---FILE:" + filePath + "---";
   int startMarkerPos = cartContent.indexOf(markerStart);
@@ -60,23 +123,53 @@ String extractEmbeddedFile(const String& cartContent, const String& filePath) {
   return cartContent.substring(fileStart, fileEnd);
 }
 
-String extractPrintMessage(const String& luaSource) {
-  int printPos = luaSource.indexOf("print(");
-  if (printPos < 0) {
-    return "";
+static int l_serial_print(lua_State* L) {
+  int n = lua_gettop(L);
+  for (int i = 1; i <= n; i++) {
+    if (i > 1) {
+      Serial.print('\t');
+    }
+    const char* s = luaL_tolstring(L, i, nullptr);
+    Serial.print(s);
+    lua_pop(L, 1);
+  }
+  Serial.println();
+  return 0;
+}
+
+static bool runCartEntryLua(const String& source, const char* chunkName) {
+  lua_State* L = luaL_newstate();
+  if (!L) {
+    Serial.println("Lua: luaL_newstate fallo");
+    return false;
   }
 
-  int firstQuote = luaSource.indexOf('"', printPos);
-  if (firstQuote < 0) {
-    return "";
+  luaL_openlibs(L);
+  lua_pushcfunction(L, l_serial_print);
+  lua_setglobal(L, "print");
+
+  fantasy_gpu_register_lua(L);
+
+  int st = luaL_loadbuffer(L, source.c_str(), source.length(), chunkName);
+  if (st != LUA_OK) {
+    Serial.print("Lua (carga): ");
+    Serial.println(lua_tostring(L, -1));
+    lua_pop(L, 1);
+    lua_close(L);
+    return false;
   }
 
-  int secondQuote = luaSource.indexOf('"', firstQuote + 1);
-  if (secondQuote < 0) {
-    return "";
+  st = lua_pcall(L, 0, LUA_MULTRET, 0);
+  if (st != LUA_OK) {
+    Serial.print("Lua (ejecucion): ");
+    Serial.println(lua_tostring(L, -1));
+    lua_pop(L, 1);
+    lua_close(L);
+    return false;
   }
 
-  return luaSource.substring(firstQuote + 1, secondQuote);
+  lua_close(L);
+  return true;
 }
 
 void setup() {
@@ -84,10 +177,14 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("== FantasyConsole TurtleCart Loader v0 ==");
+  Serial.println("== FantasyConsole TurtleCart + Lua + GPU (240x180, 32 col) ==");
 
-  sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
-  if (!SD.begin(SD_CS_PIN, sdSPI)) {
+  fantasy_gpu_init();
+#if !FANTASY_USE_DISPLAY
+  Serial.println("Pantalla: desactivada (FANTASY_USE_DISPLAY=0). cls/pix/flip solo en RAM.");
+#endif
+
+  if (!mountSdWithRetries()) {
     Serial.println("Error: no se pudo montar microSD");
     return;
   }
@@ -105,7 +202,8 @@ void setup() {
     return;
   }
 
-  const String entry = getHeaderValue(cartContent, "ENTRY:");
+  String entry = getHeaderValue(cartContent, "ENTRY:");
+  entry.trim();
   if (entry.length() == 0) {
     Serial.println("Error: cartucho sin ENTRY");
     return;
@@ -119,21 +217,36 @@ void setup() {
 
   mainLua.trim();
 
+  const String palText = extractPaletteSection(cartContent);
+  if (palText.length() > 0) {
+    const int n = fantasy_gpu_palette_from_hex_text(palText.c_str(), palText.length());
+    if (n > 0) {
+      if (n < 32) {
+        Serial.printf(
+            "Paleta del cartucho: %d colores validos; indices %d..31 -> #000000\n", n, n);
+      } else {
+        Serial.printf("Paleta del cartucho: 32 colores (indices 0..31)\n");
+      }
+    } else {
+      Serial.println(
+          "PALETTE: presente pero sin lineas #RRGGBB validas; uso paleta por defecto.");
+      fantasy_gpu_palette_reset_default();
+    }
+  } else {
+    Serial.println("Sin PALETTE: en cartucho; paleta por defecto (Genesis-like).");
+  }
+
   Serial.println("TurtleCart cargado correctamente");
   Serial.print("ENTRY: ");
   Serial.println(entry);
   Serial.println("Contenido de main.lua:");
   Serial.println(mainLua);
 
-  const String msg = extractPrintMessage(mainLua);
-  if (msg.length() > 0) {
-    Serial.print("Mensaje en main.lua: ");
-    Serial.println(msg);
-  } else {
-    Serial.println("No se encontro print(\"...\") en main.lua");
+  Serial.println("--- Lua ---");
+  if (!runCartEntryLua(mainLua, entry.c_str())) {
+    return;
   }
+  Serial.println("--- Lua termino sin error ---");
 }
 
-void loop() {
-  // MVP: sin loop de juego todavia.
-}
+void loop() {}

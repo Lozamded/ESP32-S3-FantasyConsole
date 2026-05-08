@@ -5,32 +5,50 @@ Primer objetivo del proyecto:
 - Leer ese cartucho desde microSD en ESP32-S3.
 - Confirmar por Serial que se leyo un "hola mundo" desde `main.lua`.
 
-## Estado actual (MVP v0)
+## Estado actual (MVP v0 + Lua 5.4 + framebuffer)
 
 - Formato: texto plano `.turtlecart` con secciones.
 - Firmware: sketch Arduino que:
-  - monta SD por SPI,
+  - monta SD por SPI (con reintentos),
   - abre `/demo.turtlecart`,
-  - extrae el script `main.lua`,
-  - detecta `print("...")` y lo muestra por Serial.
+  - extrae el script indicado en `ENTRY`,
+  - **ejecuta Lua 5.4** con `print` a Serial,
+  - API de consola: **`cls(i)`**, **`pix(x,y,i)`**, **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (240x180, 32 indices de color).
+- **Paleta por juego**: bloque opcional **`PALETTE:`** en el `.turtlecart` con lineas **`#RRGGBB`** (lista larga permitida; el firmware usa las primeras 32 entradas validas). Sin bloque, paleta Genesis-like por defecto.
+- **Sin tope de tamano de cartucho en spec**: lo limitan SD y el desarrollador; el runtime actual solo interpreta el formato v0.
 
+### Pantalla ILI9488 (opcional)
+
+1. Instala la libreria **LovyanGFX** en Arduino IDE.
+2. En `firmware/esp32_s3_sd_loader/fantasy_gpu.h` pon **`#define FANTASY_USE_DISPLAY 1`** y ajusta pines `FANTASY_DISP_PIN_*` (SPI **distinto** al bus de la SD, o comparte bus si sabes cablear CS/DC).
+3. `flip()` envia el framebuffer centrado sobre el panel 480x320.
+
+Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rellena en RAM.
+
+## Dependencia: libreria Lua54 (en este repo)
+
+1. Copia la carpeta `firmware/libraries/lua54` dentro del directorio de librerias de Arduino, por ejemplo:
+   - `~/Arduino/libraries/lua54`
+2. Reinicia Arduino IDE si hace falta. Deberia aparecer como libreria **Lua54**.
 
 ## Estructura
 
 - `spec/turtlecart-v0.md`: especificacion inicial.
 - `cart/demo.turtlecart`: cartucho de prueba.
-- `firmware/esp32_s3_sd_loader/esp32_s3_sd_loader.ino`: firmware MVP.
+- `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).
+- `firmware/esp32_s3_sd_loader/esp32_s3_sd_loader.ino`: firmware.
 
 ## Prueba rapida
 
-1. Copia `cart/demo.turtlecart` a la raiz de la microSD con nombre `demo.turtlecart`.
-2. Ajusta pines SPI/SD en el sketch segun tu cableado.
-3. Flashea el sketch en tu ESP32-S3.
-4. Abre monitor serial a `115200`.
+1. Instala la libreria **Lua54** como arriba.
+2. Copia `cart/demo.turtlecart` a la raiz de la microSD con nombre `demo.turtlecart`.
+3. Ajusta pines SPI/SD en el sketch segun tu cableado (alimenta el lector SD a **3V3**).
+4. Flashea el sketch en tu ESP32-S3.
+5. Abre monitor serial a `115200`.
 
-Si todo sale bien, vere algo como:
-- `TurtleCart cargado correctamente`
-- `Mensaje en main.lua: hola mundo desde turtlecart v0`
+Si todo sale bien, veras la carga del cartucho y una linea en **Salida Lua** con el `print` real desde la VM, por ejemplo:
+- `hola mundo desde turtlecart v0`
+- `Lua termino sin error`
 
 ## Specs ideales para mi consola
 - resolución: 240×180
