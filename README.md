@@ -13,15 +13,15 @@ Primer objetivo del proyecto:
   - abre `/demo.turtlecart`,
   - extrae el script indicado en `ENTRY`,
   - **ejecuta Lua 5.4** con `print` a Serial,
-  - API de consola: **`cls(i)`**, **`pix(x,y,i)`**, **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (240x180, 32 indices de color).
+  - API de consola: **`cls(i)`**, **`pix(x,y,i)`**, **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (264x198, 32 indices de color).
 - **Paleta por juego**: bloque opcional **`PALETTE:`** en el `.turtlecart` con lineas **`#RRGGBB`** (lista larga permitida; el firmware usa las primeras 32 entradas validas). Sin bloque, paleta Genesis-like por defecto.
 - **Sin tope de tamano de cartucho en spec**: lo limitan SD y el desarrollador; el runtime actual solo interpreta el formato v0.
 
 ### Pantalla ILI9488 (opcional)
 
 1. Instala la libreria **LovyanGFX** en Arduino IDE.
-2. En `firmware/esp32_s3_sd_loader/fantasy_gpu.h` pon **`#define FANTASY_USE_DISPLAY 1`** y ajusta pines `FANTASY_DISP_PIN_*` (SPI **distinto** al bus de la SD, o comparte bus si sabes cablear CS/DC).
-3. `flip()` envia el framebuffer centrado sobre el panel 480x320.
+2. En `firmware/TurtleReader/turtle_gpu.h` deja **`TURTLE_USE_DISPLAY 1`** y ajusta pines `TURTLE_DISP_PIN_*`.
+3. `flip()` escala de 264x198 al panel (240x320 fisico, normalmente rotado a 320x240 para juego).
 
 Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rellena en RAM.
 
@@ -36,7 +36,7 @@ Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rell
 - `spec/turtlecart-v0.md`: especificacion inicial.
 - `cart/demo.turtlecart`: cartucho de prueba.
 - `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).
-- `firmware/esp32_s3_sd_loader/esp32_s3_sd_loader.ino`: firmware.
+- `firmware/TurtleReader/`: firmware principal (`TurtleReader.ino` + `turtle_gpu.*`).
 
 ## Prueba rapida
 
@@ -51,5 +51,5 @@ Si todo sale bien, veras la carga del cartucho y una linea en **Salida Lua** con
 - `Lua termino sin error`
 
 ## Specs ideales para mi consola
-- resolución: 240×180
+- resolución: 264×198
 - paleta: 32 colores

@@ -3,7 +3,7 @@
 #include <SD.h>
 #include <string.h>
 
-#include "fantasy_gpu.h"
+#include "turtle_gpu.h"
 
 extern "C" {
 #include <lua.h>
@@ -12,10 +12,10 @@ extern "C" {
 }
 
 // microSD (SPI). Ajusta a tu cableado.
-static const int SD_SCK_PIN = 36;
-static const int SD_MISO_PIN = 37;
-static const int SD_MOSI_PIN = 38;
-static const int SD_CS_PIN = 39;
+static const int SD_SCK_PIN = 36; //azul
+static const int SD_MISO_PIN = 37; //morado
+static const int SD_MOSI_PIN = 38; //gris
+static const int SD_CS_PIN = 39; //blanco
 
 SPIClass sdSPI(FSPI);
 
@@ -148,7 +148,7 @@ static bool runCartEntryLua(const String& source, const char* chunkName) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
 
-  fantasy_gpu_register_lua(L);
+  turtle_gpu_register_lua(L);
 
   int st = luaL_loadbuffer(L, source.c_str(), source.length(), chunkName);
   if (st != LUA_OK) {
@@ -177,11 +177,11 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("== FantasyConsole TurtleCart + Lua + GPU (240x180, 32 col) ==");
+  Serial.println("== TurtleReader + Lua + GPU (264x198, 32 col) ==");
 
-  fantasy_gpu_init();
-#if !FANTASY_USE_DISPLAY
-  Serial.println("Pantalla: desactivada (FANTASY_USE_DISPLAY=0). cls/pix/flip solo en RAM.");
+  turtle_gpu_init();
+#if !TURTLE_USE_DISPLAY
+  Serial.println("Pantalla: desactivada (TURTLE_USE_DISPLAY=0). cls/pix/flip solo en RAM.");
 #endif
 
   if (!mountSdWithRetries()) {
@@ -219,7 +219,7 @@ void setup() {
 
   const String palText = extractPaletteSection(cartContent);
   if (palText.length() > 0) {
-    const int n = fantasy_gpu_palette_from_hex_text(palText.c_str(), palText.length());
+    const int n = turtle_gpu_palette_from_hex_text(palText.c_str(), palText.length());
     if (n > 0) {
       if (n < 32) {
         Serial.printf(
@@ -230,7 +230,7 @@ void setup() {
     } else {
       Serial.println(
           "PALETTE: presente pero sin lineas #RRGGBB validas; uso paleta por defecto.");
-      fantasy_gpu_palette_reset_default();
+      turtle_gpu_palette_reset_default();
     }
   } else {
     Serial.println("Sin PALETTE: en cartucho; paleta por defecto (Genesis-like).");

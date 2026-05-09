@@ -34,12 +34,72 @@ PALETTE:
 #FFDBDB
 #B69200
 ---FILE:main.lua---
-print("hola desde turtlecart v0")
-cls(1)
-for i = 0, 31 do
-  pix(20 + i * 6, 90, i)
+print("demo: marco + tortuga centrada")
+
+local BG = 4
+local FRAME = 31
+local SHADOW = 1
+local SHELL = 16
+local SKIN = 18
+local SHELL_LINE = 19
+local EYE = 7
+
+local function pset(x, y, c)
+  pix(x, y, c)
 end
-pix(120, 90, 9)
+
+local function rect_fill(x, y, w, h, c)
+  for yy = y, y + h - 1 do
+    for xx = x, x + w - 1 do
+      pset(xx, yy, c)
+    end
+  end
+end
+
+local function rect(x, y, w, h, c)
+  for xx = x, x + w - 1 do
+    pset(xx, y, c)
+    pset(xx, y + h - 1, c)
+  end
+  for yy = y, y + h - 1 do
+    pset(x, yy, c)
+    pset(x + w - 1, yy, c)
+  end
+end
+
+local function fill_ellipse(cx, cy, rx, ry, c)
+  for y = -ry, ry do
+    for x = -rx, rx do
+      if (x * x) * (ry * ry) + (y * y) * (rx * rx) <= (rx * rx) * (ry * ry) then
+        pset(cx + x, cy + y, c)
+      end
+    end
+  end
+end
+
+cls(BG)
+rect(2, 2, W - 4, H - 4, FRAME)
+rect(8, 8, W - 16, H - 16, SHADOW)
+
+local cx = W // 2
+local cy = H // 2
+
+-- caparazon
+fill_ellipse(cx, cy, 42, 28, SHELL)
+rect(cx - 35, cy - 2, 70, 4, SHELL_LINE)
+rect(cx - 2, cy - 22, 4, 44, SHELL_LINE)
+
+-- cabeza
+fill_ellipse(cx, cy - 34, 14, 10, SKIN)
+pset(cx - 4, cy - 36, EYE)
+pset(cx + 4, cy - 36, EYE)
+
+-- patas
+fill_ellipse(cx - 30, cy + 24, 10, 7, SKIN)
+fill_ellipse(cx + 30, cy + 24, 10, 7, SKIN)
+fill_ellipse(cx - 36, cy - 4, 8, 6, SKIN)
+fill_ellipse(cx + 36, cy - 4, 8, 6, SKIN)
+
 flip()
-print("barra de paleta del cartucho; W=" .. W .. " H=" .. H)
+print("W=" .. W .. " H=" .. H .. " tortuga OK")
 ---END---

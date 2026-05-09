@@ -51,7 +51,7 @@ Orden recomendado: `TURTLECART:` → `ENTRY:` → `PALETTE:` (si hay) → `---FI
 - Extraer el archivo indicado en `ENTRY` (p. ej. `main.lua`).
 - Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
   - `print` → Serial
-  - `cls(color)`, `pix(x,y,color)`, `flip()` → framebuffer 240×180 (**32 indices** de color)
+  - `cls(color)`, `pix(x,y,color)`, `flip()` → framebuffer 264×198 (**32 indices** de color)
   - `W`, `H`, `COLORS` en Lua (`COLORS` == 32)
 
 ## Fuera de alcance en v0

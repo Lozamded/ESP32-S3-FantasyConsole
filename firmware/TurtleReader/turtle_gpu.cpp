@@ -1,4 +1,4 @@
-#include "fantasy_gpu.h"
+#include "turtle_gpu.h"
 
 #include <Arduino.h>
 #include <ctype.h>
@@ -10,8 +10,8 @@ extern "C" {
 #include <lauxlib.h>
 }
 
-static constexpr int kW = 240;
-static constexpr int kH = 180;
+static constexpr int kW = 264;
+static constexpr int kH = 198;
 static constexpr int kNColors = 32;
 
 static uint8_t s_fb[kW * kH];
@@ -36,7 +36,7 @@ static const uint16_t k_default_palette[kNColors] = {
     rgb565(255, 219, 219), rgb565(182, 146, 0),
 };
 
-void fantasy_gpu_palette_reset_default(void) {
+void turtle_gpu_palette_reset_default(void) {
   memcpy(s_palette, k_default_palette, sizeof(s_palette));
 }
 
@@ -91,7 +91,7 @@ static bool parse_hex_rgb_line(const char* line, size_t len, uint8_t* r, uint8_t
   return true;
 }
 
-int fantasy_gpu_palette_from_hex_text(const char* text, size_t text_len) {
+int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len) {
   size_t pos = 0;
   int slot = 0;
 
@@ -120,47 +120,47 @@ int fantasy_gpu_palette_from_hex_text(const char* text, size_t text_len) {
   return n_user;
 }
 
-#if FANTASY_USE_DISPLAY
+#if TURTLE_USE_DISPLAY
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>
 
-class LGFX : public lgfx::LGFX_Device {
+class TurtleDisplay : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9488 _panel_instance;
   lgfx::Bus_SPI _bus_instance;
 
  public:
-  LGFX(void) {
+  TurtleDisplay(void) {
     {
       auto cfg = _bus_instance.config();
-      cfg.spi_host = FANTASY_DISP_SPI_HOST;
+      cfg.spi_host = TURTLE_DISP_SPI_HOST;
       cfg.spi_mode = 0;
       cfg.freq_write = 40000000;
       cfg.freq_read = 16000000;
       cfg.spi_3wire = false;
       cfg.use_lock = true;
       cfg.dma_channel = SPI_DMA_CH_AUTO;
-      cfg.pin_sclk = FANTASY_DISP_PIN_SCK;
-      cfg.pin_miso = FANTASY_DISP_PIN_MISO;
-      cfg.pin_mosi = FANTASY_DISP_PIN_MOSI;
-      cfg.pin_dc = FANTASY_DISP_PIN_DC;
+      cfg.pin_sclk = TURTLE_DISP_PIN_SCK;
+      cfg.pin_miso = TURTLE_DISP_PIN_MISO;
+      cfg.pin_mosi = TURTLE_DISP_PIN_MOSI;
+      cfg.pin_dc = TURTLE_DISP_PIN_DC;
       _bus_instance.config(cfg);
       _panel_instance.setBus(&_bus_instance);
     }
     {
       auto cfg = _panel_instance.config();
-      cfg.pin_cs = FANTASY_DISP_PIN_CS;
-      cfg.pin_rst = FANTASY_DISP_PIN_RST;
+      cfg.pin_cs = TURTLE_DISP_PIN_CS;
+      cfg.pin_rst = TURTLE_DISP_PIN_RST;
       cfg.pin_busy = -1;
-      cfg.memory_width = 480;
+      cfg.memory_width = 240;
       cfg.memory_height = 320;
-      cfg.panel_width = 480;
+      cfg.panel_width = 240;
       cfg.panel_height = 320;
       cfg.offset_x = 0;
       cfg.offset_y = 0;
       cfg.offset_rotation = 0;
       cfg.readable = false;
       cfg.invert = false;
-      cfg.rgb_order = false;
+      cfg.rgb_order = TURTLE_ILI9488_RGB_ORDER;
       cfg.dlen_16bit = false;
       cfg.bus_shared = false;
       _panel_instance.config(cfg);
@@ -169,37 +169,44 @@ class LGFX : public lgfx::LGFX_Device {
   }
 };
 
-static LGFX s_display;
+static TurtleDisplay s_display;
 static bool s_display_ok = false;
 
-static void fantasy_display_begin(void) {
+static void turtle_display_begin(void) {
   s_display.init();
-  s_display.setRotation(0);
+  s_display.setRotation(TURTLE_PANEL_ROTATION);
   s_display.fillScreen(0x0000u);
   s_display_ok = true;
 }
 
-static void fantasy_fb_flush_to_display(void) {
+static void turtle_fb_flush_to_display(void) {
   if (!s_display_ok) {
     return;
   }
-  constexpr int dx = (480 - kW) / 2;
-  constexpr int dy = (320 - kH) / 2;
-  uint16_t line[kW];
-  for (int y = 0; y < kH; y++) {
-    const uint8_t* row = &s_fb[y * kW];
-    for (int x = 0; x < kW; x++) {
-      line[x] = s_palette[row[x]];
+
+  // Resolucion logica 264x198, panel visible 320x240 (rotado).
+  const int panelW = s_display.width();
+  const int panelH = s_display.height();
+  if (panelW <= 0 || panelH <= 0) {
+    return;
+  }
+
+  uint16_t line[480];
+  for (int py = 0; py < panelH; py++) {
+    const int ly = (py * kH) / panelH;
+    const uint8_t* row = &s_fb[ly * kW];
+    for (int px = 0; px < panelW; px++) {
+      const int lx = (px * kW) / panelW;
+      line[px] = s_palette[row[lx]];
     }
-    s_display.pushImage(dx, dy + y, kW, 1, line);
+    s_display.pushImage(0, py, panelW, 1, line);
   }
 }
 
 #else
 
-static void fantasy_display_begin(void) {}
-
-static void fantasy_fb_flush_to_display(void) {}
+static void turtle_display_begin(void) {}
+static void turtle_fb_flush_to_display(void) {}
 
 #endif
 
@@ -238,17 +245,17 @@ static int l_pix(lua_State* L) {
 
 static int l_flip(lua_State* L) {
   (void)L;
-  fantasy_fb_flush_to_display();
+  turtle_fb_flush_to_display();
   return 0;
 }
 
-void fantasy_gpu_init(void) {
+void turtle_gpu_init(void) {
   memset(s_fb, 0, sizeof(s_fb));
-  fantasy_gpu_palette_reset_default();
-  fantasy_display_begin();
+  turtle_gpu_palette_reset_default();
+  turtle_display_begin();
 }
 
-void fantasy_gpu_register_lua(lua_State* L) {
+void turtle_gpu_register_lua(lua_State* L) {
   lua_pushcfunction(L, l_cls);
   lua_setglobal(L, "cls");
 
