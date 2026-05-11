@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/turtlestudio/__init__.py
+src/turtlestudio/__main__.py
+src/turtlestudio/build.py
+src/turtlestudio/cli.py
+src/turtlestudio/gui.py
+src/turtlestudio.egg-info/PKG-INFO
+src/turtlestudio.egg-info/SOURCES.txt
+src/turtlestudio.egg-info/dependency_links.txt
+src/turtlestudio.egg-info/entry_points.txt
+src/turtlestudio.egg-info/requires.txt
+src/turtlestudio.egg-info/top_level.txt

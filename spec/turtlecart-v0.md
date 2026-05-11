@@ -44,6 +44,10 @@ print("hola")
 
 Orden recomendado: `TURTLECART:` → `ENTRY:` → `PALETTE:` (si hay) → `---FILE:...---` ...
 
+## Escena y coordenadas
+
+El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scene-v0.md`**: escena **264×198**, **(0,0) en la esquina inferior izquierda**, **Y positivo hacia arriba**. El cartucho v0 no exige un bloque `SCENE:`; se asume la escena canonica salvo extension futura.
+
 ## Objetivo tecnico de v0
 
 - Cargar el cartucho desde SD.
@@ -51,7 +55,7 @@ Orden recomendado: `TURTLECART:` → `ENTRY:` → `PALETTE:` (si hay) → `---FI
 - Extraer el archivo indicado en `ENTRY` (p. ej. `main.lua`).
 - Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
   - `print` → Serial
-  - `cls(color)`, `pix(x,y,color)`, `flip()` → framebuffer 264×198 (**32 indices** de color)
+  - `cls(color)`, `pix(x,y,color)` (framebuffer), **`spix(sx,sy,color)`** (escena: abajo-izquierda, Y arriba), `flip()` → framebuffer 264×198 (**32 indices** de color)
   - `W`, `H`, `COLORS` en Lua (`COLORS` == 32)
 
 ## Fuera de alcance en v0

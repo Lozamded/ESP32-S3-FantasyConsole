@@ -1,0 +1,4 @@
+# Opcional: mismas deps que pyproject. Para instalar todo el proyecto + CLI:
+#   pip install -e .
+#
+dearpygui>=1.10.0

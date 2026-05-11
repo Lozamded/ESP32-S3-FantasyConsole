@@ -13,7 +13,7 @@ Primer objetivo del proyecto:
   - abre `/demo.turtlecart`,
   - extrae el script indicado en `ENTRY`,
   - **ejecuta Lua 5.4** con `print` a Serial,
-  - API de consola: **`cls(i)`**, **`pix(x,y,i)`**, **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (264x198, 32 indices de color).
+  - API de consola: **`cls(i)`**, **`pix(x,y,i)`** (raster), **`spix(sx,sy,i)`** (escena, ver `spec/scene-v0.md`), **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (264x198, 32 indices de color).
 - **Paleta por juego**: bloque opcional **`PALETTE:`** en el `.turtlecart` con lineas **`#RRGGBB`** (lista larga permitida; el firmware usa las primeras 32 entradas validas). Sin bloque, paleta Genesis-like por defecto.
 - **Sin tope de tamano de cartucho en spec**: lo limitan SD y el desarrollador; el runtime actual solo interpreta el formato v0.
 
@@ -33,6 +33,8 @@ Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rell
 
 ## Estructura
 
+- `tools/turtlestudio/`: **TurtleStudio** (Python) — CLI y utilidades para armar `.turtlecart`.
+- `spec/scene-v0.md`: escena canonica (264×198) y sistema de coordenadas.
 - `spec/turtlecart-v0.md`: especificacion inicial.
 - `cart/demo.turtlecart`: cartucho de prueba.
 - `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).

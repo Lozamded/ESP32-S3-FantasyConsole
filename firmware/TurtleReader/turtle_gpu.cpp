@@ -210,36 +210,49 @@ static void turtle_fb_flush_to_display(void) {}
 
 #endif
 
-static int l_cls(lua_State* L) {
-  const lua_Integer c = luaL_checkinteger(L, 1);
-  uint8_t ci;
+static uint8_t lua_color_index(lua_State* L, int arg) {
+  const lua_Integer c = luaL_checkinteger(L, arg);
   if (c < 0) {
-    ci = 0;
-  } else if (c >= kNColors) {
-    ci = static_cast<uint8_t>(kNColors - 1);
-  } else {
-    ci = static_cast<uint8_t>(c);
+    return 0;
   }
+  if (c >= kNColors) {
+    return static_cast<uint8_t>(kNColors - 1);
+  }
+  return static_cast<uint8_t>(c);
+}
+
+static void plot_fb(int xfb, int yfb, uint8_t ci) {
+  if (xfb < 0 || xfb >= kW || yfb < 0 || yfb >= kH) {
+    return;
+  }
+  s_fb[yfb * kW + xfb] = ci;
+}
+
+static int l_cls(lua_State* L) {
+  const uint8_t ci = lua_color_index(L, 1);
   memset(s_fb, ci, sizeof(s_fb));
   return 0;
 }
 
+/** Coordenadas framebuffer: (0,0) arriba-izquierda, Y hacia abajo (como pix raster). */
 static int l_pix(lua_State* L) {
   const int x = static_cast<int>(luaL_checkinteger(L, 1));
   const int y = static_cast<int>(luaL_checkinteger(L, 2));
-  const lua_Integer c = luaL_checkinteger(L, 3);
-  uint8_t ci;
-  if (c < 0) {
-    ci = 0;
-  } else if (c >= kNColors) {
-    ci = static_cast<uint8_t>(kNColors - 1);
-  } else {
-    ci = static_cast<uint8_t>(c);
-  }
-  if (x < 0 || x >= kW || y < 0 || y >= kH) {
-    return 0;
-  }
-  s_fb[y * kW + x] = ci;
+  const uint8_t ci = lua_color_index(L, 3);
+  plot_fb(x, y, ci);
+  return 0;
+}
+
+/**
+ * Coordenadas escena (spec/scene-v0.md): (0,0) abajo-izquierda, Y hacia arriba.
+ * xfb = sx, yfb = (H - 1) - sy
+ */
+static int l_spix(lua_State* L) {
+  const int sx = static_cast<int>(luaL_checkinteger(L, 1));
+  const int sy = static_cast<int>(luaL_checkinteger(L, 2));
+  const uint8_t ci = lua_color_index(L, 3);
+  const int yfb = (kH - 1) - sy;
+  plot_fb(sx, yfb, ci);
   return 0;
 }
 
@@ -261,6 +274,9 @@ void turtle_gpu_register_lua(lua_State* L) {
 
   lua_pushcfunction(L, l_pix);
   lua_setglobal(L, "pix");
+
+  lua_pushcfunction(L, l_spix);
+  lua_setglobal(L, "spix");
 
   lua_pushcfunction(L, l_flip);
   lua_setglobal(L, "flip");
