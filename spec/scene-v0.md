@@ -47,6 +47,21 @@ Mas adelante se puede anadir, por ejemplo:
 
 con campos como nombre, limites, gravedad, capas, etc. Fuera de alcance de este documento hasta que se versione `TURTLECART:1` o un perfil de escena.
 
+## Transparencia (chroma key, convencion TurtleStudio)
+
+Para **sprites y composicion futura** (no para el framebuffer indice actual del firmware), se adopta un **indice de paleta reservado** como “transparente” al dibujar por encima del fondo:
+
+- **Indice por defecto: 31** (`0..31` son los indices validos del runtime).
+- Ese indice sigue teniendo un color en la paleta del cartucho (util para ver el recorte en herramientas); al implementar `spr`/capas, el runtime **no copiara** píxeles con ese indice.
+
+El manifest de proyecto (`turtlestudio.json`) puede declarar `transparent_index` (entero `0..31`); si falta, las herramientas asumen **31**.
+
+## Escenas en proyecto TurtleStudio (manifest)
+
+En la carpeta de proyecto, `turtlestudio.json` puede incluir una lista **`scenes`**: cada entrada tiene `id` (identificador unico), `palette` (ruta relativa a un archivo de paleta en el proyecto, p. ej. `palettes/nivel1.txt`) y opcionalmente **`background_index`** (entero `0..N-1` con `N` = numero de colores en esa paleta; indice de fondo para la vista previa del estudio, alineado con `cls()` en el cartucho). El campo **`active_scene`** indica la escena seleccionada en TurtleStudio para vista previa y edicion. Esto no sustituye aun un bloque `SCENE:` en el `.turtlecart` v0; el cartucho sigue usando la paleta embebida opcional y el script `ENTRY` como hasta ahora.
+
+Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena en `scenes/<id>.json` (`kind: "turtlestudio.scene"`, `id`, `palette`, `background_index` = indice de color de fondo en esa paleta para vista previa en el estudio) para revision en Git o edicion externa; **al abrir el proyecto la fuente de verdad sigue siendo el manifest** para no divergir listas de escenas.
+
 ## Objetos y capas (v0)
 
 - **v0**: no hay formato obligatorio de “lista de entidades” en el cartucho.

@@ -8,6 +8,26 @@ from pathlib import Path
 
 from turtlestudio import __version__
 from turtlestudio.build import write_turtlecart
+from turtlestudio.project import MANIFEST_NAME, create_project
+
+
+def _cmd_project_init(args: argparse.Namespace) -> int:
+    path = Path(args.path).expanduser()
+    try:
+        mp = create_project(
+            path,
+            display_name=args.name,
+            force=args.force,
+        )
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+    except OSError as e:
+        print(f"Error de escritura: {e}", file=sys.stderr)
+        return 1
+    print(f"Proyecto creado: {mp.parent}")
+    print(f"  manifest: {mp}")
+    return 0
 
 
 def _cmd_build(args: argparse.Namespace) -> int:
@@ -89,6 +109,37 @@ def main() -> None:
         help="Ventana minima (Dear PyGui): panel, canvas, Exportar",
     )
     gui.set_defaults(func=_cmd_gui)
+
+    proj = sub.add_parser(
+        "project",
+        help="Proyecto en carpeta (turtlestudio.json + arbol de directorios)",
+    )
+    proj_sub = proj.add_subparsers(
+        dest="project_command",
+        help="Subcomando proyecto",
+        required=True,
+    )
+    p_init = proj_sub.add_parser(
+        "init",
+        help=f"Crear carpeta de proyecto con {MANIFEST_NAME!r} y arbol estandar",
+    )
+    p_init.add_argument(
+        "path",
+        type=Path,
+        help="Carpeta del proyecto (se crea si no existe)",
+    )
+    p_init.add_argument(
+        "--name",
+        type=str,
+        default=None,
+        help="Nombre legible en el manifest (por defecto: nombre de la carpeta)",
+    )
+    p_init.add_argument(
+        "--force",
+        action="store_true",
+        help="Si ya existe el manifest, reescribirlo y asegurar carpetas (no borra archivos)",
+    )
+    p_init.set_defaults(func=_cmd_project_init)
 
     args = parser.parse_args()
     if args.command is None:

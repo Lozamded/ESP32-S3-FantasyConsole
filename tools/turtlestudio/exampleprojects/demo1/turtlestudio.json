@@ -1,0 +1,25 @@
+{
+  "format_version": 1,
+  "name": "demo1",
+  "entry": "scripts/main.lua",
+  "default_palette": "palettes/palette.txt",
+  "scenes": [
+    {
+      "id": "main",
+      "palette": "palettes/palette.txt",
+      "background_index": 29
+    },
+    {
+      "id": "scene_1",
+      "palette": "palettes/palette.txt",
+      "background_index": 27
+    },
+    {
+      "id": "scene_2",
+      "palette": "palettes/palette.txt",
+      "background_index": 12
+    }
+  ],
+  "active_scene": "scene_1",
+  "transparent_index": 31
+}
