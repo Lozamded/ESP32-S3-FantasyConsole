@@ -49,7 +49,7 @@ PYTHONPATH=src python3 -m turtlestudio gui
 
 ## Comando `gui` (Dear PyGui)
 
-Ventana minima: panel izquierdo (rutas), canvas 264×198 escalado ×2 (placeholder), botón **Exportar**.
+Ventana minima: panel izquierdo (rutas de salida del `.turtlecart`, ENTRY, paleta opcional, **Importar** un `.lua` desde disco al editor, **Exportar**). Panel derecho: canvas 264×198 ×2 (**Mostrar rejilla**, combo **Color de fondo** + muestrario) y un **editor de Lua** con plantilla por defecto. **Exportar** genera el cartucho desde el texto del editor (no exige que exista un `main.lua` en disco); si activas **Guardar .lua junto al cartucho**, se escribe el mismo script como `.lua` en la carpeta del `.turtlecart` (nombre según ENTRY, p. ej. `main.lua`). El comando `build` por CLI sigue leyendo un archivo Lua desde ruta.
 
 ```bash
 cd tools/turtlestudio

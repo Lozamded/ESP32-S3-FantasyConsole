@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.sprite",
+  "id": "bloque_rojo",
+  "notes": "",
+  "cell_px": 8,
+  "blocks_w": 2,
+  "blocks_h": 2,
+  "pixel_w": 16,
+  "pixel_h": 16,
+  "render": {
+    "mode": "solid_palette_index",
+    "palette_index": 5
+  },
+  "image": null,
+  "frames": []
+}

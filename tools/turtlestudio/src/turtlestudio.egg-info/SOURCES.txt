@@ -5,6 +5,8 @@ src/turtlestudio/__main__.py
 src/turtlestudio/build.py
 src/turtlestudio/cli.py
 src/turtlestudio/gui.py
+src/turtlestudio/project.py
+src/turtlestudio/sprites.py
 src/turtlestudio.egg-info/PKG-INFO
 src/turtlestudio.egg-info/SOURCES.txt
 src/turtlestudio.egg-info/dependency_links.txt
