@@ -7,19 +7,90 @@
     {
       "id": "main",
       "palette": "palettes/palette.txt",
-      "background_index": 29
+      "background_index": 29,
+      "objects": [
+        {
+          "id": "bloque",
+          "x": 12,
+          "y": 20
+        },
+        {
+          "id": "box",
+          "x": 78,
+          "y": 56
+        },
+        {
+          "id": "box",
+          "x": 92,
+          "y": 38
+        },
+        {
+          "id": "bloque",
+          "x": 201,
+          "y": 22
+        },
+        {
+          "id": "bloque",
+          "x": 95,
+          "y": 122
+        },
+        {
+          "id": "box",
+          "x": 142,
+          "y": 75
+        },
+        {
+          "id": "box",
+          "x": 198,
+          "y": 135
+        },
+        {
+          "id": "box",
+          "x": 126,
+          "y": 31
+        },
+        {
+          "id": "bloque",
+          "x": 113,
+          "y": 18
+        },
+        {
+          "id": "bloque",
+          "x": 138,
+          "y": 53
+        }
+      ]
     },
     {
       "id": "scene_1",
       "palette": "palettes/palette.txt",
-      "background_index": 28
+      "background_index": 28,
+      "objects": [
+        {
+          "id": "bloque",
+          "x": 94,
+          "y": 78
+        },
+        {
+          "id": "box",
+          "x": 152,
+          "y": 13
+        }
+      ]
     },
     {
       "id": "scene_2",
       "palette": "palettes/palette.txt",
-      "background_index": 12
+      "background_index": 12,
+      "objects": []
+    },
+    {
+      "id": "scene_3",
+      "palette": "palettes/palette.txt",
+      "background_index": 1,
+      "objects": []
     }
   ],
-  "active_scene": "scene_1",
+  "active_scene": "main",
   "transparent_index": 31
 }

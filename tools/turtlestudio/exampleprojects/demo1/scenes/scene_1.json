@@ -3,5 +3,17 @@
   "kind": "turtlestudio.scene",
   "id": "scene_1",
   "palette": "palettes/palette.txt",
-  "bg_color_index": 1
+  "bg_color_index": 28,
+  "objects": [
+    {
+      "id": "bloque",
+      "x": 94,
+      "y": 78
+    },
+    {
+      "id": "box",
+      "x": 152,
+      "y": 13
+    }
+  ]
 }

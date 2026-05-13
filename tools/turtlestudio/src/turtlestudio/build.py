@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import re
 import warnings
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
 _CART_VERSION = "0"
 _END_MARKER = "---END---"
@@ -120,10 +123,15 @@ def assemble_turtlecart_v0(
     entry_relpath: str,
     main_lua_body: str,
     palette_hex_lines: list[str] | None = None,
+    embedded_files: Sequence[tuple[str, str]] | None = None,
 ) -> str:
     """
     Genera el texto completo de un .turtlecart v0.
     Usa saltos de linea \\n (LF).
+
+    embedded_files: lista de (ruta POSIX dentro del cartucho, texto UTF-8).
+    Se insertan antes del bloque ---FILE:ENTRY--- (orden conservado).
+    La seccion PALETTE: termina en el primer ---FILE: (spec v0).
     """
     entry = _normalize_entry_path(entry_relpath)
     body = main_lua_body.replace("\r\n", "\n").replace("\r", "\n")
@@ -140,10 +148,93 @@ def assemble_turtlecart_v0(
     if palette_hex_lines:
         parts.append("PALETTE:")
         parts.extend(palette_hex_lines)
+    if embedded_files:
+        for rel, raw_body in embedded_files:
+            sub = _normalize_entry_path(rel)
+            text = raw_body.replace("\r\n", "\n").replace("\r", "\n")
+            if _END_MARKER in text:
+                warnings.warn(
+                    f"Archivo embebido {sub!r} contiene '{_END_MARKER}'; "
+                    "el firmware podria truncarlo."
+                )
+            parts.append(f"---FILE:{sub}---")
+            parts.append(text.rstrip("\n"))
+            parts.append(_END_MARKER)
     parts.append(f"---FILE:{entry}---")
     parts.append(body.rstrip("\n"))
     parts.append(_END_MARKER)
     return "\n".join(parts) + "\n"
+
+
+def collect_studio_bundle_files(
+    project_root: Path,
+    *,
+    scenes: list[dict[str, Any]],
+    active_scene: str,
+    transparent_index: int,
+    entry_relpath: str,
+) -> list[tuple[str, str]]:
+    """
+    Recopila datos del proyecto en disco + escenas del editor para embebido en .turtlecart.
+    Devuelve una lista con un unico archivo studio/project_bundle.json.
+    """
+    from turtlestudio.objects import read_object_file
+    from turtlestudio.sprites import read_sprite_file
+
+    root = project_root.expanduser().resolve()
+    entry = _normalize_entry_path(entry_relpath)
+    ti = max(0, min(31, int(transparent_index)))
+
+    oids: set[str] = set()
+    for row in scenes:
+        if not isinstance(row, dict):
+            continue
+        raw_objs = row.get("objects")
+        if not isinstance(raw_objs, list):
+            continue
+        for item in raw_objs:
+            if isinstance(item, dict):
+                oid = str(item.get("id", "")).strip()
+            elif isinstance(item, str):
+                oid = item.strip()
+            else:
+                continue
+            if oid:
+                oids.add(oid)
+
+    objects_map: dict[str, Any] = {}
+    for oid in sorted(oids):
+        try:
+            objects_map[oid] = read_object_file(root, oid)
+        except ValueError:
+            objects_map[oid] = {"error": "missing_object_json", "id": oid}
+
+    sids: set[str] = set()
+    for od in objects_map.values():
+        if isinstance(od, dict) and "error" not in od:
+            sp = str(od.get("sprite_id", "")).strip()
+            if sp:
+                sids.add(sp)
+
+    sprites_map: dict[str, Any] = {}
+    for sid in sorted(sids):
+        try:
+            sprites_map[sid] = read_sprite_file(root, sid)
+        except ValueError:
+            sprites_map[sid] = {"error": "missing_sprite_json", "id": sid}
+
+    bundle: dict[str, Any] = {
+        "format_version": 1,
+        "kind": "turtlestudio.cart_bundle",
+        "entry": entry,
+        "transparent_index": ti,
+        "active_scene": (active_scene.strip() or "main"),
+        "scenes": scenes,
+        "objects": objects_map,
+        "sprites": sprites_map,
+    }
+    text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
+    return [("studio/project_bundle.json", text)]
 
 
 def write_turtlecart_content(
@@ -153,11 +244,13 @@ def write_turtlecart_content(
     main_lua_body: str,
     palette_path: Path | None = None,
     write_lua_file: bool = True,
+    embedded_files: Sequence[tuple[str, str]] | None = None,
 ) -> tuple[Path, Path | None]:
     """
     Escribe el .turtlecart desde el cuerpo Lua en memoria.
     Si write_lua_file es True, tambien escribe el .lua junto al cartucho (mismo directorio),
     con el nombre base de entry_relpath (p. ej. main.lua).
+    embedded_files: archivos extra embebidos antes del Lua ENTRY (p. ej. datos TurtleStudio).
     Devuelve (ruta_cartucho, ruta_lua_escrita o None).
     """
     entry = _normalize_entry_path(entry_relpath)
@@ -169,6 +262,7 @@ def write_turtlecart_content(
         entry_relpath=entry,
         main_lua_body=main_lua_body,
         palette_hex_lines=palette_lines,
+        embedded_files=embedded_files,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding="utf-8", newline="\n")

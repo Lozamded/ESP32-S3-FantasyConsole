@@ -5,10 +5,10 @@
   "notes": "",
   "palette": "palettes/palette.txt",
   "cell_px": 8,
-  "blocks_w": 1,
-  "blocks_h": 1,
-  "pixel_w": 8,
-  "pixel_h": 8,
+  "blocks_w": 2,
+  "blocks_h": 3,
+  "pixel_w": 16,
+  "pixel_h": 24,
   "render": {
     "mode": "solid_palette_index",
     "palette_index": 4

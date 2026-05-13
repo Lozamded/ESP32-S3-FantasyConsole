@@ -22,6 +22,7 @@ STANDARD_SUBDIRS: tuple[str, ...] = (
     "scenes",
     "palettes",
     "objects/Sprites",
+    "objects/Objects",
     "objects/Fonts",
     "scripts",
     "backgrounds",
@@ -51,11 +52,89 @@ def is_project_dir(project_root: Path) -> bool:
     return manifest_path(project_root).is_file()
 
 
+# Tamano logico escena / vista previa canvas (spec/scene-v0.md)
+SCENE_PIXEL_W = 264
+SCENE_PIXEL_H = 198
+
+
+@dataclass(frozen=True)
+class SceneObjectPlacement:
+    """Instancia en escena; x,y en espacio escena (origen abajo-izquierda, Y hacia arriba)."""
+
+    id: str
+    x: int
+    y: int
+
+
+def _clamp_scene_xy(x: int, y: int) -> tuple[int, int]:
+    return (
+        max(0, min(SCENE_PIXEL_W - 1, x)),
+        max(0, min(SCENE_PIXEL_H - 1, y)),
+    )
+
+
+def _parse_one_scene_object(raw: Any) -> SceneObjectPlacement | None:
+    from turtlestudio.objects import validate_object_id
+
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return None
+        oid = validate_object_id(s)
+        return SceneObjectPlacement(id=oid, x=0, y=0)
+    if isinstance(raw, dict):
+        rid = raw.get("id")
+        if not isinstance(rid, str) or not rid.strip():
+            return None
+        oid = validate_object_id(rid.strip())
+        try:
+            xi = int(raw.get("x", 0))
+            yi = int(raw.get("y", 0))
+        except (TypeError, ValueError):
+            xi, yi = 0, 0
+        xi, yi = _clamp_scene_xy(xi, yi)
+        return SceneObjectPlacement(id=oid, x=xi, y=yi)
+    return None
+
+
+def parse_scene_objects_raw(raw: Any) -> tuple[SceneObjectPlacement, ...]:
+    if not isinstance(raw, list):
+        return ()
+    out: list[SceneObjectPlacement] = []
+    for item in raw:
+        p = _parse_one_scene_object(item)
+        if p is not None:
+            out.append(p)
+    return tuple(out)
+
+
+def normalize_scene_objects_for_save(
+    root: Path,
+    scene_palette_rel: str,
+    raw_objs: list[Any],
+) -> list[dict[str, Any]]:
+    from turtlestudio.objects import list_object_ids_for_scene_palette
+    from turtlestudio.sprites import normalize_palette_rel as normpal
+
+    placements = parse_scene_objects_raw(raw_objs)
+    allowed = set(list_object_ids_for_scene_palette(root, scene_palette_rel))
+    sp = normpal(scene_palette_rel)
+    out: list[dict[str, Any]] = []
+    for p in placements:
+        if p.id not in allowed:
+            raise ValueError(
+                f"Objeto {p.id!r}: no existe o su sprite no usa la paleta de esta escena ({sp})."
+            )
+        out.append({"id": p.id, "x": p.x, "y": p.y})
+    return out
+
+
 @dataclass(frozen=True)
 class SceneEntry:
     id: str
     palette: str
     background_index: int
+    objects: tuple[SceneObjectPlacement, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -126,6 +205,7 @@ def _parse_scenes_from_manifest(
                 id="main",
                 palette=fb,
                 background_index=_scene_background_index(1, pal_path=pal_path),
+                objects=parse_scene_objects_raw([]),
             )
         ]
     else:
@@ -156,7 +236,13 @@ def _parse_scenes_from_manifest(
                 item.get("background_index", item.get("bg_color_index", 1)),
                 pal_path=pal_path,
             )
-            parsed.append(SceneEntry(id=sid, palette=pal, background_index=bg))
+            raw_objs = item.get("objects", [])
+            if not isinstance(raw_objs, list):
+                raw_objs = []
+            o_placements = parse_scene_objects_raw(raw_objs)
+            parsed.append(
+                SceneEntry(id=sid, palette=pal, background_index=bg, objects=o_placements)
+            )
         scenes_list = parsed
 
     ids = [s.id for s in scenes_list]
@@ -264,7 +350,8 @@ def _write_mirror_scene_json_files(
             "kind": SCENE_JSON_KIND,
             "id": sid,
             "palette": pal,
-            "bg_color_index": int(row.get("bg_color_index", 1)),
+            "bg_color_index": int(row.get("background_index", row.get("bg_color_index", 1))),
+            "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
         }
         path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -297,6 +384,7 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
                 "id": "main",
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
+                "objects": [],
             },
         ],
         "active_scene": "main",
@@ -421,7 +509,14 @@ def _normalize_scenes_for_save(
         except (TypeError, ValueError):
             bg = 1
         bg = max(0, min(n - 1, bg))
-        out.append({"id": sid, "palette": pal, "background_index": bg})
+        raw_objs = item.get("objects", [])
+        if not isinstance(raw_objs, list):
+            raw_objs = []
+        try:
+            objs_ok = normalize_scene_objects_for_save(root, pal, raw_objs)
+        except ValueError as e:
+            raise ValueError(f"Escena {sid!r}: {e}") from e
+        out.append({"id": sid, "palette": pal, "background_index": bg, "objects": objs_ok})
     if active_scene.strip() not in seen:
         raise ValueError(f"active_scene {active_scene!r} no coincide con ninguna escena.")
     return out
