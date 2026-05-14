@@ -1,8 +1,9 @@
 {
   "format_version": 1,
   "kind": "turtlestudio.scene",
-  "id": "main",
+  "id": "intro",
   "palette": "palettes/palette.txt",
+  "script": "intro",
   "bg_color_index": 29,
   "objects": [
     {

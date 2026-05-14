@@ -3,6 +3,7 @@
   "kind": "turtlestudio.scene",
   "id": "scene_3",
   "palette": "palettes/palette.txt",
+  "script": "scene_3",
   "bg_color_index": 1,
   "objects": []
 }

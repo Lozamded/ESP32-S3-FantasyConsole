@@ -1,6 +1,6 @@
 TURTLECART:0
-ENTRY:main.lua
-INITIAL_SCENE:main
+ENTRY:scripts/global.lua
+INITIAL_SCENE:intro
 PALETTE:
 #000000
 #242424
@@ -38,14 +38,15 @@ PALETTE:
 {
   "format_version": 1,
   "kind": "turtlestudio.cart_bundle",
-  "entry": "main.lua",
+  "entry": "scripts/global.lua",
   "transparent_index": 31,
-  "active_scene": "main",
+  "active_scene": "intro",
   "scenes": [
     {
-      "id": "main",
+      "id": "intro",
       "palette": "palettes/palette.txt",
       "background_index": 29,
+      "script": "intro",
       "objects": [
         {
           "id": "bloque",
@@ -103,6 +104,7 @@ PALETTE:
       "id": "scene_1",
       "palette": "palettes/palette.txt",
       "background_index": 28,
+      "script": "scene_1",
       "objects": [
         {
           "id": "bloque",
@@ -120,12 +122,14 @@ PALETTE:
       "id": "scene_2",
       "palette": "palettes/palette.txt",
       "background_index": 12,
+      "script": "scene_2",
       "objects": []
     },
     {
       "id": "scene_3",
       "palette": "palettes/palette.txt",
       "background_index": 1,
+      "script": "scene_3",
       "objects": []
     }
   ],
@@ -185,58 +189,9 @@ PALETTE:
   }
 }
 ---END---
----FILE:main.lua---
--- Punto de entrada: dibuja la escena "main" del bundle (studio/project_bundle.json).
--- Espacio escena 264x198, (0,0) abajo-izquierda, Y hacia arriba (spec/scene-v0.md).
--- splot: usa spix si el firmware lo expone; si no, pix() con yfb = (H-1) - sy.
-
-local ytop = H - 1
-local function splot(sx, sy, c)
-  local f = spix
-  if f then
-    f(sx, sy, c)
-  else
-    pix(sx, ytop - sy, c)
-  end
-end
-
-local function sfill(x0, y0, w, h, c)
-  for sy = y0, y0 + h - 1 do
-    for sx = x0, x0 + w - 1 do
-      splot(sx, sy, c)
-    end
-  end
-end
-
--- Fondo escena main (background_index 29)
-cls(29)
-
--- Objetos: posicion (x,y) = esquina inferior izquierda; colores = render solid_palette_index
-local bloque_c, bloque_w, bloque_h = 26, 16, 16
-local box_c, box_w, box_h = 4, 16, 24
-
-local placements = {
-  { "bloque", 12, 20 },
-  { "box", 78, 56 },
-  { "box", 92, 38 },
-  { "bloque", 201, 22 },
-  { "bloque", 95, 122 },
-  { "box", 142, 75 },
-  { "box", 198, 135 },
-  { "box", 126, 31 },
-  { "bloque", 113, 18 },
-  { "bloque", 138, 53 },
-}
-
-for i = 1, #placements do
-  local id, x, y = placements[i][1], placements[i][2], placements[i][3]
-  if id == "bloque" then
-    sfill(x, y, bloque_w, bloque_h, bloque_c)
-  else
-    sfill(x, y, box_w, box_h, box_c)
-  end
-end
-
-print("Escena main dibujada")
-flip()
+---FILE:scripts/global.lua---
+-- ENTRY del proyecto demo1 (scripts/global.lua)
+-- El firmware dibuja INITIAL_SCENE en C++ despues de este script y luego hace flip().
+-- Evita cls()/flip() aqui salvo que quieras pisar la escena (p. ej. transicion).
+print("demo1 global")
 ---END---

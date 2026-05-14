@@ -31,16 +31,24 @@ STANDARD_SUBDIRS: tuple[str, ...] = (
     "audio/music",
 )
 
-DEFAULT_ENTRY = "scripts/main.lua"
+DEFAULT_ENTRY = "scripts/global.lua"
 # Paleta de ejemplo (misma que el firmware por defecto); una linea #RRGGBB por color.
 DEFAULT_EXAMPLE_PALETTE_REL = "palettes/palette.txt"
 
 _SCENE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
-_STARTER_MAIN_LUA = """-- Punto de entrada del proyecto (ENTRY al exportar cartucho)
-print("Hola desde TurtleStudio")
+# Reservado: el cartucho de arranque se llama convencionalmente main.turtlecart (no usar como id de escena).
+RESERVED_SCENE_IDS: frozenset[str] = frozenset({"main"})
+DEFAULT_INITIAL_SCENE_ID = "intro"
+
+_STARTER_GLOBAL_LUA = """-- ENTRY por defecto: scripts/global.lua (arranque del cartucho)
+print("Hola desde TurtleStudio (global)")
 cls(1)
 flip()
+"""
+
+_STARTER_SCENE_INTRO_LUA = f"""-- Script de la primera escena (scripts/{DEFAULT_INITIAL_SCENE_ID}.lua)
+-- Titulo, logo, menu, etc. El ENTRY del cartucho es scripts/global.lua (solo en proyecto TurtleStudio).
 """
 
 
@@ -135,6 +143,8 @@ class SceneEntry:
     palette: str
     background_index: int
     objects: tuple[SceneObjectPlacement, ...] = ()
+    # Stem del Lua de escena: scripts/<script>.lua (por defecto = id de escena).
+    script: str = DEFAULT_INITIAL_SCENE_ID
 
 
 @dataclass(frozen=True)
@@ -151,6 +161,65 @@ class ProjectInfo:
 
 def _posix_relpath(s: str) -> str:
     return s.replace("\\", "/")
+
+
+def assert_scene_id_allowed(sid: str) -> str:
+    """Ids reservados (p. ej. main = nombre del cartucho principal main.turtlecart)."""
+    s = sid.strip()
+    if not s:
+        raise ValueError("id de escena vacio.")
+    if s in RESERVED_SCENE_IDS:
+        raise ValueError(
+            f"id de escena {s!r} reservado (el cartucho de arranque se exporta como main.turtlecart). "
+            f"Usa p. ej. {DEFAULT_INITIAL_SCENE_ID!r} para la primera escena."
+        )
+    return s
+
+
+def validate_scene_script_stem(raw: Any, *, fallback_scene_id: str) -> str:
+    """Stem del archivo scripts/<stem>.lua; mismas reglas que id de escena."""
+    if isinstance(raw, str) and raw.strip():
+        stem = raw.strip()
+        if not _SCENE_ID_RE.match(stem):
+            raise ValueError(
+                f"script invalido {stem!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
+            )
+        return stem
+    sid = fallback_scene_id.strip()
+    if not _SCENE_ID_RE.match(sid):
+        raise ValueError(f"id de escena invalido para script por defecto: {sid!r}")
+    return sid
+
+
+def scene_lua_relpath(stem: str) -> str:
+    s = validate_scene_script_stem(stem, fallback_scene_id=stem)
+    return f"scripts/{s}.lua"
+
+
+def ordered_lua_relpaths_for_project(entry: str, scenes: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Orden estable: ENTRY primero, luego un Lua por escena (sin duplicar rutas)."""
+    ent = _posix_relpath(entry.strip())
+    seen: set[str] = {ent}
+    out: list[str] = [ent]
+    for row in scenes:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("id", "")).strip() or DEFAULT_INITIAL_SCENE_ID
+        stem = validate_scene_script_stem(row.get("script"), fallback_scene_id=sid)
+        rel = scene_lua_relpath(stem)
+        if rel not in seen:
+            seen.add(rel)
+            out.append(rel)
+    return tuple(out)
+
+
+def _safe_lua_write_relpath(root: Path, rel: str) -> Path:
+    rel = _posix_relpath(rel.strip())
+    if not rel or ".." in rel.split("/"):
+        raise ValueError(f"Ruta Lua invalida: {rel!r}")
+    abs_p = (root / rel).resolve()
+    abs_p.relative_to(root.resolve())
+    return abs_p
 
 
 def _clamp_transparent_index(raw: Any) -> int:
@@ -191,7 +260,7 @@ def _parse_scenes_from_manifest(
 ) -> tuple[tuple[SceneEntry, ...], str, int]:
     """
     Devuelve (scenes, active_scene, transparent_index).
-    Si falta `scenes` en el JSON, sintetiza una escena `main` con la paleta por defecto del proyecto.
+    Si falta `scenes` en el JSON, sintetiza una escena `intro` con la paleta por defecto del proyecto.
     """
     ti = _clamp_transparent_index(data.get("transparent_index", DEFAULT_TRANSPARENT_INDEX))
     raw_scenes = data.get("scenes")
@@ -202,10 +271,11 @@ def _parse_scenes_from_manifest(
         pal_path = (project_root / fb).resolve()
         scenes_list = [
             SceneEntry(
-                id="main",
+                id=DEFAULT_INITIAL_SCENE_ID,
                 palette=fb,
                 background_index=_scene_background_index(1, pal_path=pal_path),
                 objects=parse_scene_objects_raw([]),
+                script=DEFAULT_INITIAL_SCENE_ID,
             )
         ]
     else:
@@ -225,6 +295,7 @@ def _parse_scenes_from_manifest(
                 raise ValueError(
                     f"id de escena invalido {sid!r}: usa letras, numeros, _ y - (max 64 chars)."
                 )
+            assert_scene_id_allowed(sid)
             pal_path = (project_root / pal).resolve()
             try:
                 pal_path.relative_to(project_root.resolve())
@@ -240,8 +311,15 @@ def _parse_scenes_from_manifest(
             if not isinstance(raw_objs, list):
                 raw_objs = []
             o_placements = parse_scene_objects_raw(raw_objs)
+            stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
             parsed.append(
-                SceneEntry(id=sid, palette=pal, background_index=bg, objects=o_placements)
+                SceneEntry(
+                    id=sid,
+                    palette=pal,
+                    background_index=bg,
+                    objects=o_placements,
+                    script=stem,
+                )
             )
         scenes_list = parsed
 
@@ -345,11 +423,13 @@ def _write_mirror_scene_json_files(
         sid = str(row["id"])
         pal = _posix_relpath(str(row["palette"]))
         path = sd / f"{sid}.json"
+        stem = str(row.get("script") or sid).strip() or sid
         payload: dict[str, Any] = {
             "format_version": SCENE_JSON_VERSION,
             "kind": SCENE_JSON_KIND,
             "id": sid,
             "palette": pal,
+            "script": stem,
             "bg_color_index": int(row.get("background_index", row.get("bg_color_index", 1))),
             "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
         }
@@ -381,13 +461,14 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
         "default_palette": DEFAULT_EXAMPLE_PALETTE_REL,
         "scenes": [
             {
-                "id": "main",
+                "id": DEFAULT_INITIAL_SCENE_ID,
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
+                "script": DEFAULT_INITIAL_SCENE_ID,
                 "objects": [],
             },
         ],
-        "active_scene": "main",
+        "active_scene": DEFAULT_INITIAL_SCENE_ID,
         "transparent_index": DEFAULT_TRANSPARENT_INDEX,
     }
 
@@ -411,8 +492,9 @@ def create_project(
     force: bool = False,
 ) -> Path:
     """
-    Crea la carpeta del proyecto, subcarpetas estandar, `turtlestudio.json` y `scripts/main.lua`
-    de arranque si no existia.
+    Crea la carpeta del proyecto, subcarpetas estandar, `turtlestudio.json`,
+    `scripts/global.lua` (ENTRY; se embebe en main.turtlecart al exportar) y
+    `scripts/<primera escena>.lua` (por defecto intro) si no existian.
 
     Si ya existe el manifest y `force` es False, lanza ValueError.
     Devuelve la ruta al manifest escrito.
@@ -433,11 +515,17 @@ def create_project(
     data = _default_manifest_dict(name)
     mp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
-    main_rel = Path(DEFAULT_ENTRY)
-    main_path = root / main_rel
-    if not main_path.is_file():
-        main_path.parent.mkdir(parents=True, exist_ok=True)
-        main_path.write_text(_STARTER_MAIN_LUA, encoding="utf-8", newline="\n")
+    global_rel = Path(DEFAULT_ENTRY)
+    global_path = root / global_rel
+    if not global_path.is_file():
+        global_path.parent.mkdir(parents=True, exist_ok=True)
+        global_path.write_text(_STARTER_GLOBAL_LUA, encoding="utf-8", newline="\n")
+
+    intro_rel = Path("scripts") / f"{DEFAULT_INITIAL_SCENE_ID}.lua"
+    intro_path = root / intro_rel
+    if not intro_path.is_file():
+        intro_path.parent.mkdir(parents=True, exist_ok=True)
+        intro_path.write_text(_STARTER_SCENE_INTRO_LUA, encoding="utf-8", newline="\n")
 
     _write_mirror_scene_json_files(root, list(data["scenes"]))
 
@@ -487,6 +575,7 @@ def _normalize_scenes_for_save(
             raise ValueError(
                 f"id de escena invalido {sid!r}: usa letras, numeros, _ y - (max 64 chars)."
             )
+        assert_scene_id_allowed(sid)
         pal = _posix_relpath(pal)
         if sid in seen:
             raise ValueError(f"Id de escena duplicado: {sid}")
@@ -516,7 +605,16 @@ def _normalize_scenes_for_save(
             objs_ok = normalize_scene_objects_for_save(root, pal, raw_objs)
         except ValueError as e:
             raise ValueError(f"Escena {sid!r}: {e}") from e
-        out.append({"id": sid, "palette": pal, "background_index": bg, "objects": objs_ok})
+        stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
+        out.append(
+            {
+                "id": sid,
+                "palette": pal,
+                "background_index": bg,
+                "script": stem,
+                "objects": objs_ok,
+            }
+        )
     if active_scene.strip() not in seen:
         raise ValueError(f"active_scene {active_scene!r} no coincide con ninguna escena.")
     return out
@@ -525,30 +623,39 @@ def _normalize_scenes_for_save(
 def save_project(
     project_root: Path,
     *,
-    main_lua_body: str,
+    lua_files: dict[str, str],
     palette_file: Path | None = None,
     scenes: list[dict[str, Any]] | None = None,
     active_scene: str | None = None,
     transparent_index: int | None = None,
 ) -> tuple[Path, bool, bool]:
     """
-    Guarda el Lua de `entry`, actualiza default_palette segun `palette_file`,
+    Guarda uno o mas .lua bajo el proyecto (claves = rutas relativas POSIX),
+    actualiza default_palette segun `palette_file`,
     y escribe `scenes`, `active_scene`, `transparent_index` en el manifest.
 
-    Devuelve (ruta_script, manifest_paleta_cambio, manifest_escenas_cambio).
+    `lua_files` debe incluir al menos el script manifest `entry`.
+
+    Devuelve (ruta_script_entry, manifest_paleta_cambio, manifest_escenas_cambio).
     """
     root = project_root.expanduser().resolve()
     data = _read_manifest_for_save(root)
     entry = data["entry"]
-    entry_path = (root / entry).resolve()
-    try:
-        entry_path.relative_to(root)
-    except ValueError as e:
-        raise ValueError(f"ENTRY invalido (sale del proyecto): {entry}") from e
+    entry_key = _posix_relpath(entry.strip())
+    if entry_key not in lua_files:
+        raise ValueError(
+            f"lua_files debe incluir la clave del ENTRY del manifest ({entry_key!r})."
+        )
+    entry_path = _safe_lua_write_relpath(root, entry_key)
 
-    body = main_lua_body.replace("\r\n", "\n").replace("\r", "\n")
-    entry_path.parent.mkdir(parents=True, exist_ok=True)
-    entry_path.write_text(body, encoding="utf-8", newline="\n")
+    for rel_raw, text in lua_files.items():
+        rel = _posix_relpath(str(rel_raw).strip())
+        if not rel:
+            continue
+        path = _safe_lua_write_relpath(root, rel)
+        body = str(text).replace("\r\n", "\n").replace("\r", "\n")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(body, encoding="utf-8", newline="\n")
 
     pal_changed = False
     old_pal = data.get("default_palette")
@@ -567,7 +674,7 @@ def save_project(
         except ValueError:
             pass
 
-    norm_scenes: list[dict[str, str]] | None = None
+    norm_scenes: list[dict[str, Any]] | None = None
     ti_final = _clamp_transparent_index(data.get("transparent_index"))
     scene_meta_changed = False
     if scenes is not None and active_scene is not None:

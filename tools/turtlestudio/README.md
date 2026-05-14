@@ -38,10 +38,11 @@ PYTHONPATH=src python3 -m turtlestudio gui
 
 - Espacio de escena y coordenadas: ver `spec/scene-v0.md` (264×198, origen abajo-izquierda, Y hacia arriba).
 - Formato cartucho: `spec/turtlecart-v0.md`.
+- Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` y su texto forma el **ENTRY** dentro del cartucho inicial **`main.turtlecart`** (salida por defecto `build/main.turtlecart`). En ese cart solo se embebe ademas `studio/project_bundle.json`; los Lua por escena (`scripts/<stem>.lua`) se editan en el proyecto y pueden distribuirse en **otros archivos** al empaquetar. La primera escena suele llamarse **`intro`**; el id **`main` esta reservado** (nombre del cartucho).
 
 ## Comando `gui` (Dear PyGui)
 
-Ventana minima: panel izquierdo (rutas de salida del `.turtlecart`, ENTRY, paleta opcional, **Importar** un `.lua` desde disco al editor, **Exportar**). Panel derecho: canvas 264×198 ×2 (**Mostrar rejilla**, combo **Color de fondo** + muestrario) y un **editor de Lua** con plantilla por defecto. **Exportar** genera el cartucho desde el texto del editor (no exige que exista un `main.lua` en disco); si activas **Guardar .lua junto al cartucho**, se escribe el mismo script como `.lua` en la carpeta del `.turtlecart` (nombre según ENTRY, p. ej. `main.lua`). El comando `build` por CLI sigue leyendo un archivo Lua desde ruta.
+Ventana minima: panel izquierdo (rutas de salida del `.turtlecart`, ENTRY, paleta opcional, **Importar** un `.lua` desde disco al editor, **Exportar**). Panel derecho: canvas 264×198 ×2 (**Mostrar rejilla**, combo **Color de fondo** + muestrario) y un **editor de Lua** con plantilla por defecto. **Exportar** escribe el cartucho con el ENTRY embebido; la casilla opcional **Volcar ENTRY como .lua** guarda una copia del mismo script al lado del `.turtlecart` (solo si la activas). El comando `build` por CLI sigue leyendo un archivo Lua desde ruta.
 
 ```bash
 cd tools/turtlestudio

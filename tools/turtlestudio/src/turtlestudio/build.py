@@ -26,6 +26,23 @@ _PALETTE_LINE = re.compile(
     r"^#?(?:[0-9a-fA-F]{6}|[0-9a-fA-F]{3})$",
 )
 
+# Mismo criterio que ids de escena en turtlestudio.json (ver project.py).
+_INITIAL_SCENE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+# Coincide con la primera escena por defecto en TurtleStudio (id reservado `main` = main.turtlecart).
+DEFAULT_EXPORT_INITIAL_SCENE_ID = "intro"
+
+
+def normalize_export_initial_scene(raw: str | None) -> str:
+    """Id de escena inicial para cartucho; vacio -> intro."""
+    s = (raw or "").strip()
+    if not s:
+        return DEFAULT_EXPORT_INITIAL_SCENE_ID
+    if not _INITIAL_SCENE_ID_RE.match(s):
+        raise ValueError(
+            f"Escena inicial invalida {s!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
+        )
+    return s
+
 
 def load_palette_lines(path: Path) -> list[str]:
     """Lee lineas #RRGGBB o #RGB (con o sin #). Ignora vacias y lineas tipo comentario."""
@@ -124,6 +141,7 @@ def assemble_turtlecart_v0(
     main_lua_body: str,
     palette_hex_lines: list[str] | None = None,
     embedded_files: Sequence[tuple[str, str]] | None = None,
+    initial_scene: str | None = None,
 ) -> str:
     """
     Genera el texto completo de un .turtlecart v0.
@@ -132,8 +150,11 @@ def assemble_turtlecart_v0(
     embedded_files: lista de (ruta POSIX dentro del cartucho, texto UTF-8).
     Se insertan antes del bloque ---FILE:ENTRY--- (orden conservado).
     La seccion PALETTE: termina en el primer ---FILE: (spec v0).
+
+    initial_scene: linea INITIAL_SCENE: (id de escena; por defecto intro).
     """
     entry = _normalize_entry_path(entry_relpath)
+    scene_id = normalize_export_initial_scene(initial_scene)
     body = main_lua_body.replace("\r\n", "\n").replace("\r", "\n")
     if _END_MARKER in body:
         warnings.warn(
@@ -144,6 +165,7 @@ def assemble_turtlecart_v0(
     parts: list[str] = [
         "TURTLECART:" + _CART_VERSION,
         f"ENTRY:{entry}",
+        f"INITIAL_SCENE:{scene_id}",
     ]
     if palette_hex_lines:
         parts.append("PALETTE:")
@@ -175,8 +197,11 @@ def collect_studio_bundle_files(
     entry_relpath: str,
 ) -> list[tuple[str, str]]:
     """
-    Recopila datos del proyecto en disco + escenas del editor para embebido en .turtlecart.
-    Devuelve una lista con un unico archivo studio/project_bundle.json.
+    Datos del proyecto para el cartucho inicial `main.turtlecart`.
+
+    Solo embebe `studio/project_bundle.json` (escenas, objetos, sprites).
+    El Lua de arranque va en el bloque ENTRY (p. ej. contenido de `scripts/global.lua`);
+    los Lua de escena **no** se duplican aqui: pueden distribuirse en otros archivos / cartuchos.
     """
     from turtlestudio.objects import read_object_file
     from turtlestudio.sprites import read_sprite_file
@@ -228,7 +253,7 @@ def collect_studio_bundle_files(
         "kind": "turtlestudio.cart_bundle",
         "entry": entry,
         "transparent_index": ti,
-        "active_scene": (active_scene.strip() or "main"),
+        "active_scene": (active_scene.strip() or DEFAULT_EXPORT_INITIAL_SCENE_ID),
         "scenes": scenes,
         "objects": objects_map,
         "sprites": sprites_map,
@@ -243,14 +268,16 @@ def write_turtlecart_content(
     entry_relpath: str,
     main_lua_body: str,
     palette_path: Path | None = None,
-    write_lua_file: bool = True,
+    write_lua_file: bool = False,
     embedded_files: Sequence[tuple[str, str]] | None = None,
+    initial_scene: str | None = None,
 ) -> tuple[Path, Path | None]:
     """
     Escribe el .turtlecart desde el cuerpo Lua en memoria.
     Si write_lua_file es True, tambien escribe el .lua junto al cartucho (mismo directorio),
-    con el nombre base de entry_relpath (p. ej. main.lua).
+    con el nombre base de entry_relpath (p. ej. global.lua); por defecto False (el ENTRY solo va embebido).
     embedded_files: archivos extra embebidos antes del Lua ENTRY (p. ej. datos TurtleStudio).
+    initial_scene: id para la linea INITIAL_SCENE: (por defecto intro).
     Devuelve (ruta_cartucho, ruta_lua_escrita o None).
     """
     entry = _normalize_entry_path(entry_relpath)
@@ -263,6 +290,7 @@ def write_turtlecart_content(
         main_lua_body=main_lua_body,
         palette_hex_lines=palette_lines,
         embedded_files=embedded_files,
+        initial_scene=initial_scene,
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding="utf-8", newline="\n")

@@ -38,12 +38,29 @@ struct lua_State;
 #endif
 #endif
 
-// Si rojo/azul salen cruzados, cambia a true.
+// LovyanGFX Panel_LCD: MADCTL |= (rgb_order ? MAD_RGB : MAD_BGR). false = BGR (habitual ILI9488).
 #ifndef TURTLE_ILI9488_RGB_ORDER
 #define TURTLE_ILI9488_RGB_ORDER false
+#endif
+
+// pushImage(uint16_t*): con swap false Lovyan interpreta el buffer como swap565_t, no como RGB565
+// canonico. Nuestra paleta usa rgb565() estandar -> activar swap bytes en el LGFX_Device.
+#ifndef TURTLE_LGFX_SWAP565_BYTES
+#define TURTLE_LGFX_SWAP565_BYTES 1
+#endif
+
+// INVON (video invertido). Muchos ILI9488 SPI / IPS se ven bien asi; 0 si tu panel ya va derecho.
+#ifndef TURTLE_PANEL_INVERT
+#define TURTLE_PANEL_INVERT 1
 #endif
 
 void turtle_gpu_init(void);
 void turtle_gpu_register_lua(struct lua_State* L);
 void turtle_gpu_palette_reset_default(void);
 int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len);
+
+/** Indices 0..31; rellena framebuffer con indice de color. */
+void turtle_gpu_cls(uint8_t color_index);
+/** Rectangulo en coordenadas de escena (spec/scene-v0.md): esquina inferior izquierda (x0,y0), Y hacia arriba. */
+void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index);
+void turtle_gpu_flip(void);

@@ -3,14 +3,14 @@
 Primer objetivo del proyecto:
 - Definir un formato minimo de cartucho `.turtlecart`.
 - Leer ese cartucho desde microSD en ESP32-S3.
-- Confirmar por Serial que se leyo un "hola mundo" desde `main.lua`.
+- Confirmar por Serial que se leyo el script del cartucho (ENTRY, p. ej. `scripts/global.lua` en el proyecto).
 
 ## Estado actual (MVP v0 + Lua 5.4 + framebuffer)
 
 - Formato: texto plano `.turtlecart` con secciones.
 - Firmware: sketch Arduino que:
   - monta SD por SPI (con reintentos),
-  - abre `/demo.turtlecart`,
+  - abre `/main.turtlecart` en la SD (si no esta, `/demo.turtlecart`),
   - extrae el script indicado en `ENTRY`,
   - **ejecuta Lua 5.4** con `print` a Serial,
   - API de consola: **`cls(i)`**, **`pix(x,y,i)`** (raster), **`spix(sx,sy,i)`** (escena, ver `spec/scene-v0.md`), **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (264x198, 32 indices de color).
@@ -36,14 +36,14 @@ Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rell
 - `tools/turtlestudio/`: **TurtleStudio** (Python) — CLI y utilidades para armar `.turtlecart`.
 - `spec/scene-v0.md`: escena canonica (264×198) y sistema de coordenadas.
 - `spec/turtlecart-v0.md`: especificacion inicial.
-- `cart/demo.turtlecart`: cartucho de prueba.
+- `cart/demo.turtlecart`: cartucho de prueba (fallback en firmware si falta `main.turtlecart` en la SD).
 - `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).
 - `firmware/TurtleReader/`: firmware principal (`TurtleReader.ino` + `turtle_gpu.*`).
 
 ## Prueba rapida
 
 1. Instala la libreria **Lua54** como arriba.
-2. Copia `cart/demo.turtlecart` a la raiz de la microSD con nombre `demo.turtlecart`.
+2. Copia a la **raiz** de la microSD un cartucho llamado **`main.turtlecart`** (p. ej. el que exporta TurtleStudio en `build/main.turtlecart`). Si no lo tienes, puedes copiar `cart/demo.turtlecart` como **`demo.turtlecart`** y el firmware lo cargara como respaldo.
 3. Ajusta pines SPI/SD en el sketch segun tu cableado (alimenta el lector SD a **3V3**).
 4. Flashea el sketch en tu ESP32-S3.
 5. Abre monitor serial a `115200`.

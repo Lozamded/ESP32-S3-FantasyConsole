@@ -14,35 +14,39 @@ No hay limite fijo en la especificacion: el tamano lo marcan la **microSD**, el 
 
 ```txt
 TURTLECART:0
-ENTRY:main.lua
+ENTRY:scripts/global.lua
+INITIAL_SCENE:intro
 PALETTE:
 #RRGGBB
 #RRGGBB
 ...
----FILE:main.lua---
+---FILE:scripts/global.lua---
 print("hola")
 ---END---
 ```
 
 `PALETTE:` es **opcional**. Si falta, el firmware usa una paleta por defecto.
 
+En TurtleStudio el arranque se edita como `scripts/global.lua` en el proyecto y se exporta convencionalmente al cartucho inicial **`main.turtlecart`**: el `ENTRY:` en el archivo es la ruta del bloque embebido de ese script (p. ej. `scripts/global.lua`). Opcionalmente el mismo cartucho incluye `studio/project_bundle.json` con escenas, objetos y sprites; **no** incluye por defecto los Lua de cada escena (pueden ir en otros archivos).
+
 ## Reglas v0
 
 1. Primera linea exacta: `TURTLECART:0`
 2. Linea: `ENTRY:<ruta>` (archivo embebido que se ejecuta como Lua).
-3. Opcional: bloque `PALETTE:` **en su propia linea**, seguido de **una linea por color**:
+3. Opcional: linea `INITIAL_SCENE:<id>` — escena de arranque para datos embebidos / runtime (misma convencion que ids de escena en `turtlestudio.json`). Si falta, herramientas y firmware pueden asumir **`intro`**. El id de escena **`main` esta reservado** (nombre convencional del cartucho principal `main.turtlecart` en TurtleStudio; no debe usarse como `id` de escena en el manifest).
+4. Opcional: bloque `PALETTE:` **en su propia linea**, seguido de **una linea por color**:
    - Formato recomendado: `#RRGGBB` (hex, mayusculas o minusculas).
    - Tambien aceptado: `#RGB` (se expande a `#RRGGBB` duplicando cada nibble).
    - Lineas vacias se ignoran; lineas invalidas se saltan.
    - Puedes poner **mas de 32 lineas** en el archivo; el runtime actual solo aplica las **primeras 32 entradas validas** a los indices `0..31` de `pix`/`cls`. El resto se ignora (reserva para futuras versiones o herramientas).
    - Si hay **menos de 32** colores validos, los indices faltantes se rellenan con `#000000`.
    - El bloque de paleta termina donde empieza la primera linea `---FILE:` (debe haber al menos un archivo embebido despues en el cartucho normal).
-4. Contenido de archivos embebidos entre:
+5. Contenido de archivos embebidos entre:
    - inicio: `---FILE:<ruta>---`
    - fin: `---END---`
-5. Debe existir el archivo indicado en `ENTRY`.
+6. Debe existir el archivo indicado en `ENTRY`.
 
-Orden recomendado: `TURTLECART:` → `ENTRY:` → `PALETTE:` (si hay) → `---FILE:...---` ...
+Orden recomendado: `TURTLECART:` → `ENTRY:` → `INITIAL_SCENE:` → `PALETTE:` (si hay) → `---FILE:...---` ...
 
 ## Escena y coordenadas
 
@@ -52,7 +56,8 @@ El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scen
 
 - Cargar el cartucho desde SD.
 - Aplicar paleta opcional antes de ejecutar el script.
-- Extraer el archivo indicado en `ENTRY` (p. ej. `main.lua`).
+- Extraer el archivo indicado en `ENTRY` (p. ej. `scripts/global.lua`).
+- Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (rectangulos `solid_palette_index`, fondo `background_index`) antes de ejecutar el `ENTRY`.
 - Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
   - `print` → Serial
   - `cls(color)`, `pix(x,y,color)` (framebuffer), **`spix(sx,sy,color)`** (escena: abajo-izquierda, Y arriba), `flip()` → framebuffer 264×198 (**32 indices** de color)

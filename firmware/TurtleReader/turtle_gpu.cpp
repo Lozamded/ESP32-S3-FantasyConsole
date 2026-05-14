@@ -159,7 +159,7 @@ class TurtleDisplay : public lgfx::LGFX_Device {
       cfg.offset_y = 0;
       cfg.offset_rotation = 0;
       cfg.readable = false;
-      cfg.invert = false;
+      cfg.invert = (TURTLE_PANEL_INVERT != 0);
       cfg.rgb_order = TURTLE_ILI9488_RGB_ORDER;
       cfg.dlen_16bit = false;
       cfg.bus_shared = false;
@@ -175,6 +175,9 @@ static bool s_display_ok = false;
 static void turtle_display_begin(void) {
   s_display.init();
   s_display.setRotation(TURTLE_PANEL_ROTATION);
+#if TURTLE_LGFX_SWAP565_BYTES
+  s_display.setSwapBytes(true);
+#endif
   s_display.fillScreen(0x0000u);
   s_display_ok = true;
 }
@@ -228,9 +231,39 @@ static void plot_fb(int xfb, int yfb, uint8_t ci) {
   s_fb[yfb * kW + xfb] = ci;
 }
 
+static uint8_t clamp_color_index(uint8_t ci) {
+  if (ci >= kNColors) {
+    return static_cast<uint8_t>(kNColors - 1);
+  }
+  return ci;
+}
+
+void turtle_gpu_cls(uint8_t color_index) {
+  memset(s_fb, clamp_color_index(color_index), sizeof(s_fb));
+}
+
+void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const uint8_t ci = clamp_color_index(color_index);
+  for (int sy = y0; sy < y0 + h; ++sy) {
+    const int yfb = (kH - 1) - sy;
+    if (yfb < 0 || yfb >= kH) {
+      continue;
+    }
+    for (int sx = x0; sx < x0 + w; ++sx) {
+      plot_fb(sx, yfb, ci);
+    }
+  }
+}
+
+void turtle_gpu_flip(void) {
+  turtle_fb_flush_to_display();
+}
+
 static int l_cls(lua_State* L) {
-  const uint8_t ci = lua_color_index(L, 1);
-  memset(s_fb, ci, sizeof(s_fb));
+  turtle_gpu_cls(lua_color_index(L, 1));
   return 0;
 }
 
@@ -258,7 +291,7 @@ static int l_spix(lua_State* L) {
 
 static int l_flip(lua_State* L) {
   (void)L;
-  turtle_fb_flush_to_display();
+  turtle_gpu_flip();
   return 0;
 }
 

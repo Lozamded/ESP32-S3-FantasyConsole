@@ -9,18 +9,24 @@ from typing import Any
 from turtlestudio.build import (
     collect_studio_bundle_files,
     load_palette_rgb01_for_preview,
+    normalize_export_initial_scene,
     write_turtlecart_content,
 )
 from turtlestudio.project import (
+    DEFAULT_ENTRY,
     DEFAULT_EXAMPLE_PALETTE_REL,
+    DEFAULT_INITIAL_SCENE_ID,
     DEFAULT_TRANSPARENT_INDEX,
     ProjectInfo,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
     create_project,
     load_project,
+    ordered_lua_relpaths_for_project,
     parse_scene_objects_raw,
     save_project,
+    scene_lua_relpath,
+    validate_scene_script_stem,
 )
 from turtlestudio.objects import (
     list_object_ids_for_scene_palette,
@@ -52,11 +58,11 @@ _LEFT_TEXT_WRAP = _LEFT_FORM_WIDTH
 _SPRITE_SWATCH_WRAP = 420
 
 
-_DEFAULT_LUA = '''-- Script ENTRY (se embebe en el .turtlecart)
+_DEFAULT_LUA = """-- ENTRY por defecto (scripts/global.lua en un proyecto)
 print("TurtleStudio")
 cls(1)
 flip()
-'''
+"""
 
 
 def _solid_rgba_float(width: int, height: int, r: float, g: float, b: float) -> list[float]:
@@ -287,8 +293,11 @@ def run_gui() -> int:
         "sprite_palette_hexes": [],
         "project_root": None,
         "scenes": [],
-        "active_scene_id": "main",
+        "active_scene_id": DEFAULT_INITIAL_SCENE_ID,
         "pending_scene_object_id": None,
+        "lua_sources": {},
+        "lua_edit_rel": "",
+        "project_entry": DEFAULT_ENTRY,
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -498,6 +507,96 @@ def run_gui() -> int:
     def _commit_background_for_active_scene() -> None:
         _commit_background_for_scene_id(str(state.get("active_scene_id") or ""))
 
+    def _flush_lua_buffer_to_state() -> None:
+        rel = str(state.get("lua_edit_rel") or "").strip()
+        if not rel:
+            return
+        if not isinstance(state.get("lua_sources"), dict):
+            state["lua_sources"] = {}
+        lua_m: dict[str, str] = state["lua_sources"]  # type: ignore[assignment]
+        lua_m[rel] = str(dpg.get_value("ts_lua_source"))
+
+    def _ensure_lua_slot(rel: str, text: str | None = None) -> None:
+        if not isinstance(state.get("lua_sources"), dict):
+            state["lua_sources"] = {}
+        lua_m: dict[str, str] = state["lua_sources"]  # type: ignore[assignment]
+        if rel not in lua_m:
+            lua_m[rel] = text if text is not None else f"-- {rel}\n"
+
+    def _rebuild_lua_file_combo() -> None:
+        if not dpg.does_item_exist("ts_lua_file_combo"):
+            return
+        root = state.get("project_root")
+        labels: list[str]
+        if not isinstance(root, Path):
+            labels = ["(sin proyecto)"]
+        else:
+            entry = str(state.get("project_entry") or DEFAULT_ENTRY)
+            scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
+            labels = list(ordered_lua_relpaths_for_project(entry, scenes_list))
+        dpg.configure_item("ts_lua_file_combo", items=labels)
+        cur = str(state.get("lua_edit_rel") or "")
+        pick = cur if cur in labels else (labels[0] if labels else "")
+        dpg.set_value("ts_lua_file_combo", pick)
+        dpg.configure_item("ts_lua_file_combo", enabled=bool(labels) and labels[0] != "(sin proyecto)")
+
+    def _load_project_lua_buffers(root: Path) -> None:
+        entry = str(state.get("project_entry") or DEFAULT_ENTRY)
+        scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
+        rels = ordered_lua_relpaths_for_project(entry, scenes_list)
+        src: dict[str, str] = {}
+        for rel in rels:
+            p = root / rel
+            if p.is_file():
+                try:
+                    src[rel] = p.read_text(encoding="utf-8")
+                except OSError:
+                    src[rel] = f"-- (no se pudo leer) {rel}\n"
+            else:
+                src[rel] = f"-- {rel}\n"
+        state["lua_sources"] = src
+        state["lua_edit_rel"] = entry
+        dpg.set_value("ts_lua_source", src.get(entry, ""))
+        _rebuild_lua_file_combo()
+
+    def _commit_script_stem_from_widget(sid: str) -> None:
+        if not sid or not dpg.does_item_exist("ts_scene_script"):
+            return
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list):
+            return
+        raw = str(dpg.get_value("ts_scene_script")).strip()
+        try:
+            stem = validate_scene_script_stem(raw if raw else None, fallback_scene_id=sid)
+        except ValueError as e:
+            prev = dpg.get_value("ts_log") or ""
+            dpg.set_value("ts_log", prev + f"Escena script: {e}\n")
+            row = next((x for x in scenes if x.get("id") == sid), None)
+            if row is not None:
+                dpg.set_value(
+                    "ts_scene_script",
+                    str(row.get("script", row.get("id", ""))),
+                )
+            return
+        for row in scenes:
+            if row.get("id") == sid:
+                row["script"] = stem
+                rel = scene_lua_relpath(stem)
+                _ensure_lua_slot(rel)
+                break
+
+    def on_lua_file_combo(_sender: object, app_data: object) -> None:
+        new_sel = str(app_data).strip() if app_data is not None else ""
+        if not new_sel or new_sel.startswith("("):
+            return
+        _flush_lua_buffer_to_state()
+        state["lua_edit_rel"] = new_sel
+        src = state.get("lua_sources")
+        body = ""
+        if isinstance(src, dict):
+            body = str(src.get(new_sel, ""))
+        dpg.set_value("ts_lua_source", body)
+
     def _update_color_swatch(r: float, g: float, b: float) -> None:
         r8 = max(0, min(255, int(round(r * 255.0))))
         g8 = max(0, min(255, int(round(g * 255.0))))
@@ -553,6 +652,7 @@ def run_gui() -> int:
         for tag in (
             "ts_scene_combo",
             "ts_scene_pal",
+            "ts_scene_script",
             "ts_btn_new_scene",
             "ts_scene_obj_compat_list",
             "ts_btn_scene_obj_add",
@@ -577,7 +677,10 @@ def run_gui() -> int:
             "ts_btn_obj_save",
             "ts_btn_obj_refresh",
         ):
-            dpg.configure_item(tag, enabled=enabled)
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=enabled)
+        if dpg.does_item_exist("ts_lua_file_combo"):
+            dpg.configure_item("ts_lua_file_combo", enabled=enabled)
 
     def _refresh_sprite_file_list() -> None:
         root = state.get("project_root")
@@ -681,7 +784,7 @@ def run_gui() -> int:
         else:
             _set_project_save_enabled(False)
             state["scenes"] = []
-            state["active_scene_id"] = "main"
+            state["active_scene_id"] = DEFAULT_INITIAL_SCENE_ID
             dpg.configure_item("ts_scene_combo", items=["—"])
             dpg.set_value("ts_scene_combo", "—")
             dpg.set_value("ts_scene_pal", "")
@@ -695,6 +798,15 @@ def run_gui() -> int:
             _update_sprite_color_swatch()
             dpg.set_value("ts_obj_id", "")
             dpg.set_value("ts_obj_name", "")
+            if dpg.does_item_exist("ts_export_initial_scene"):
+                dpg.set_value("ts_export_initial_scene", DEFAULT_INITIAL_SCENE_ID)
+            state["lua_sources"] = {}
+            state["lua_edit_rel"] = ""
+            state["project_entry"] = DEFAULT_ENTRY
+            if dpg.does_item_exist("ts_scene_script"):
+                dpg.set_value("ts_scene_script", "")
+                dpg.configure_item("ts_scene_script", enabled=False)
+            _rebuild_lua_file_combo()
         _refresh_sprite_file_list()
         _refresh_object_file_list()
         if isinstance(state.get("project_root"), Path):
@@ -772,6 +884,12 @@ def run_gui() -> int:
         palette_reload_from_path()
         row = next((x for x in scenes if x["id"] == active), scenes[0])
         _set_bg_index_widgets(int(row.get("background_index", 1)))
+        if dpg.does_item_exist("ts_scene_script"):
+            dpg.set_value("ts_scene_script", str(row.get("script", row.get("id", ""))))
+            dpg.configure_item(
+                "ts_scene_script",
+                enabled=isinstance(state.get("project_root"), Path),
+            )
         refresh_canvas_texture()
         _refresh_scene_object_lists()
         _clear_pending_scene_placement()
@@ -951,17 +1069,22 @@ def run_gui() -> int:
                 "id": s.id,
                 "palette": s.palette,
                 "background_index": s.background_index,
+                "script": s.script,
                 "objects": [{"id": o.id, "x": o.x, "y": o.y} for o in s.objects],
             }
             for s in info.scenes
         ]
         state["active_scene_id"] = info.active_scene
+        state["project_entry"] = info.entry
         dpg.set_value("ts_transparent_idx", info.transparent_index)
+        if dpg.does_item_exist("ts_export_initial_scene"):
+            dpg.set_value("ts_export_initial_scene", info.active_scene)
         _refresh_scene_widgets()
 
     def on_scene_combo(_sender: object, _app_data: object) -> None:
         _clear_pending_scene_placement()
         old_active = str(state.get("active_scene_id") or "")
+        _commit_script_stem_from_widget(old_active)
         _commit_palette_for_scene_id(old_active)
         _commit_background_for_scene_id(old_active)
         new_id = str(dpg.get_value("ts_scene_combo")).strip()
@@ -980,6 +1103,7 @@ def run_gui() -> int:
         if not isinstance(state.get("project_root"), Path):
             return
         cur = str(state.get("active_scene_id") or "")
+        _commit_script_stem_from_widget(cur)
         _commit_palette_for_scene_id(cur)
         _commit_background_for_scene_id(cur)
         scenes = state.get("scenes")
@@ -996,11 +1120,15 @@ def run_gui() -> int:
                 "id": new_id,
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
+                "script": new_id,
                 "objects": [],
             }
         )
         state["active_scene_id"] = new_id
         _refresh_scene_widgets()
+        rel = scene_lua_relpath(new_id)
+        _ensure_lua_slot(rel)
+        _rebuild_lua_file_combo()
         prev_log = dpg.get_value("ts_log") or ""
         dpg.set_value(
             "ts_log",
@@ -1050,20 +1178,29 @@ def run_gui() -> int:
             dpg.set_value("ts_log", f"No se pudo leer: {e}\n")
             return
         dpg.set_value("ts_lua_source", text)
+        rel_ed = str(state.get("lua_edit_rel") or "").strip()
+        lua_m = state.get("lua_sources")
+        if rel_ed and isinstance(lua_m, dict):
+            lua_m[rel_ed] = text
         if not str(dpg.get_value("ts_entry")).strip():
-            dpg.set_value("ts_entry", p.name)
+            pr = state.get("project_root")
+            if isinstance(pr, Path):
+                try:
+                    rel_try = p.resolve().relative_to(pr.resolve())
+                    dpg.set_value("ts_entry", rel_try.as_posix())
+                except ValueError:
+                    dpg.set_value("ts_entry", p.name)
+            else:
+                dpg.set_value("ts_entry", p.name)
         dpg.set_value("ts_log", f"Cargado en editor: {p} ({len(text)} caracteres)\n")
 
     def on_export(_sender: object, _app_data: object) -> None:
-        body = str(dpg.get_value("ts_lua_source")).strip()
+        _flush_lua_buffer_to_state()
         out_s = dpg.get_value("ts_out_path").strip()
         pal_s = dpg.get_value("ts_pal_path").strip()
-        entry_s = dpg.get_value("ts_entry").strip()
+        entry_s = str(dpg.get_value("ts_entry")).strip().replace("\\", "/")
         write_lua = bool(dpg.get_value("ts_write_lua_file"))
 
-        if not body:
-            dpg.set_value("ts_log", "Escribe algo en el script Lua (panel derecho) o importa un .lua.\n")
-            return
         if not out_s:
             dpg.set_value("ts_log", "Indica la ruta de salida del .turtlecart.\n")
             return
@@ -1074,12 +1211,45 @@ def run_gui() -> int:
             dpg.set_value("ts_log", f"No existe la paleta: {pal}\n")
             return
 
-        entry = entry_s if entry_s else "main.lua"
+        entry = entry_s if entry_s else DEFAULT_ENTRY
         if not entry.lower().endswith(".lua"):
             entry = entry + ".lua"
 
-        embedded: list[tuple[str, str]] | None = None
         root = state.get("project_root")
+        body = ""
+        if isinstance(root, Path):
+            src = state.get("lua_sources")
+            if isinstance(src, dict) and entry in src:
+                body = str(src[entry]).strip()
+            elif (root / entry).is_file():
+                try:
+                    body = (root / entry).read_text(encoding="utf-8").strip()
+                except OSError:
+                    body = ""
+        if not body:
+            body = str(dpg.get_value("ts_lua_source")).strip()
+        if not body:
+            dpg.set_value(
+                "ts_log",
+                "Escribe algo en el script Lua (panel derecho) o importa un .lua.\n",
+            )
+            return
+
+        try:
+            raw_init = (
+                str(dpg.get_value("ts_export_initial_scene"))
+                if dpg.does_item_exist("ts_export_initial_scene")
+                else ""
+            )
+            initial_scene_s = normalize_export_initial_scene(raw_init)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Exportar: {e}\n",
+            )
+            return
+
+        embedded: list[tuple[str, str]] | None = None
         if isinstance(root, Path):
             scenes = state.get("scenes")
             if not isinstance(scenes, list):
@@ -1088,12 +1258,11 @@ def run_gui() -> int:
                 ti = int(dpg.get_value("ts_transparent_idx"))
             except (TypeError, ValueError):
                 ti = DEFAULT_TRANSPARENT_INDEX
-            active = str(state.get("active_scene_id") or "main")
             try:
                 embedded = collect_studio_bundle_files(
                     root,
                     scenes=scenes,
-                    active_scene=active,
+                    active_scene=initial_scene_s,
                     transparent_index=ti,
                     entry_relpath=entry,
                 )
@@ -1113,11 +1282,14 @@ def run_gui() -> int:
                 palette_path=pal,
                 write_lua_file=write_lua,
                 embedded_files=embedded,
+                initial_scene=initial_scene_s,
             )
             n = cart_path.stat().st_size
-            extra = ""
+            extra = f"  INITIAL_SCENE:{initial_scene_s}\n"
             if embedded:
-                extra = "  Embebido: studio/project_bundle.json (escenas, objetos, sprites).\n"
+                extra += (
+                    "  Embebido: studio/project_bundle.json (Lua de escenas no van aqui; solo ENTRY + bundle).\n"
+                )
             if lua_path is not None:
                 m = lua_path.stat().st_size
                 dpg.set_value(
@@ -1178,13 +1350,21 @@ def run_gui() -> int:
                 + "No hay proyecto abierto. Proyecto > Cambiar proyecto…\n",
             )
             return
-        _commit_palette_for_scene_id(str(state.get("active_scene_id") or ""))
+        _flush_lua_buffer_to_state()
+        active = str(state.get("active_scene_id") or "").strip()
+        _commit_script_stem_from_widget(active)
+        _commit_palette_for_scene_id(active)
         _commit_background_for_active_scene()
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
         pal: Path | None = Path(pal_s).expanduser() if pal_s else None
-        body = str(dpg.get_value("ts_lua_source"))
         scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
-        active = str(state.get("active_scene_id") or "").strip()
+        entry = str(state.get("project_entry") or DEFAULT_ENTRY)
+        rels = ordered_lua_relpaths_for_project(entry, scenes_list)
+        raw_lua = state.get("lua_sources")
+        lua_m: dict[str, str] = dict(raw_lua) if isinstance(raw_lua, dict) else {}
+        lua_files: dict[str, str] = {}
+        for rel in rels:
+            lua_files[rel] = lua_m.get(rel, "")
         try:
             ti = int(dpg.get_value("ts_transparent_idx"))
         except (TypeError, ValueError):
@@ -1192,7 +1372,7 @@ def run_gui() -> int:
         try:
             script_path, pal_updated, scenes_updated = save_project(
                 root,
-                main_lua_body=body,
+                lua_files=lua_files,
                 palette_file=pal,
                 scenes=scenes_list,
                 active_scene=active,
@@ -1204,6 +1384,7 @@ def run_gui() -> int:
         except OSError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Error de escritura: {e}\n")
             return
+        _rebuild_lua_file_combo()
         bits = []
         if pal_updated:
             bits.append("default_palette")
@@ -1539,22 +1720,20 @@ def run_gui() -> int:
             dpg.set_value("ts_startup_log", f"Error de escritura: {e}\n")
             return
         state["project_root"] = root.resolve()
-        try:
-            body = (root / "scripts" / "main.lua").read_text(encoding="utf-8")
-        except OSError:
-            body = _DEFAULT_LUA
-        dpg.set_value("ts_lua_source", body)
-        dpg.set_value("ts_entry", "main.lua")
         pr = root.resolve()
         try:
             pinfo = load_project(pr)
-        except ValueError:
-            pinfo = None
-        if pinfo is not None:
-            _apply_project_scenes_from_info(pinfo)
+        except ValueError as e:
+            dpg.set_value("ts_startup_log", f"Proyecto creado pero no se pudo leer el manifest: {e}\n")
+            return
+        _apply_project_scenes_from_info(pinfo)
+        _load_project_lua_buffers(pr)
+        dpg.set_value("ts_entry", pinfo.entry)
+        if pinfo.default_palette:
+            dpg.set_value("ts_pal_path", str((pr / pinfo.default_palette).resolve()))
         else:
-            dpg.set_value("ts_pal_path", str(pr / DEFAULT_EXAMPLE_PALETTE_REL))
-        out_default = pr / "build" / "cart.turtlecart"
+            dpg.set_value("ts_pal_path", "")
+        out_default = pr / "build" / "main.turtlecart"
         dpg.set_value("ts_out_path", str(out_default))
         enter_main_editor(log_append=f"Proyecto creado.\n  {mp}\n")
 
@@ -1570,15 +1749,10 @@ def run_gui() -> int:
             dpg.set_value("ts_startup_log", f"{e}\n")
             return
         state["project_root"] = info.root
-        try:
-            body = (info.root / info.entry).read_text(encoding="utf-8")
-        except OSError as e:
-            dpg.set_value("ts_startup_log", f"No se pudo leer el entry: {e}\n")
-            return
-        dpg.set_value("ts_lua_source", body)
-        dpg.set_value("ts_entry", Path(info.entry).name)
         _apply_project_scenes_from_info(info)
-        out_default = info.root / "build" / "cart.turtlecart"
+        _load_project_lua_buffers(info.root)
+        dpg.set_value("ts_entry", info.entry)
+        out_default = info.root / "build" / "main.turtlecart"
         dpg.set_value("ts_out_path", str(out_default))
         enter_main_editor(
             log_append=(
@@ -1591,11 +1765,14 @@ def run_gui() -> int:
     def on_startup_skip_project(_sender: object, _app_data: object) -> None:
         state["project_root"] = None
         state["scenes"] = []
-        state["active_scene_id"] = "main"
+        state["active_scene_id"] = DEFAULT_INITIAL_SCENE_ID
+        state["lua_sources"] = {}
+        state["lua_edit_rel"] = ""
+        state["project_entry"] = DEFAULT_ENTRY
         dpg.set_value("ts_lua_source", _DEFAULT_LUA)
-        dpg.set_value("ts_entry", "main.lua")
+        dpg.set_value("ts_entry", DEFAULT_ENTRY)
         dpg.set_value("ts_pal_path", "")
-        dpg.set_value("ts_out_path", "cart.turtlecart")
+        dpg.set_value("ts_out_path", "main.turtlecart")
         dpg.set_value("ts_transparent_idx", DEFAULT_TRANSPARENT_INDEX)
         enter_main_editor(log_append="Modo sin proyecto (solo editor y export manual).\n")
 
@@ -1676,7 +1853,9 @@ def run_gui() -> int:
                     with dpg.child_window(width=_LEFT_PANEL_WIDTH, border=True):
                         dpg.add_text("Cartucho / paleta")
                         dpg.add_text(
-                            "El Lua se edita a la derecha.",
+                            "El ENTRY (global) se define en Exportar; al exportar main.turtlecart va en el "
+                            "bloque principal. El bundle solo incluye datos de estudio; los Lua de escena "
+                            "se editan aqui y pueden ir en otros archivos al empaquetar.",
                             wrap=_LEFT_TEXT_WRAP,
                         )
                         dpg.add_input_text(
@@ -1685,32 +1864,6 @@ def run_gui() -> int:
                             width=_LEFT_FORM_WIDTH,
                             hint="palette.txt",
                             use_internal_label=False,
-                        )
-                        dpg.add_input_text(
-                            tag="ts_out_path",
-                            label="Salida .turtlecart",
-                            width=_LEFT_FORM_WIDTH,
-                            default_value="cart.turtlecart",
-                            use_internal_label=False,
-                        )
-                        dpg.add_input_text(
-                            tag="ts_entry",
-                            label="ENTRY (nombre en cartucho)",
-                            width=_LEFT_FORM_WIDTH,
-                            default_value="main.lua",
-                            hint="p. ej. main.lua",
-                            use_internal_label=False,
-                        )
-                        dpg.add_checkbox(
-                            tag="ts_write_lua_file",
-                            label="Guardar .lua junto al cartucho",
-                            default_value=True,
-                            use_internal_label=False,
-                        )
-                        dpg.add_text(
-                            "Con proyecto abierto, el .turtlecart tambien embebe "
-                            "studio/project_bundle.json (Lua del editor + escenas, objetos y sprites usados).",
-                            wrap=_LEFT_TEXT_WRAP,
                         )
                         dpg.add_separator()
                         dpg.add_text("Importar script (opc.)")
@@ -1733,19 +1886,14 @@ def run_gui() -> int:
                             callback=on_save_project,
                             enabled=False,
                         )
-                        dpg.add_button(
-                            label="Exportar .turtlecart",
-                            width=_LEFT_FORM_WIDTH,
-                            callback=on_export,
-                        )
                         dpg.add_separator()
                         dpg.add_text("Escenas (proyecto)")
                         dpg.add_combo(
                             tag="ts_scene_combo",
                             label="Escena activa",
                             width=_LEFT_FORM_WIDTH,
-                            items=["main"],
-                            default_value="main",
+                            items=[DEFAULT_INITIAL_SCENE_ID],
+                            default_value=DEFAULT_INITIAL_SCENE_ID,
                             callback=on_scene_combo,
                             enabled=False,
                             use_internal_label=False,
@@ -1755,6 +1903,14 @@ def run_gui() -> int:
                             label="Paleta (ruta relativa al proyecto)",
                             width=_LEFT_FORM_WIDTH,
                             hint="palettes/palette.txt",
+                            enabled=False,
+                            use_internal_label=False,
+                        )
+                        dpg.add_input_text(
+                            tag="ts_scene_script",
+                            label="Lua escena (stem → scripts/<stem>.lua)",
+                            width=_LEFT_FORM_WIDTH,
+                            hint=DEFAULT_INITIAL_SCENE_ID,
                             enabled=False,
                             use_internal_label=False,
                         )
@@ -1917,7 +2073,22 @@ def run_gui() -> int:
                                 dpg.add_item_clicked_handler(callback=on_canvas_preview_click)
                             dpg.bind_item_handler_registry("ts_canvas_image", "ts_canvas_click_reg")
                         dpg.add_separator()
-                        dpg.add_text("Script Lua (ENTRY del cartucho; mas adelante: objetos = varios .lua)")
+                        dpg.add_text(
+                            "Scripts Lua: global = ENTRY en main.turtlecart; cada escena tiene su stem "
+                            "(arriba). Los Lua de escena no se meten en main.turtlecart al exportar. "
+                            "El desplegable elige que archivo editas.",
+                            wrap=400,
+                        )
+                        dpg.add_combo(
+                            tag="ts_lua_file_combo",
+                            label="Archivo Lua",
+                            width=400,
+                            items=["(sin proyecto)"],
+                            default_value="(sin proyecto)",
+                            callback=on_lua_file_combo,
+                            enabled=False,
+                            use_internal_label=False,
+                        )
                         dpg.add_input_text(
                             tag="ts_lua_source",
                             label="",
@@ -1927,6 +2098,55 @@ def run_gui() -> int:
                             default_value=_DEFAULT_LUA,
                             tracked=True,
                         )
+
+            with dpg.tab(label="Exportar"):
+                dpg.add_text(
+                    "El cuerpo del ENTRY es el del archivo indicado (memoria del editor si el proyecto "
+                    "esta abierto). La paleta embebida usa la ruta Paleta (opc.) del Editor.",
+                    wrap=520,
+                )
+                dpg.add_spacer(height=6)
+                dpg.add_input_text(
+                    tag="ts_out_path",
+                    label="Salida .turtlecart",
+                    width=480,
+                    default_value="main.turtlecart",
+                    use_internal_label=False,
+                )
+                dpg.add_input_text(
+                    tag="ts_entry",
+                    label="ENTRY (ruta en el cartucho)",
+                    width=480,
+                    default_value="scripts/global.lua",
+                    hint="p. ej. scripts/global.lua",
+                    use_internal_label=False,
+                )
+                dpg.add_checkbox(
+                    tag="ts_write_lua_file",
+                    label="Volcar ENTRY como .lua junto al cartucho (opcional, depuracion)",
+                    default_value=False,
+                    use_internal_label=False,
+                )
+                dpg.add_input_text(
+                    tag="ts_export_initial_scene",
+                    label="Escena inicial (cartucho)",
+                    width=480,
+                    default_value=DEFAULT_INITIAL_SCENE_ID,
+                    hint="id de escena (p. ej. intro). El id 'main' esta reservado (cartucho principal main.turtlecart).",
+                    use_internal_label=False,
+                )
+                dpg.add_text(
+                    "Con proyecto abierto: solo se embebe studio/project_bundle.json. "
+                    "El ENTRY (global) va en el bloque principal; los Lua de escena siguen en el proyecto "
+                    "y pueden empaquetarse aparte (otros .turtlecart o archivos).",
+                    wrap=520,
+                )
+                dpg.add_separator()
+                dpg.add_button(
+                    label="Exportar .turtlecart",
+                    width=280,
+                    callback=on_export,
+                )
 
             with dpg.tab(label="Sprites"):
                 dpg.add_text(

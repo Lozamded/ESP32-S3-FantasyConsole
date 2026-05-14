@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "turtle_gpu.h"
+#include "turtle_scene.h"
 
 extern "C" {
 #include <lua.h>
@@ -191,11 +192,21 @@ void setup() {
 
   Serial.println("microSD montada");
 
-  const String cartContent = readFile("/demo.turtlecart");
+  // Preferencia: cartucho de arranque exportado por TurtleStudio (`build/main.turtlecart` -> raiz SD).
+  // Compatibilidad: si no existe, intentar el demo antiguo.
+  String cartContent = readFile("/main.turtlecart");
+  const char* cartPath = "/main.turtlecart";
   if (cartContent.length() == 0) {
-    Serial.println("Error: no se pudo leer /demo.turtlecart");
+    cartContent = readFile("/demo.turtlecart");
+    cartPath = "/demo.turtlecart";
+  }
+  if (cartContent.length() == 0) {
+    Serial.println("Error: no se pudo leer /main.turtlecart ni /demo.turtlecart en la raiz de la SD");
     return;
   }
+
+  Serial.print("Cartucho SD: ");
+  Serial.println(cartPath);
 
   if (!cartContent.startsWith("TURTLECART:0")) {
     Serial.println("Error: header invalido (se esperaba TURTLECART:0)");
@@ -207,6 +218,12 @@ void setup() {
   if (entry.length() == 0) {
     Serial.println("Error: cartucho sin ENTRY");
     return;
+  }
+
+  String initialScene = getHeaderValue(cartContent, "INITIAL_SCENE:");
+  initialScene.trim();
+  if (initialScene.length() == 0) {
+    initialScene = "intro";
   }
 
   String mainLua = extractEmbeddedFile(cartContent, entry);
@@ -236,17 +253,38 @@ void setup() {
     Serial.println("Sin PALETTE: en cartucho; paleta por defecto (Genesis-like).");
   }
 
+  String bundleJson = extractEmbeddedFile(cartContent, "studio/project_bundle.json");
+  bundleJson.trim();
+
   Serial.println("TurtleCart cargado correctamente");
   Serial.print("ENTRY: ");
   Serial.println(entry);
-  Serial.println("Contenido de main.lua:");
+  Serial.print("INITIAL_SCENE: ");
+  Serial.println(initialScene);
+  Serial.println("Contenido del ENTRY:");
   Serial.println(mainLua);
 
   Serial.println("--- Lua ---");
-  if (!runCartEntryLua(mainLua, entry.c_str())) {
+  const bool lua_ok = runCartEntryLua(mainLua, entry.c_str());
+  if (!lua_ok) {
+    Serial.println("Lua fallo (revisa ENTRY / sintaxis).");
+    turtle_gpu_flip();
     return;
   }
   Serial.println("--- Lua termino sin error ---");
+
+  // Escena C++ despues del ENTRY: asi un cls()/flip() antiguo en el cartucho no deja la pantalla negra.
+  if (bundleJson.length() > 0) {
+    if (turtle_scene_draw_cart_bundle(bundleJson.c_str(), bundleJson.length(), initialScene.c_str())) {
+      Serial.println("Escena inicial (C++ desde bundle) aplicada tras Lua.");
+    } else {
+      Serial.println("Aviso: bundle presente pero escena C++ no aplicada.");
+    }
+  } else {
+    Serial.println("Sin studio/project_bundle.json: omitido dibujo de escena C++.");
+  }
+
+  turtle_gpu_flip();
 }
 
 void loop() {}
