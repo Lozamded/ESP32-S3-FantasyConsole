@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "Character",
+  "name": "box",
+  "sprite_id": "box"
+}
