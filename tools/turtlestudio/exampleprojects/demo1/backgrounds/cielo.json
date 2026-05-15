@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.background",
+  "id": "cielo",
+  "notes": "Ejemplo: relleno solido con la paleta de la escena",
+  "palette": "palettes/palette.txt",
+  "render": {
+    "mode": "solid_palette_index",
+    "palette_index": 15
+  }
+}

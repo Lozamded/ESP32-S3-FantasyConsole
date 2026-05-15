@@ -8,6 +8,29 @@
       "id": "intro",
       "palette": "palettes/palette.txt",
       "background_index": 29,
+      "background_layers": [
+        {
+          "enabled": true,
+          "color_index": 29,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        }
+      ],
+      "background": "cielo",
       "script": "intro",
       "objects": [
         {
@@ -42,11 +65,6 @@
         },
         {
           "id": "box",
-          "x": 198,
-          "y": 135
-        },
-        {
-          "id": "box",
           "x": 126,
           "y": 31
         },
@@ -59,6 +77,31 @@
           "id": "bloque",
           "x": 138,
           "y": 53
+        },
+        {
+          "id": "box",
+          "x": 47,
+          "y": 21
+        },
+        {
+          "id": "box",
+          "x": 32,
+          "y": 25
+        },
+        {
+          "id": "box",
+          "x": 39,
+          "y": 27
+        },
+        {
+          "id": "bloque",
+          "x": 35,
+          "y": 24
+        },
+        {
+          "id": "box",
+          "x": 240,
+          "y": 167
         }
       ]
     },
@@ -66,6 +109,29 @@
       "id": "scene_1",
       "palette": "palettes/palette.txt",
       "background_index": 28,
+      "background_layers": [
+        {
+          "enabled": true,
+          "color_index": 28,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        }
+      ],
+      "background": "",
       "script": "scene_1",
       "objects": [
         {
@@ -84,6 +150,29 @@
       "id": "scene_2",
       "palette": "palettes/palette.txt",
       "background_index": 12,
+      "background_layers": [
+        {
+          "enabled": true,
+          "color_index": 12,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        }
+      ],
+      "background": "",
       "script": "scene_2",
       "objects": []
     },
@@ -91,6 +180,29 @@
       "id": "scene_3",
       "palette": "palettes/palette.txt",
       "background_index": 1,
+      "background_layers": [
+        {
+          "enabled": true,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255
+        }
+      ],
+      "background": "",
       "script": "scene_3",
       "objects": []
     }

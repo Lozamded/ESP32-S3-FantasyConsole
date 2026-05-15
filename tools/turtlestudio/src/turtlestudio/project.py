@@ -64,6 +64,25 @@ def is_project_dir(project_root: Path) -> bool:
 SCENE_PIXEL_W = 264
 SCENE_PIXEL_H = 198
 
+BACKGROUND_LAYER_COUNT = 4
+
+
+@dataclass(frozen=True)
+class BackgroundLayer:
+    """Capa de fondo a pantalla completa (misma area que la escena). Indices en la paleta de la escena."""
+
+    enabled: bool
+    color_index: int
+    opacity: int  # 0..255 para mezcla en vista previa del estudio
+
+
+_DEFAULT_SCENE_BACKGROUND_LAYERS: tuple[BackgroundLayer, ...] = (
+    BackgroundLayer(True, 1, 255),
+    BackgroundLayer(False, 1, 255),
+    BackgroundLayer(False, 1, 255),
+    BackgroundLayer(False, 1, 255),
+)
+
 
 @dataclass(frozen=True)
 class SceneObjectPlacement:
@@ -145,6 +164,9 @@ class SceneEntry:
     objects: tuple[SceneObjectPlacement, ...] = ()
     # Stem del Lua de escena: scripts/<script>.lua (por defecto = id de escena).
     script: str = DEFAULT_INITIAL_SCENE_ID
+    background_layers: tuple[BackgroundLayer, ...] = _DEFAULT_SCENE_BACKGROUND_LAYERS
+    # Stem opcional: backgrounds/<stem>.json (misma paleta que la escena).
+    background: str = ""
 
 
 @dataclass(frozen=True)
@@ -252,6 +274,76 @@ def _scene_background_index(raw: Any, *, pal_path: Path) -> int:
     return max(0, min(n - 1, v))
 
 
+def clamp_palette_color_index(idx: int, *, n_colors: int) -> int:
+    n = max(1, min(32, int(n_colors)))
+    try:
+        v = int(idx)
+    except (TypeError, ValueError):
+        v = 0
+    return max(0, min(n - 1, v))
+
+
+def default_background_layers(fallback_flat_index: int) -> tuple[BackgroundLayer, ...]:
+    ci = clamp_palette_color_index(fallback_flat_index, n_colors=32)
+    return (
+        BackgroundLayer(True, ci, 255),
+        *(BackgroundLayer(False, 1, 255) for _ in range(BACKGROUND_LAYER_COUNT - 1)),
+    )
+
+
+def parse_background_layers(
+    raw: Any,
+    *,
+    legacy_flat_index: int,
+    n_colors: int,
+) -> tuple[BackgroundLayer, ...]:
+    """Cuatro capas de fondo a pantalla completa; si falta el array, se deriva de legacy_flat_index."""
+    fb = clamp_palette_color_index(legacy_flat_index, n_colors=n_colors)
+    if not isinstance(raw, list):
+        return default_background_layers(fb)
+    out: list[BackgroundLayer] = []
+    for i in range(BACKGROUND_LAYER_COUNT):
+        if i < len(raw) and isinstance(raw[i], dict):
+            d = raw[i]
+            if "enabled" in d:
+                en = bool(d.get("enabled"))
+            else:
+                en = i == 0
+            try:
+                ci = int(d.get("color_index", fb if i == 0 else 1))
+            except (TypeError, ValueError):
+                ci = fb if i == 0 else 1
+            ci = clamp_palette_color_index(ci, n_colors=n_colors)
+            try:
+                op = int(d.get("opacity", 255))
+            except (TypeError, ValueError):
+                op = 255
+            op = max(0, min(255, op))
+            out.append(BackgroundLayer(en, ci, op))
+        else:
+            out.append(BackgroundLayer(True, fb, 255) if i == 0 else BackgroundLayer(False, 1, 255))
+    return tuple(out)
+
+
+def firmware_background_index_from_layers(
+    layers: tuple[BackgroundLayer, ...],
+    *,
+    fallback: int,
+) -> int:
+    """Indice unico para cls() en firmware hasta que soporte mezcla por capas."""
+    fb = max(0, min(31, int(fallback)))
+    for ly in reversed(layers):
+        if ly.enabled and ly.opacity > 0:
+            return max(0, min(31, ly.color_index))
+    return fb
+
+
+def background_layers_to_json_list(layers: tuple[BackgroundLayer, ...]) -> list[dict[str, Any]]:
+    return [
+        {"enabled": ly.enabled, "color_index": ly.color_index, "opacity": ly.opacity} for ly in layers
+    ]
+
+
 def _parse_scenes_from_manifest(
     data: dict[str, Any],
     *,
@@ -269,16 +361,24 @@ def _parse_scenes_from_manifest(
     if not isinstance(raw_scenes, list) or len(raw_scenes) == 0:
         fb = _posix_relpath(pal_fallback)
         pal_path = (project_root / fb).resolve()
+        bg = _scene_background_index(1, pal_path=pal_path)
+        n_pal = _palette_n_colors(pal_path)
+        layers = parse_background_layers(None, legacy_flat_index=bg, n_colors=n_pal)
+        bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
         scenes_list = [
             SceneEntry(
                 id=DEFAULT_INITIAL_SCENE_ID,
                 palette=fb,
-                background_index=_scene_background_index(1, pal_path=pal_path),
+                background_index=bg_fw,
                 objects=parse_scene_objects_raw([]),
                 script=DEFAULT_INITIAL_SCENE_ID,
+                background_layers=layers,
+                background="",
             )
         ]
     else:
+        from turtlestudio.backgrounds import parse_scene_background_stem
+
         parsed: list[SceneEntry] = []
         for item in raw_scenes:
             if not isinstance(item, dict):
@@ -307,18 +407,33 @@ def _parse_scenes_from_manifest(
                 item.get("background_index", item.get("bg_color_index", 1)),
                 pal_path=pal_path,
             )
+            n_pal = _palette_n_colors(pal_path)
+            layers = parse_background_layers(
+                item.get("background_layers"),
+                legacy_flat_index=bg,
+                n_colors=n_pal,
+            )
+            bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
             raw_objs = item.get("objects", [])
             if not isinstance(raw_objs, list):
                 raw_objs = []
             o_placements = parse_scene_objects_raw(raw_objs)
             stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
+
+            bg_asset = parse_scene_background_stem(
+                project_root,
+                item.get("background", item.get("background_id", "")),
+                scene_palette_rel=pal,
+            )
             parsed.append(
                 SceneEntry(
                     id=sid,
                     palette=pal,
-                    background_index=bg,
+                    background_index=bg_fw,
                     objects=o_placements,
                     script=stem,
+                    background_layers=layers,
+                    background=bg_asset,
                 )
             )
         scenes_list = parsed
@@ -431,6 +546,10 @@ def _write_mirror_scene_json_files(
             "palette": pal,
             "script": stem,
             "bg_color_index": int(row.get("background_index", row.get("bg_color_index", 1))),
+            "background_layers": list(row["background_layers"])
+            if isinstance(row.get("background_layers"), list)
+            else background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
+            "background": str(row.get("background", "") or ""),
             "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
         }
         path.write_text(
@@ -464,6 +583,8 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
                 "id": DEFAULT_INITIAL_SCENE_ID,
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
+                "background_layers": background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
+                "background": "",
                 "script": DEFAULT_INITIAL_SCENE_ID,
                 "objects": [],
             },
@@ -564,6 +685,8 @@ def _normalize_scenes_for_save(
 ) -> list[dict[str, Any]]:
     if not scenes:
         raise ValueError("Debe existir al menos una escena.")
+    from turtlestudio.backgrounds import validate_scene_background_for_save
+
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
     for item in scenes:
@@ -588,16 +711,16 @@ def _normalize_scenes_for_save(
         if not pal_path.is_file():
             raise ValueError(f"Escena {sid!r}: no existe el archivo de paleta: {pal_path}")
         n = max(1, _palette_n_colors(pal_path))
-        try:
-            bg = int(
-                item.get(
-                    "background_index",
-                    item.get("bg_color_index", 1),
-                )
-            )
-        except (TypeError, ValueError):
-            bg = 1
-        bg = max(0, min(n - 1, bg))
+        bg = _scene_background_index(
+            item.get("background_index", item.get("bg_color_index", 1)),
+            pal_path=pal_path,
+        )
+        layers = parse_background_layers(
+            item.get("background_layers"),
+            legacy_flat_index=bg,
+            n_colors=n,
+        )
+        bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
         raw_objs = item.get("objects", [])
         if not isinstance(raw_objs, list):
             raw_objs = []
@@ -606,11 +729,18 @@ def _normalize_scenes_for_save(
         except ValueError as e:
             raise ValueError(f"Escena {sid!r}: {e}") from e
         stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
+        bg_saved = validate_scene_background_for_save(
+            root,
+            item.get("background", item.get("background_id", "")),
+            scene_palette_rel=pal,
+        )
         out.append(
             {
                 "id": sid,
                 "palette": pal,
-                "background_index": bg,
+                "background_index": bg_fw,
+                "background_layers": background_layers_to_json_list(layers),
+                "background": bg_saved,
                 "script": stem,
                 "objects": objs_ok,
             }

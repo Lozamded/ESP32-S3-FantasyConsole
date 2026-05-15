@@ -5,6 +5,29 @@
   "palette": "palettes/palette.txt",
   "script": "intro",
   "bg_color_index": 29,
+  "background_layers": [
+    {
+      "enabled": true,
+      "color_index": 29,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    }
+  ],
+  "background": "cielo",
   "objects": [
     {
       "id": "bloque",
@@ -38,11 +61,6 @@
     },
     {
       "id": "box",
-      "x": 198,
-      "y": 135
-    },
-    {
-      "id": "box",
       "x": 126,
       "y": 31
     },
@@ -55,6 +73,31 @@
       "id": "bloque",
       "x": 138,
       "y": 53
+    },
+    {
+      "id": "box",
+      "x": 47,
+      "y": 21
+    },
+    {
+      "id": "box",
+      "x": 32,
+      "y": 25
+    },
+    {
+      "id": "box",
+      "x": 39,
+      "y": 27
+    },
+    {
+      "id": "bloque",
+      "x": 35,
+      "y": 24
+    },
+    {
+      "id": "box",
+      "x": 240,
+      "y": 167
     }
   ]
 }

@@ -5,6 +5,29 @@
   "palette": "palettes/palette.txt",
   "script": "scene_1",
   "bg_color_index": 28,
+  "background_layers": [
+    {
+      "enabled": true,
+      "color_index": 28,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    },
+    {
+      "enabled": false,
+      "color_index": 1,
+      "opacity": 255
+    }
+  ],
+  "background": "",
   "objects": [
     {
       "id": "bloque",

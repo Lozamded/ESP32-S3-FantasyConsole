@@ -6,6 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from turtlestudio.backgrounds import (
+    list_background_stems_for_palette,
+    save_solid_background_json,
+)
 from turtlestudio.build import (
     collect_studio_bundle_files,
     load_palette_rgb01_for_preview,
@@ -13,6 +17,8 @@ from turtlestudio.build import (
     write_turtlecart_content,
 )
 from turtlestudio.project import (
+    BACKGROUND_LAYER_COUNT,
+    BackgroundLayer,
     DEFAULT_ENTRY,
     DEFAULT_EXAMPLE_PALETTE_REL,
     DEFAULT_INITIAL_SCENE_ID,
@@ -20,9 +26,13 @@ from turtlestudio.project import (
     ProjectInfo,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
+    background_layers_to_json_list,
     create_project,
+    default_background_layers,
+    firmware_background_index_from_layers,
     load_project,
     ordered_lua_relpaths_for_project,
+    parse_background_layers,
     parse_scene_objects_raw,
     save_project,
     scene_lua_relpath,
@@ -38,9 +48,13 @@ from turtlestudio.objects import (
 from turtlestudio.sprites import (
     list_sprite_json_stems,
     normalize_palette_rel,
+    normalize_palette_rows,
+    parse_palette_rows_image,
     read_sprite_file,
-    save_solid_sprite_json,
-    write_solid_sprite_json,
+    save_indexed_pixels_sprite_json,
+    solid_fill_indices,
+    sprite_is_indexed_pixels,
+    sprite_pixel_dimensions,
 )
 
 # Resolucion logica de consola (spec scene-v0; textura = raster Y hacia abajo)
@@ -76,6 +90,65 @@ def _solid_rgba_float(width: int, height: int, r: float, g: float, b: float) -> 
     return out
 
 
+def _composite_background_layers_rgba(
+    layers: tuple[BackgroundLayer, ...],
+    rgbs: list[tuple[float, float, float]],
+    fw: int,
+    fh: int,
+    *,
+    underlay_rgba: list[float] | None = None,
+) -> list[float]:
+    """Compone capas 0..3 de abajo a arriba; opacidad 0..255 solo en vista previa del estudio."""
+    if not rgbs:
+        return _solid_rgba_float(fw, fh, 0.06, 0.06, 0.08)
+    n = len(rgbs)
+    if underlay_rgba is not None and len(underlay_rgba) == fw * fh * 4:
+        out = list(underlay_rgba)
+    else:
+        out = _solid_rgba_float(fw, fh, 0.06, 0.06, 0.08)
+    for ly in layers:
+        if not ly.enabled or ly.opacity <= 0:
+            continue
+        a = ly.opacity / 255.0
+        ci = max(0, min(n - 1, ly.color_index))
+        r, g, b = rgbs[ci]
+        for i in range(0, fw * fh * 4, 4):
+            out[i] = out[i] * (1.0 - a) + r * a
+            out[i + 1] = out[i + 1] * (1.0 - a) + g * a
+            out[i + 2] = out[i + 2] * (1.0 - a) + b * a
+            out[i + 3] = 1.0
+    return out
+
+
+def _scene_background_asset_underlay(
+    row: dict[str, Any],
+    rgbs: list[tuple[float, float, float]],
+    fw: int,
+    fh: int,
+    project_root: Path,
+) -> list[float] | None:
+    """Relleno solido pantalla completa desde `backgrounds/<stem>.json` (v0), o None."""
+    from turtlestudio.backgrounds import scene_background_solid_palette_index
+
+    stem = str(row.get("background", "")).strip()
+    if not stem:
+        return None
+    pal = str(row.get("palette", "")).strip()
+    idx = scene_background_solid_palette_index(
+        project_root,
+        stem,
+        scene_palette_rel=pal,
+    )
+    if idx is None:
+        return None
+    n = len(rgbs)
+    if n <= 0:
+        return None
+    ci = max(0, min(n - 1, idx))
+    r, g, b = rgbs[ci]
+    return _solid_rgba_float(fw, fh, r, g, b)
+
+
 def _compose_preview_texture(
     base_rgba: list[float],
     width: int,
@@ -99,6 +172,43 @@ def _compose_preview_texture(
                 out[i + 2] = out[i + 2] * (1.0 - blend) + lb * blend
                 out[i + 3] = 1.0
     return out
+
+
+def _apply_grid_overlay_to_rgba(
+    base_rgba: list[float],
+    width: int,
+    height: int,
+    *,
+    step: int,
+    blend: float = 0.5,
+) -> list[float]:
+    """Lineas en multiples de step (>=1)."""
+    st = max(1, min(64, int(step)))
+    out = list(base_rgba)
+    lr, lg, lb = 0.18, 0.2, 0.28
+    b = max(0.0, min(1.0, float(blend)))
+    for y in range(height):
+        for x in range(width):
+            if (x % st == 0) or (y % st == 0):
+                i = (y * width + x) * 4
+                out[i] = out[i] * (1.0 - b) + lr * b
+                out[i + 1] = out[i + 1] * (1.0 - b) + lg * b
+                out[i + 2] = out[i + 2] * (1.0 - b) + lb * b
+                out[i + 3] = 1.0
+    return out
+
+
+def _apply_sprite_editor_grid_overlay(
+    base_rgba: list[float],
+    width: int,
+    height: int,
+    *,
+    grid_step: int,
+) -> list[float]:
+    """Rejilla con paso en px: 1 o multiplo de 4."""
+    st = _normalize_sprite_grid_step(grid_step)
+    blend = 0.35 if st == 1 else 0.45
+    return _apply_grid_overlay_to_rgba(base_rgba, width, height, step=st, blend=blend)
 
 
 def _blit_solid_rect_scene(
@@ -165,55 +275,170 @@ def _draw_anchor_cross_rgba(
             rgba[i + 3] = 1.0
 
 
-def _fallback_sprite_preview_rgb() -> tuple[int, int, float, float, float]:
-    return 8, 8, 0.42, 0.42, 0.48
+_SPRITE_EDITOR_TEX_TAG = "ts_sprite_edit_texture"
+_SPRITE_EDITOR_IMG_TAG = "ts_sprite_edit_image"
+_SPRITE_EDITOR_SCALE_DEFAULT = 4
+_SPRITE_EDITOR_GRID_STEP_DEFAULT = 8
+_SPRITE_EDITOR_GRID_STEP_MAX = 64
 
 
-def _resolve_object_sprite_preview_rgb(
+def _normalize_sprite_grid_step(v: object) -> int:
+    """1 px o multiplos de 4 (4, 8, 12, …)."""
+    try:
+        n = int(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return _SPRITE_EDITOR_GRID_STEP_DEFAULT
+    if n <= 1:
+        return 1
+    n = min(_SPRITE_EDITOR_GRID_STEP_MAX, n)
+    snapped = int(round(n / 4.0)) * 4
+    return max(4, snapped)
+# Textura fija (no borrar/recrear): evita segfault en DPG al cambiar de sprite.
+_SPRITE_EDITOR_TEX_MAX = 512
+_SPRITE_EDITOR_TEX_PAD_RGBA = (0.1, 0.1, 0.14, 1.0)
+
+
+def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
+    mx = float(_SPRITE_EDITOR_TEX_MAX)
+    return (max(0.0, min(1.0, pw / mx)), max(0.0, min(1.0, ph / mx)))
+
+
+def _scale_rgba_nearest(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+    scale: int,
+) -> tuple[list[float], int, int]:
+    """Escala entera por bloques (sin interpolacion); evita blur de DPG al ampliar."""
+    sc = max(1, int(scale))
+    if sc == 1 or pw <= 0 or ph <= 0:
+        return rgba, pw, ph
+    dw, dh = pw * sc, ph * sc
+    out = [0.0] * (dw * dh * 4)
+    for sy in range(ph):
+        for sx in range(pw):
+            si = (sy * pw + sx) * 4
+            px = (rgba[si], rgba[si + 1], rgba[si + 2], rgba[si + 3])
+            for dy in range(sc):
+                oy = sy * sc + dy
+                row_base = oy * dw * 4
+                for dx in range(sc):
+                    oi = row_base + (sx * sc + dx) * 4
+                    out[oi] = px[0]
+                    out[oi + 1] = px[1]
+                    out[oi + 2] = px[2]
+                    out[oi + 3] = px[3]
+    return out, dw, dh
+
+
+def _pack_sprite_rgba_into_tex_buffer(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+    *,
+    tex_w: int = _SPRITE_EDITOR_TEX_MAX,
+    tex_h: int = _SPRITE_EDITOR_TEX_MAX,
+) -> list[float]:
+    """Copia pw×ph al rincón superior izquierdo de una textura tex_w×tex_h."""
+    bg = _SPRITE_EDITOR_TEX_PAD_RGBA
+    out = [0.0] * (tex_w * tex_h * 4)
+    for y in range(tex_h):
+        for x in range(tex_w):
+            i = (y * tex_w + x) * 4
+            if x < pw and y < ph:
+                si = (y * pw + x) * 4
+                out[i] = rgba[si]
+                out[i + 1] = rgba[si + 1]
+                out[i + 2] = rgba[si + 2]
+                out[i + 3] = rgba[si + 3]
+            else:
+                out[i] = bg[0]
+                out[i + 1] = bg[1]
+                out[i + 2] = bg[2]
+                out[i + 3] = bg[3]
+    return out
+
+
+def _blit_indexed_rect_scene(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    sx0: int,
+    sy_bottom: int,
+    rows: list[list[int]],
+    rgbs: list[tuple[float, float, float]],
+) -> None:
+    """Ancla igual que rectangulo solido: (sx0, sy_bottom) esquina inferior izquierda del bbox."""
+    ph = len(rows)
+    pw = len(rows[0]) if rows else 0
+    n = max(1, len(rgbs))
+    for py in range(ph):
+        scene_y = sy_bottom + (ph - 1 - py)
+        row = rows[py] if py < len(rows) else []
+        for lx in range(pw):
+            scene_x = sx0 + lx
+            if scene_x < 0 or scene_x >= fw or scene_y < 0 or scene_y >= fh:
+                continue
+            try:
+                idx = int(row[lx]) if lx < len(row) else 0
+            except (TypeError, ValueError):
+                idx = 0
+            ci = max(0, min(n - 1, idx))
+            r, g, b = rgbs[ci]
+            ty = (fh - 1) - scene_y
+            tx = scene_x
+            i = (ty * fw + tx) * 4
+            rgba[i] = r
+            rgba[i + 1] = g
+            rgba[i + 2] = b
+            rgba[i + 3] = 1.0
+
+
+def _sprite_rows_to_rgba_float01(
+    rows: list[list[int]],
+    rgbs: list[tuple[float, float, float]],
+) -> list[float]:
+    """Textura DPG: fila 0 arriba."""
+    ph = len(rows)
+    pw = len(rows[0]) if rows else 0
+    n = max(1, len(rgbs))
+    out: list[float] = []
+    for py in range(ph):
+        row = rows[py] if py < len(rows) else []
+        for lx in range(pw):
+            try:
+                idx = int(row[lx]) if lx < len(row) else 0
+            except (TypeError, ValueError):
+                idx = 0
+            ci = max(0, min(n - 1, idx))
+            r, g, b = rgbs[ci]
+            out.extend((r, g, b, 1.0))
+    return out
+
+
+def _resolve_object_sprite_preview(
     project_root: Path,
     object_id: str,
-) -> tuple[int, int, float, float, float]:
-    """Tamano logico del sprite (solido v0) y color desde la paleta del sprite."""
+) -> dict[str, Any]:
+    """Vista previa en escena: solido o indexed_pixels + paleta del sprite."""
     oid = object_id.strip()
+    fb = {"mode": "solid", "pw": 8, "ph": 8, "rgb": (0.42, 0.42, 0.48)}
     if not oid:
-        return _fallback_sprite_preview_rgb()
+        return fb
     try:
         od = read_object_file(project_root, oid)
     except ValueError:
-        return _fallback_sprite_preview_rgb()
+        return fb
     spr = str(od.get("sprite_id", "")).strip()
     if not spr:
-        return _fallback_sprite_preview_rgb()
+        return fb
     try:
         sd = read_sprite_file(project_root, spr)
     except ValueError:
-        return _fallback_sprite_preview_rgb()
-    try:
-        cp = int(sd.get("cell_px", 8))
-    except (TypeError, ValueError):
-        cp = 8
-    cp = max(1, min(cp, 256))
-    try:
-        bw = int(sd.get("blocks_w", 1))
-        bh = int(sd.get("blocks_h", 1))
-    except (TypeError, ValueError):
-        bw, bh = 1, 1
-    bw = max(1, min(bw, 32))
-    bh = max(1, min(bh, 32))
-    try:
-        pw = int(sd.get("pixel_w", bw * cp))
-        ph = int(sd.get("pixel_h", bh * cp))
-    except (TypeError, ValueError):
-        pw, ph = bw * cp, bh * cp
-    pw = max(1, min(pw, SCENE_PIXEL_W))
-    ph = max(1, min(ph, SCENE_PIXEL_H))
-    pi = 0
-    render = sd.get("render")
-    if isinstance(render, dict):
-        try:
-            pi = int(render.get("palette_index", 0))
-        except (TypeError, ValueError):
-            pi = 0
+        return fb
+    _, pw0, ph0 = sprite_pixel_dimensions(sd)
+    pw = max(1, min(pw0, SCENE_PIXEL_W))
+    ph = max(1, min(ph0, SCENE_PIXEL_H))
     raw_pal = str(sd.get("palette", "")).strip()
     pal_file = None
     if raw_pal:
@@ -224,9 +449,20 @@ def _resolve_object_sprite_preview_rgb(
     rgbs, _ = load_palette_rgb01_for_preview(pal_file)
     if not rgbs:
         rgbs = [(0.5, 0.5, 0.5)]
+    if sprite_is_indexed_pixels(sd):
+        rows = parse_palette_rows_image(sd)
+        if rows:
+            return {"mode": "indexed", "pw": pw, "ph": ph, "rows": rows, "rgbs": rgbs}
+    pi = 0
+    render = sd.get("render")
+    if isinstance(render, dict):
+        try:
+            pi = int(render.get("palette_index", 0))
+        except (TypeError, ValueError):
+            pi = 0
     pi = max(0, min(len(rgbs) - 1, pi))
     r, g, b = rgbs[pi]
-    return pw, ph, r, g, b
+    return {"mode": "solid", "pw": pw, "ph": ph, "rgb": (r, g, b)}
 
 
 def _paint_scene_objects_preview(
@@ -238,7 +474,7 @@ def _paint_scene_objects_preview(
     *,
     cross_rgb: tuple[float, float, float],
 ) -> None:
-    """Compone rectangulos solidos del sprite v0 y una cruz en el ancla por instancia."""
+    """Compone sprites (solido o pixeles indexados) y una cruz en el ancla por instancia."""
     cr, cg, cb = cross_rgb
     for p in placements:
         try:
@@ -251,8 +487,22 @@ def _paint_scene_objects_preview(
             continue
         sx = max(0, min(SCENE_PIXEL_W - 1, sx))
         sy = max(0, min(SCENE_PIXEL_H - 1, sy))
-        pw, ph, pr, pg, pb = _resolve_object_sprite_preview_rgb(project_root, oid)
-        _blit_solid_rect_scene(rgba, fw, fh, sx, sy, pw, ph, pr, pg, pb)
+        info = _resolve_object_sprite_preview(project_root, oid)
+        if info.get("mode") == "indexed":
+            _blit_indexed_rect_scene(
+                rgba,
+                fw,
+                fh,
+                sx,
+                sy,
+                info["rows"],
+                info["rgbs"],
+            )
+        else:
+            pr, pg, pb = info["rgb"]
+            _blit_solid_rect_scene(
+                rgba, fw, fh, sx, sy, info["pw"], info["ph"], pr, pg, pb
+            )
         _draw_anchor_cross_rgba(rgba, fw, fh, sx, sy, cr, cg, cb)
 
 
@@ -298,6 +548,11 @@ def run_gui() -> int:
         "lua_sources": {},
         "lua_edit_rel": "",
         "project_entry": DEFAULT_ENTRY,
+        "edit_bg_layer_slot": 0,
+        "sprite_pixel_rows": None,
+        "sprite_edit_cell_px": 8,
+        "sprite_ui_silent": False,
+        "sprite_brush_index": 1,
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -382,8 +637,7 @@ def run_gui() -> int:
         if not isinstance(hexes, list) or idx < 0 or idx >= len(hexes):
             return
         _clipboard_push_hex(hexes, idx)
-        dpg.set_value("ts_sprite_color_idx", idx)
-        _update_sprite_color_swatch()
+        _set_sprite_brush_index(idx)
 
     def _rebuild_palette_swatches() -> None:
         gid = "ts_palette_swatches_group"
@@ -461,17 +715,100 @@ def run_gui() -> int:
             return 0
         return max(0, min(v, n - 1))
 
-    def parse_sprite_palette_index() -> int:
-        if not dpg.does_item_exist("ts_sprite_color_idx"):
-            return 0
-        try:
-            v = int(dpg.get_value("ts_sprite_color_idx"))
-        except (TypeError, ValueError):
-            v = 0
+    def _set_sprite_brush_index(idx: int) -> None:
         n = _palette_len_sprite()
         if n <= 0:
-            return 0
+            state["sprite_brush_index"] = max(0, int(idx))
+            return
+        state["sprite_brush_index"] = max(0, min(int(idx), n - 1))
+
+    def parse_sprite_palette_index() -> int:
+        """Indice de pincel (paleta del sprite); no el modo solido del JSON."""
+        try:
+            v = int(state.get("sprite_brush_index", 1))
+        except (TypeError, ValueError):
+            v = 1
+        n = _palette_len_sprite()
+        if n <= 0:
+            return max(0, v)
         return max(0, min(v, n - 1))
+
+    def _palette_n_for_background() -> int:
+        hexes = state.get("hexes")
+        if isinstance(hexes, list) and hexes:
+            return len(hexes)
+        n = _palette_len_canvas()
+        return max(1, n)
+
+    def _parse_layer_slot_value(v: object) -> int:
+        if isinstance(v, int):
+            return max(0, min(BACKGROUND_LAYER_COUNT - 1, v))
+        s = str(v).strip()
+        if s.isdigit():
+            return max(0, min(BACKGROUND_LAYER_COUNT - 1, int(s)))
+        return 0
+
+    def _normalize_row_background_layers_inplace(row: dict[str, Any]) -> None:
+        n = _palette_n_for_background()
+        try:
+            bg = int(row.get("background_index", 1))
+        except (TypeError, ValueError):
+            bg = 1
+        tpl = parse_background_layers(
+            row.get("background_layers"),
+            legacy_flat_index=bg,
+            n_colors=n,
+        )
+        row["background_index"] = firmware_background_index_from_layers(tpl, fallback=bg)
+        row["background_layers"] = background_layers_to_json_list(tpl)
+
+    def _commit_widgets_to_background_row_for_slot(row: dict[str, Any], slot: int) -> None:
+        n = _palette_n_for_background()
+        try:
+            bg = int(row.get("background_index", 1))
+        except (TypeError, ValueError):
+            bg = 1
+        tpl = parse_background_layers(
+            row.get("background_layers"),
+            legacy_flat_index=bg,
+            n_colors=n,
+        )
+        slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
+        ci = parse_bg_index()
+        if dpg.does_item_exist("ts_bg_layer_opacity"):
+            try:
+                op = int(dpg.get_value("ts_bg_layer_opacity"))
+            except (TypeError, ValueError):
+                op = 255
+        else:
+            op = 255
+        op = max(0, min(255, op))
+        if dpg.does_item_exist("ts_bg_layer_enabled"):
+            en = bool(dpg.get_value("ts_bg_layer_enabled"))
+        else:
+            en = True
+        new_list = [tpl[i] for i in range(BACKGROUND_LAYER_COUNT)]
+        new_list[slot] = BackgroundLayer(en, ci, op)
+        tpl2 = tuple(new_list)
+        row["background_layers"] = background_layers_to_json_list(tpl2)
+        row["background_index"] = firmware_background_index_from_layers(tpl2, fallback=bg)
+
+    def _load_background_widgets_from_row_for_slot(row: dict[str, Any], slot: int) -> None:
+        if not dpg.does_item_exist("ts_bg_index"):
+            return
+        _normalize_row_background_layers_inplace(row)
+        tpl = parse_background_layers(
+            row.get("background_layers"),
+            legacy_flat_index=int(row.get("background_index", 1)),
+            n_colors=_palette_n_for_background(),
+        )
+        slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
+        ly = tpl[slot]
+        if dpg.does_item_exist("ts_bg_layer_enabled"):
+            dpg.set_value("ts_bg_layer_enabled", ly.enabled)
+        if dpg.does_item_exist("ts_bg_layer_opacity"):
+            dpg.set_value("ts_bg_layer_opacity", ly.opacity)
+        dpg.set_value("ts_bg_index", ly.color_index)
 
     def _set_bg_index_widgets(idx: int) -> None:
         n = _palette_len_canvas()
@@ -480,32 +817,85 @@ def run_gui() -> int:
         i = max(0, min(int(idx), n - 1))
         dpg.set_value("ts_bg_index", i)
 
-    def _update_sprite_color_swatch() -> None:
-        if not dpg.does_item_exist("ts_sprite_color_swatch"):
-            return
-        rgbs = state.get("sprite_palette_rgb")
-        if not isinstance(rgbs, list) or not rgbs:
-            dpg.set_value("ts_sprite_swatch_theme_color", (22, 22, 28, 255))
-            return
-        idx = parse_sprite_palette_index()
-        r, g, b = rgbs[idx]
-        r8 = max(0, min(255, int(round(r * 255.0))))
-        g8 = max(0, min(255, int(round(g * 255.0))))
-        b8 = max(0, min(255, int(round(b * 255.0))))
-        dpg.set_value("ts_sprite_swatch_theme_color", (r8, g8, b8, 255))
-
     def _commit_background_for_scene_id(sid: str) -> None:
         scenes = state.get("scenes")
         if not isinstance(scenes, list) or not sid:
             return
-        bi = parse_bg_index()
+        slot = int(state.get("edit_bg_layer_slot", 0))
         for row in scenes:
             if row.get("id") == sid:
-                row["background_index"] = bi
+                _commit_widgets_to_background_row_for_slot(row, slot)
                 break
 
     def _commit_background_for_active_scene() -> None:
         _commit_background_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def _commit_scene_background_for_scene_id(sid: str) -> None:
+        if not dpg.does_item_exist("ts_scene_background"):
+            return
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list) or not sid:
+            return
+        raw = dpg.get_value("ts_scene_background")
+        stem = ""
+        if raw is not None:
+            rs = str(raw).strip()
+            if rs and not rs.startswith("("):
+                stem = rs
+        for row in scenes:
+            if row.get("id") == sid:
+                row["background"] = stem
+                break
+
+    def _commit_scene_background_for_active_scene() -> None:
+        _commit_scene_background_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def _refresh_scene_background_combo() -> None:
+        if not dpg.does_item_exist("ts_scene_background"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item("ts_scene_background", items=["(abre un proyecto)"], enabled=False)
+            if dpg.does_item_exist("ts_scene_background"):
+                dpg.set_value("ts_scene_background", "(abre un proyecto)")
+            return
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        if not isinstance(scenes, list) or not active:
+            return
+        row = next((x for x in scenes if x.get("id") == active), None)
+        if row is None:
+            return
+        pal_w = str(dpg.get_value("ts_scene_pal")).strip()
+        pal = pal_w or str(row.get("palette", "")).strip() or DEFAULT_EXAMPLE_PALETTE_REL
+        stems = list_background_stems_for_palette(root, pal)
+        items = ["(ninguno)"] + stems
+        dpg.configure_item("ts_scene_background", items=items, enabled=True)
+        cur = str(row.get("background", "")).strip()
+        if cur and cur not in stems:
+            row["background"] = ""
+            cur = ""
+        pick = cur if cur in stems else "(ninguno)"
+        dpg.set_value("ts_scene_background", pick)
+
+    def _refresh_bg_tab_list() -> None:
+        if not dpg.does_item_exist("ts_bg_tab_list"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item(
+                "ts_bg_tab_list",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            return
+        pal = str(dpg.get_value("ts_bg_tab_pal")).strip() or DEFAULT_EXAMPLE_PALETTE_REL
+        stems = list_background_stems_for_palette(root, pal)
+        dpg.configure_item(
+            "ts_bg_tab_list",
+            items=stems if stems else ["(ningun fondo con esta paleta)"],
+            enabled=True,
+        )
 
     def _flush_lua_buffer_to_state() -> None:
         rel = str(state.get("lua_edit_rel") or "").strip()
@@ -607,23 +997,43 @@ def run_gui() -> int:
         rgbs = state["rgb"]
         if not rgbs:
             return
-        idx = parse_bg_index()
-        idx = max(0, min(idx, len(rgbs) - 1))
-        r, g, b = rgbs[idx]
-        _update_color_swatch(r, g, b)
-        base = _solid_rgba_float(_FB_W, _FB_H, r, g, b)
-        placements: list[dict[str, Any]] = []
         scenes = state.get("scenes")
         active = str(state.get("active_scene_id") or "")
+        row: dict[str, Any] | None = None
         if isinstance(scenes, list):
             row = next((x for x in scenes if x.get("id") == active), None)
-            if row is not None:
-                raw_objs = row.get("objects")
-                if isinstance(raw_objs, list):
-                    for x in raw_objs:
-                        d = _scene_obj_dict_from_any(x)
-                        if d is not None:
-                            placements.append(d)
+        n_colors = len(rgbs)
+        try:
+            legacy = int(row.get("background_index", 1)) if row is not None else parse_bg_index()
+        except (TypeError, ValueError):
+            legacy = 1
+        tpl = parse_background_layers(
+            row.get("background_layers") if row is not None else None,
+            legacy_flat_index=legacy,
+            n_colors=n_colors,
+        )
+        under: list[float] | None = None
+        root = state.get("project_root")
+        if row is not None and isinstance(root, Path):
+            under = _scene_background_asset_underlay(row, rgbs, _FB_W, _FB_H, root)
+        base = _composite_background_layers_rgba(
+            tpl, rgbs, _FB_W, _FB_H, underlay_rgba=under
+        )
+        slot = int(state.get("edit_bg_layer_slot", 0))
+        slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
+        ly = tpl[slot]
+        ci_sw = max(0, min(n_colors - 1, ly.color_index))
+        r, g, b = rgbs[ci_sw]
+        _update_color_swatch(r, g, b)
+        placements: list[dict[str, Any]] = []
+        if isinstance(scenes, list) and row is not None:
+            raw_objs = row.get("objects")
+            if isinstance(raw_objs, list):
+                for x in raw_objs:
+                    d = _scene_obj_dict_from_any(x)
+                    if d is not None:
+                        placements.append(d)
+        idx = firmware_background_index_from_layers(tpl, fallback=legacy)
         if placements:
             nr = len(rgbs)
             mi = (idx + max(1, nr // 4)) % nr if nr else 0
@@ -654,17 +1064,26 @@ def run_gui() -> int:
             "ts_scene_pal",
             "ts_scene_script",
             "ts_btn_new_scene",
+            "ts_scene_background",
             "ts_scene_obj_compat_list",
             "ts_btn_scene_obj_add",
             "ts_scene_obj_inscene_list",
             "ts_btn_scene_obj_remove",
             "ts_transparent_idx",
+            "ts_bg_layer",
+            "ts_bg_layer_enabled",
+            "ts_bg_layer_opacity",
+            "ts_bg_index",
             "ts_sprite_palette_rel",
             "ts_btn_sprite_palette_reload",
             "ts_sprite_id",
             "ts_sprite_blocks_w",
             "ts_sprite_blocks_h",
-            "ts_sprite_color_idx",
+            "ts_btn_sprite_apply_size",
+            "ts_sprite_editor_scale",
+            "ts_sprite_editor_show_grid",
+            "ts_sprite_editor_grid_step",
+            "ts_btn_sprite_fill_canvas",
             "ts_btn_sprite_create",
             "ts_btn_sprite_save",
             "ts_btn_sprite_refresh",
@@ -676,6 +1095,13 @@ def run_gui() -> int:
             "ts_btn_obj_create",
             "ts_btn_obj_save",
             "ts_btn_obj_refresh",
+            "ts_bg_tab_pal",
+            "ts_btn_bg_tab_copy_scene_pal",
+            "ts_btn_bg_tab_refresh",
+            "ts_bg_tab_list",
+            "ts_bg_new_id",
+            "ts_bg_new_idx",
+            "ts_btn_bg_tab_save",
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=enabled)
@@ -749,22 +1175,21 @@ def run_gui() -> int:
         rgbs, hexes = load_palette_rgb01_for_preview(use_path)
         state["sprite_palette_rgb"] = rgbs
         state["sprite_palette_hexes"] = hexes
-        max_i = max(0, len(hexes) - 1)
-        if dpg.does_item_exist("ts_sprite_color_idx"):
-            dpg.configure_item("ts_sprite_color_idx", min_value=0, max_value=max_i)
-            if preferred_palette_index is not None:
-                dpg.set_value(
-                    "ts_sprite_color_idx",
-                    max(0, min(int(preferred_palette_index), max_i)),
-                )
-            else:
-                try:
-                    cur = int(dpg.get_value("ts_sprite_color_idx"))
-                except (TypeError, ValueError):
-                    cur = 0
-                dpg.set_value("ts_sprite_color_idx", max(0, min(cur, max_i)))
+        if preferred_palette_index is not None:
+            _set_sprite_brush_index(int(preferred_palette_index))
+        else:
+            _set_sprite_brush_index(parse_sprite_palette_index())
         _rebuild_sprite_palette_swatches()
-        _update_sprite_color_swatch()
+        rows_mx = state.get("sprite_pixel_rows")
+        if isinstance(rows_mx, list) and rows_mx and rgbs:
+            nm = max(0, len(rgbs) - 1)
+            state["sprite_pixel_rows"] = [
+                [max(0, min(nm, int(c))) for c in (rw if isinstance(rw, list) else [])]
+                for rw in rows_mx
+            ]
+        elif rgbs:
+            _ensure_sprite_edit_pixel_buffer()
+        _refresh_sprite_edit_texture()
         tail = f"Sprite — indices en esta paleta: 0..{len(hexes) - 1}.\n"
         if append_log:
             prev = dpg.get_value("ts_log") or ""
@@ -790,12 +1215,11 @@ def run_gui() -> int:
             dpg.set_value("ts_scene_pal", "")
             dpg.set_value("ts_transparent_idx", DEFAULT_TRANSPARENT_INDEX)
             dpg.set_value("ts_sprite_palette_rel", "")
-            if dpg.does_item_exist("ts_sprite_color_idx"):
-                dpg.set_value("ts_sprite_color_idx", 0)
+            state["sprite_brush_index"] = 1
             state["sprite_palette_rgb"] = []
             state["sprite_palette_hexes"] = []
             _rebuild_sprite_palette_swatches()
-            _update_sprite_color_swatch()
+            state["sprite_pixel_rows"] = None
             dpg.set_value("ts_obj_id", "")
             dpg.set_value("ts_obj_name", "")
             if dpg.does_item_exist("ts_export_initial_scene"):
@@ -824,7 +1248,11 @@ def run_gui() -> int:
             if isinstance(scenes, list) and scenes:
                 row = next((x for x in scenes if x.get("id") == active), None)
                 if row is not None:
-                    _set_bg_index_widgets(int(row.get("background_index", 1)))
+                    _normalize_row_background_layers_inplace(row)
+                    state["edit_bg_layer_slot"] = 0
+                    if dpg.does_item_exist("ts_bg_layer"):
+                        dpg.set_value("ts_bg_layer", "0")
+                    _load_background_widgets_from_row_for_slot(row, 0)
                     refresh_canvas_texture()
         _refresh_scene_object_lists()
         dpg.set_value("ts_log", log_append + log)
@@ -883,13 +1311,21 @@ def run_gui() -> int:
         _sync_canvas_palette_from_active_scene()
         palette_reload_from_path()
         row = next((x for x in scenes if x["id"] == active), scenes[0])
-        _set_bg_index_widgets(int(row.get("background_index", 1)))
+        _normalize_row_background_layers_inplace(row)
+        state["edit_bg_layer_slot"] = 0
+        if dpg.does_item_exist("ts_bg_layer"):
+            dpg.set_value("ts_bg_layer", "0")
+        _load_background_widgets_from_row_for_slot(row, 0)
         if dpg.does_item_exist("ts_scene_script"):
             dpg.set_value("ts_scene_script", str(row.get("script", row.get("id", ""))))
             dpg.configure_item(
                 "ts_scene_script",
                 enabled=isinstance(state.get("project_root"), Path),
             )
+        if dpg.does_item_exist("ts_bg_tab_pal"):
+            dpg.set_value("ts_bg_tab_pal", pal)
+        _refresh_scene_background_combo()
+        _refresh_bg_tab_list()
         refresh_canvas_texture()
         _refresh_scene_object_lists()
         _clear_pending_scene_placement()
@@ -1069,6 +1505,8 @@ def run_gui() -> int:
                 "id": s.id,
                 "palette": s.palette,
                 "background_index": s.background_index,
+                "background_layers": background_layers_to_json_list(s.background_layers),
+                "background": s.background,
                 "script": s.script,
                 "objects": [{"id": o.id, "x": o.x, "y": o.y} for o in s.objects],
             }
@@ -1087,6 +1525,7 @@ def run_gui() -> int:
         _commit_script_stem_from_widget(old_active)
         _commit_palette_for_scene_id(old_active)
         _commit_background_for_scene_id(old_active)
+        _commit_scene_background_for_scene_id(old_active)
         new_id = str(dpg.get_value("ts_scene_combo")).strip()
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
@@ -1106,6 +1545,7 @@ def run_gui() -> int:
         _commit_script_stem_from_widget(cur)
         _commit_palette_for_scene_id(cur)
         _commit_background_for_scene_id(cur)
+        _commit_scene_background_for_scene_id(cur)
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
             scenes = []
@@ -1120,6 +1560,10 @@ def run_gui() -> int:
                 "id": new_id,
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
+                "background_layers": background_layers_to_json_list(
+                    default_background_layers(1)
+                ),
+                "background": "",
                 "script": new_id,
                 "objects": [],
             }
@@ -1135,6 +1579,56 @@ def run_gui() -> int:
             prev_log + f"Nueva escena '{new_id}' (Guardar proyecto para persistir).\n",
         )
 
+    def on_scene_background_change(_sender: object, _app_data: object) -> None:
+        if isinstance(state.get("project_root"), Path):
+            _commit_scene_background_for_active_scene()
+        refresh_canvas_texture()
+
+    def on_scene_palette_input_change(_sender: object, _app_data: object) -> None:
+        _refresh_scene_background_combo()
+
+    def on_bg_tab_copy_scene_pal(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_scene_pal"):
+            dpg.set_value("ts_bg_tab_pal", str(dpg.get_value("ts_scene_pal")).strip())
+        _refresh_bg_tab_list()
+        prev = dpg.get_value("ts_log") or ""
+        dpg.set_value("ts_log", prev + "Backgrounds: paleta copiada desde la escena activa.\n")
+
+    def on_bg_tab_refresh_list(_sender: object, _app_data: object) -> None:
+        _refresh_bg_tab_list()
+        prev = dpg.get_value("ts_log") or ""
+        dpg.set_value("ts_log", prev + "Backgrounds: lista actualizada.\n")
+
+    def on_bg_tab_save_background(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        raw_id = str(dpg.get_value("ts_bg_new_id")).strip()
+        if not raw_id:
+            prev = dpg.get_value("ts_log") or ""
+            dpg.set_value("ts_log", prev + "Backgrounds: indica un id (nombre del .json).\n")
+            return
+        try:
+            pal = str(dpg.get_value("ts_bg_tab_pal")).strip() or DEFAULT_EXAMPLE_PALETTE_REL
+            pal = normalize_palette_rel(pal)
+            idx = int(dpg.get_value("ts_bg_new_idx"))
+        except (TypeError, ValueError) as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Backgrounds: datos invalidos: {e}\n",
+            )
+            return
+        try:
+            save_solid_background_json(root, raw_id, palette_rel=pal, palette_index=idx)
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Backgrounds: {e}\n")
+            return
+        _refresh_bg_tab_list()
+        _refresh_scene_background_combo()
+        refresh_canvas_texture()
+        prev = dpg.get_value("ts_log") or ""
+        dpg.set_value("ts_log", prev + f"Backgrounds: guardado backgrounds/{raw_id}.json\n")
+
     initial_black = _solid_rgba_float(_FB_W, _FB_H, 0.08, 0.08, 0.1)
 
     dpg.create_context()
@@ -1147,20 +1641,24 @@ def run_gui() -> int:
                 tag="ts_swatch_theme_color",
             )
 
-    with dpg.theme(tag="ts_sprite_swatch_theme"):
-        with dpg.theme_component(dpg.mvChildWindow):
-            dpg.add_theme_color(
-                dpg.mvThemeCol_ChildBg,
-                [22, 22, 28, 255],
-                tag="ts_sprite_swatch_theme_color",
-            )
-
-    with dpg.texture_registry():
+    with dpg.texture_registry(tag="ts_texture_registry"):
         dpg.add_dynamic_texture(
             width=_FB_W,
             height=_FB_H,
             default_value=initial_black,
             tag="preview_texture",
+        )
+        dpg.add_dynamic_texture(
+            width=_SPRITE_EDITOR_TEX_MAX,
+            height=_SPRITE_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _SPRITE_EDITOR_TEX_MAX,
+                _SPRITE_EDITOR_TEX_MAX,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_SPRITE_EDITOR_TEX_TAG,
         )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
@@ -1321,8 +1819,39 @@ def run_gui() -> int:
             _commit_background_for_active_scene()
         refresh_canvas_texture()
 
-    def on_sprite_color_idx_change(_sender: object, _app_data: object) -> None:
-        _update_sprite_color_swatch()
+    def on_bg_layer_slot_change(_sender: object, app_data: object) -> None:
+        new_slot = _parse_layer_slot_value(app_data)
+        if app_data is None and dpg.does_item_exist("ts_bg_layer"):
+            new_slot = _parse_layer_slot_value(dpg.get_value("ts_bg_layer"))
+        old = int(state.get("edit_bg_layer_slot", 0))
+        if new_slot == old:
+            return
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        if (
+            isinstance(scenes, list)
+            and isinstance(state.get("project_root"), Path)
+            and active
+        ):
+            row = next((x for x in scenes if x.get("id") == active), None)
+            if isinstance(row, dict):
+                _commit_widgets_to_background_row_for_slot(row, old)
+        state["edit_bg_layer_slot"] = new_slot
+        if isinstance(scenes, list) and active:
+            row2 = next((x for x in scenes if x.get("id") == active), None)
+            if isinstance(row2, dict):
+                _load_background_widgets_from_row_for_slot(row2, new_slot)
+        refresh_canvas_texture()
+
+    def on_bg_layer_enabled_change(_sender: object, _app_data: object) -> None:
+        if isinstance(state.get("project_root"), Path):
+            _commit_background_for_active_scene()
+        refresh_canvas_texture()
+
+    def on_bg_layer_opacity_change(_sender: object, _app_data: object) -> None:
+        if isinstance(state.get("project_root"), Path):
+            _commit_background_for_active_scene()
+        refresh_canvas_texture()
 
     def on_reload_palette_click(_sender: object, _app_data: object) -> None:
         log = palette_reload_from_path()
@@ -1333,12 +1862,10 @@ def run_gui() -> int:
             active = str(state.get("active_scene_id") or "")
             if isinstance(scenes, list):
                 row = next((x for x in scenes if x.get("id") == active), None)
-                hexes = state.get("hexes")
-                if row is not None and isinstance(hexes, list) and hexes:
-                    max_i = len(hexes) - 1
-                    bg = max(0, min(int(row.get("background_index", 1)), max_i))
-                    row["background_index"] = bg
-                    _set_bg_index_widgets(bg)
+                if row is not None:
+                    _normalize_row_background_layers_inplace(row)
+                    slot = int(state.get("edit_bg_layer_slot", 0))
+                    _load_background_widgets_from_row_for_slot(row, slot)
         refresh_canvas_texture()
 
     def on_save_project(_sender: object, _app_data: object) -> None:
@@ -1355,6 +1882,7 @@ def run_gui() -> int:
         _commit_script_stem_from_widget(active)
         _commit_palette_for_scene_id(active)
         _commit_background_for_active_scene()
+        _commit_scene_background_for_active_scene()
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
         pal: Path | None = Path(pal_s).expanduser() if pal_s else None
         scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
@@ -1423,16 +1951,29 @@ def run_gui() -> int:
             bh = int(dpg.get_value("ts_sprite_blocks_h"))
         except (TypeError, ValueError):
             bw, bh = 1, 1
-        pi = parse_sprite_palette_index()
         pal_raw = str(dpg.get_value("ts_sprite_palette_rel")).strip()
+        _resize_sprite_edit_matrix_for_widgets()
+        cp = int(state.get("sprite_edit_cell_px") or 8)
+        fi = parse_sprite_palette_index()
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            pw, ph = bw * cp, bh * cp
+            rows = solid_fill_indices(pw, ph, fi)
+            state["sprite_pixel_rows"] = rows
         try:
-            path = write_solid_sprite_json(
+            n = max(1, _palette_len_sprite())
+            rows2: list[list[int]] = [
+                [max(0, min(n - 1, int(c))) for c in (r if isinstance(r, list) else [])]
+                for r in rows
+            ]
+            path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
                 palette_rel=pal_raw,
                 blocks_w=bw,
                 blocks_h=bh,
-                palette_index=pi,
+                rows=rows2,
+                cell_px=cp,
             )
         except ValueError as e:
             dpg.set_value(
@@ -1455,6 +1996,7 @@ def run_gui() -> int:
             (dpg.get_value("ts_log") or "") + f"Sprites: creado {rel}\n",
         )
         _refresh_scene_object_lists()
+        _load_sprite_into_form(sid)
 
     def _sprite_list_selected_stem() -> str | None:
         raw = dpg.get_value("ts_sprite_list")
@@ -1465,7 +2007,250 @@ def run_gui() -> int:
             return None
         return s
 
-    def _load_sprite_into_form(stem: str) -> None:
+    def _sprite_editor_display_scale() -> int:
+        if not dpg.does_item_exist("ts_sprite_editor_scale"):
+            return _SPRITE_EDITOR_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_sprite_editor_scale"))
+        except (TypeError, ValueError):
+            v = _SPRITE_EDITOR_SCALE_DEFAULT
+        return max(1, min(16, v))
+
+    def _sprite_editor_effective_scale(pw: int, ph: int) -> int:
+        """Escala en pantalla; acotada para caber en la textura 512×512."""
+        sc = _sprite_editor_display_scale()
+        if pw <= 0 or ph <= 0:
+            return sc
+        cap = min(_SPRITE_EDITOR_TEX_MAX // pw, _SPRITE_EDITOR_TEX_MAX // ph)
+        return max(1, min(sc, cap))
+
+    def _expected_sprite_matrix_pixel_size() -> tuple[int, int]:
+        try:
+            bw = int(dpg.get_value("ts_sprite_blocks_w"))
+            bh = int(dpg.get_value("ts_sprite_blocks_h"))
+        except (TypeError, ValueError):
+            bw, bh = 1, 1
+        bw = max(1, min(32, bw))
+        bh = max(1, min(32, bh))
+        cp = int(state.get("sprite_edit_cell_px") or 8)
+        cp = max(1, min(256, cp))
+        return bw * cp, bh * cp
+
+    def _sync_sprite_matrix_from_widgets() -> None:
+        """Alinea la matriz con Celdas W/H aunque el input_int no haya disparado callback."""
+        pw_exp, ph_exp = _expected_sprite_matrix_pixel_size()
+        rows = state.get("sprite_pixel_rows")
+        pw, ph = 0, 0
+        if isinstance(rows, list) and rows:
+            pw, ph = _sprite_matrix_pixel_size(rows)
+        if pw != pw_exp or ph != ph_exp:
+            _resize_sprite_edit_matrix_for_widgets()
+
+    def _resize_sprite_edit_matrix_for_widgets(
+        *,
+        fill_from_index: int | None = None,
+    ) -> None:
+        try:
+            bw = int(dpg.get_value("ts_sprite_blocks_w"))
+            bh = int(dpg.get_value("ts_sprite_blocks_h"))
+        except (TypeError, ValueError):
+            bw, bh = 1, 1
+        bw = max(1, min(32, bw))
+        bh = max(1, min(32, bh))
+        cp = int(state.get("sprite_edit_cell_px") or 8)
+        cp = max(1, min(256, cp))
+        pw, ph = bw * cp, bh * cp
+        fi = (
+            parse_sprite_palette_index()
+            if fill_from_index is None
+            else max(0, int(fill_from_index))
+        )
+        if fill_from_index is None and fi == 0:
+            fi = 1
+        old = state.get("sprite_pixel_rows")
+        if isinstance(old, list) and old and any(isinstance(r, list) and r for r in old):
+            state["sprite_pixel_rows"] = normalize_palette_rows(old, pw, ph, fill_index=fi)
+        else:
+            state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, fi)
+
+    def _ensure_sprite_edit_pixel_buffer() -> None:
+        """Matriz en memoria para pintar; sin esto los clics no hacen nada."""
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            _resize_sprite_edit_matrix_for_widgets()
+            return
+        _sync_sprite_matrix_from_widgets()
+
+    def _sprite_edit_paint_at_mouse() -> bool:
+        _ensure_sprite_edit_pixel_buffer()
+        rgbs_chk = state.get("sprite_palette_rgb")
+        if (not isinstance(rgbs_chk, list) or not rgbs_chk) and isinstance(
+            state.get("project_root"), Path
+        ):
+            _sprite_palette_reload_core(append_log=False)
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            return False
+        if not dpg.does_item_exist(_SPRITE_EDITOR_IMG_TAG):
+            return False
+        pw, ph = _sprite_matrix_pixel_size(rows)
+        if pw <= 0 or ph <= 0:
+            return False
+        sc = _sprite_editor_effective_scale(pw, ph)
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_SPRITE_EDITOR_IMG_TAG)
+        rx = float(mx - min_x)
+        ry = float(my - min_y)
+        lw = float(pw * sc)
+        lh = float(ph * sc)
+        if rx < 0 or ry < 0 or rx >= lw or ry >= lh:
+            return False
+        lx = int(rx // sc)
+        ly = int(ry // sc)
+        if ly < 0 or ly >= ph or lx < 0 or lx >= pw:
+            return False
+        color_i = parse_sprite_palette_index()
+        row = rows[ly]
+        if isinstance(row, list) and lx < len(row):
+            row[lx] = color_i
+        _refresh_sprite_edit_texture()
+        return True
+
+    def _sprite_matrix_pixel_size(rows: list[list[int]]) -> tuple[int, int]:
+        ph = len(rows)
+        if ph <= 0:
+            return 0, 0
+        pw = max((len(r) for r in rows if isinstance(r, list)), default=0)
+        return pw, ph
+
+    def _sync_sprite_edit_image_widget(dw: int, dh: int) -> None:
+        """dw×dh = pixeles en textura y en pantalla (1:1, sin estirado borroso)."""
+        uv = _sprite_editor_uv_max(dw, dh)
+        if dpg.does_item_exist(_SPRITE_EDITOR_IMG_TAG):
+            dpg.configure_item(
+                _SPRITE_EDITOR_IMG_TAG,
+                width=max(1, dw),
+                height=max(1, dh),
+                texture_tag=_SPRITE_EDITOR_TEX_TAG,
+                uv_min=(0.0, 0.0),
+                uv_max=uv,
+            )
+
+    def _apply_sprite_edit_rgba(pw: int, ph: int, rgba: list[float]) -> None:
+        """Textura 512×512; escala entera en CPU para pixeles nitidos."""
+        if pw <= 0 or ph <= 0 or not dpg.does_item_exist(_SPRITE_EDITOR_TEX_TAG):
+            return
+        expected_len = pw * ph * 4
+        if len(rgba) != expected_len:
+            return
+        sc = _sprite_editor_effective_scale(pw, ph)
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
+        if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
+            dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
+            dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_SPRITE_EDITOR_TEX_TAG, tex_rgba)
+        _sync_sprite_edit_image_widget(dw, dh)
+
+    def _refresh_sprite_edit_texture() -> None:
+        if not dpg.does_item_exist(_SPRITE_EDITOR_TEX_TAG):
+            return
+        if dpg.does_item_exist("ts_sprite_blocks_w"):
+            _sync_sprite_matrix_from_widgets()
+        rows = state.get("sprite_pixel_rows")
+        rgbs = state.get("sprite_palette_rgb")
+        if not isinstance(rows, list) or not rows:
+            sc0 = _sprite_editor_effective_scale(8, 8)
+            _sync_sprite_edit_image_widget(8 * sc0, 8 * sc0)
+            return
+        if not isinstance(rgbs, list) or not rgbs:
+            sc0 = _sprite_editor_effective_scale(8, 8)
+            _sync_sprite_edit_image_widget(8 * sc0, 8 * sc0)
+            return
+        pw, ph = _sprite_matrix_pixel_size(rows)
+        if pw <= 0 or ph <= 0:
+            return
+        pad_i = parse_sprite_palette_index()
+        norm = normalize_palette_rows(rows, pw, ph, fill_index=pad_i)
+        state["sprite_pixel_rows"] = norm
+        base = _sprite_rows_to_rgba_float01(norm, rgbs)
+        cp = int(state.get("sprite_edit_cell_px") or 8)
+        cp = max(1, min(256, cp))
+        show_g = bool(dpg.get_value("ts_sprite_editor_show_grid")) if dpg.does_item_exist(
+            "ts_sprite_editor_show_grid"
+        ) else False
+        if show_g:
+            gstep = parse_sprite_editor_grid_step()
+            base = _apply_sprite_editor_grid_overlay(base, pw, ph, grid_step=gstep)
+        if len(base) != pw * ph * 4:
+            return
+        _apply_sprite_edit_rgba(pw, ph, base)
+        if dpg.does_item_exist("ts_sprite_edit_size_label"):
+            try:
+                bw = int(dpg.get_value("ts_sprite_blocks_w"))
+                bh = int(dpg.get_value("ts_sprite_blocks_h"))
+            except (TypeError, ValueError):
+                bw, bh = 1, 1
+            dpg.set_value(
+                "ts_sprite_edit_size_label",
+                f"Vista: {pw}×{ph} px · {bw}×{bh} celdas de {cp}px",
+            )
+
+    def on_sprite_dimension_change(_sender: object, _app_data: object) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        _sync_sprite_matrix_from_widgets()
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_apply_size(_sender: object, _app_data: object) -> None:
+        _resize_sprite_edit_matrix_for_widgets()
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_editor_scale_change(_sender: object, _app_data: object) -> None:
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_editor_grid_toggle(_sender: object, _app_data: object) -> None:
+        _refresh_sprite_edit_texture()
+
+    def parse_sprite_editor_grid_step() -> int:
+        if not dpg.does_item_exist("ts_sprite_editor_grid_step"):
+            return _SPRITE_EDITOR_GRID_STEP_DEFAULT
+        return _normalize_sprite_grid_step(dpg.get_value("ts_sprite_editor_grid_step"))
+
+    def on_sprite_editor_grid_step_change(_sender: object, _app_data: object) -> None:
+        if not dpg.does_item_exist("ts_sprite_editor_grid_step"):
+            return
+        norm = parse_sprite_editor_grid_step()
+        try:
+            cur = int(dpg.get_value("ts_sprite_editor_grid_step"))
+        except (TypeError, ValueError):
+            cur = norm
+        if cur != norm:
+            dpg.set_value("ts_sprite_editor_grid_step", norm)
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_fill_canvas(_sender: object, _app_data: object) -> None:
+        fi = parse_sprite_palette_index()
+        _resize_sprite_edit_matrix_for_widgets(fill_from_index=fi)
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_edit_canvas_click(_sender: object, _app_data: object) -> None:
+        _sprite_edit_paint_at_mouse()
+
+    def on_sprite_edit_paint_drag(_sender: object, _app_data: object) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        if not dpg.does_item_exist(_SPRITE_EDITOR_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_SPRITE_EDITOR_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _sprite_edit_paint_at_mouse()
+
+    def _load_sprite_into_form(stem: str, *, quiet: bool = False) -> None:
         root = state.get("project_root")
         if not isinstance(root, Path):
             return
@@ -1506,13 +2291,31 @@ def run_gui() -> int:
                 bh = max(1, ph // cp)
             except (TypeError, ValueError):
                 bw, bh = 1, 1
-        dpg.set_value("ts_sprite_blocks_w", max(1, min(bw, 32)))
-        dpg.set_value("ts_sprite_blocks_h", max(1, min(bh, 32)))
+        bw = max(1, min(bw, 32))
+        bh = max(1, min(bh, 32))
+        state["sprite_edit_cell_px"] = cp
+        pw, ph = bw * cp, bh * cp
+        if sprite_is_indexed_pixels(data):
+            parsed = parse_palette_rows_image(data)
+            if parsed:
+                state["sprite_pixel_rows"] = [list(r) for r in parsed]
+            else:
+                state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
+        else:
+            state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
+        state["sprite_ui_silent"] = True
+        try:
+            dpg.set_value("ts_sprite_blocks_w", bw)
+            dpg.set_value("ts_sprite_blocks_h", bh)
+        finally:
+            state["sprite_ui_silent"] = False
+        _set_sprite_brush_index(pi)
         _sprite_palette_reload_core(append_log=False, preferred_palette_index=pi)
-        dpg.set_value(
-            "ts_log",
-            (dpg.get_value("ts_log") or "") + f"Sprites: cargado {stem}.json\n",
-        )
+        if not quiet:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Sprites: cargado {stem}.json\n",
+            )
 
     def on_sprite_list_pick(_sender: object, _app_data: object) -> None:
         stem = _sprite_list_selected_stem()
@@ -1535,16 +2338,25 @@ def run_gui() -> int:
             bh = int(dpg.get_value("ts_sprite_blocks_h"))
         except (TypeError, ValueError):
             bw, bh = 1, 1
-        pi = parse_sprite_palette_index()
         pal_raw = str(dpg.get_value("ts_sprite_palette_rel")).strip()
         try:
-            path = save_solid_sprite_json(
+            _resize_sprite_edit_matrix_for_widgets()
+            rows = state.get("sprite_pixel_rows")
+            if not isinstance(rows, list) or not rows:
+                raise ValueError("matriz de pixeles vacia; recarga el sprite o la paleta.")
+            n = max(1, _palette_len_sprite())
+            rows2: list[list[int]] = [
+                [max(0, min(n - 1, int(c))) for c in (r if isinstance(r, list) else [])]
+                for r in rows
+            ]
+            path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
                 palette_rel=pal_raw,
                 blocks_w=bw,
                 blocks_h=bh,
-                palette_index=pi,
+                rows=rows2,
+                cell_px=int(state.get("sprite_edit_cell_px") or 8),
             )
         except ValueError as e:
             dpg.set_value(
@@ -1572,6 +2384,7 @@ def run_gui() -> int:
         dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + log_line)
         _refresh_scene_object_lists()
         refresh_canvas_texture()
+        _load_sprite_into_form(sid, quiet=True)
 
     def _obj_list_selected_stem() -> str | None:
         raw = dpg.get_value("ts_obj_list")
@@ -1905,6 +2718,7 @@ def run_gui() -> int:
                             hint="palettes/palette.txt",
                             enabled=False,
                             use_internal_label=False,
+                            callback=on_scene_palette_input_change,
                         )
                         dpg.add_input_text(
                             tag="ts_scene_script",
@@ -1920,6 +2734,16 @@ def run_gui() -> int:
                             width=_LEFT_FORM_WIDTH,
                             callback=on_new_scene,
                             enabled=False,
+                        )
+                        dpg.add_combo(
+                            tag="ts_scene_background",
+                            label="Recurso fondo (backgrounds/*.json)",
+                            width=_LEFT_FORM_WIDTH,
+                            items=["(abre un proyecto)"],
+                            default_value="(abre un proyecto)",
+                            callback=on_scene_background_change,
+                            enabled=False,
+                            use_internal_label=False,
                         )
                         dpg.add_text(
                             "Objetos en escena (misma paleta que la escena). "
@@ -1970,7 +2794,41 @@ def run_gui() -> int:
                             use_internal_label=False,
                         )
                         dpg.add_text(
-                            "Color de fondo (indice en la paleta; cuadrado = vista previa)",
+                            "Fondo: 4 capas a pantalla completa (mismo tamano que la escena). "
+                            "Solo la vista previa del estudio mezcla opacidad; el firmware usa un unico "
+                            "indice cls() derivado de la capa visible superior.",
+                            wrap=_LEFT_TEXT_WRAP,
+                        )
+                        dpg.add_combo(
+                            tag="ts_bg_layer",
+                            label="Capa fondo",
+                            items=[str(i) for i in range(BACKGROUND_LAYER_COUNT)],
+                            default_value="0",
+                            width=_LEFT_FORM_WIDTH,
+                            callback=on_bg_layer_slot_change,
+                            enabled=False,
+                            use_internal_label=False,
+                        )
+                        dpg.add_checkbox(
+                            tag="ts_bg_layer_enabled",
+                            label="Capa activa",
+                            default_value=True,
+                            callback=on_bg_layer_enabled_change,
+                            enabled=False,
+                        )
+                        dpg.add_slider_int(
+                            tag="ts_bg_layer_opacity",
+                            label="Opacidad (vista previa)",
+                            min_value=0,
+                            max_value=255,
+                            default_value=255,
+                            clamped=True,
+                            width=_LEFT_FORM_WIDTH,
+                            callback=on_bg_layer_opacity_change,
+                            enabled=False,
+                        )
+                        dpg.add_text(
+                            "Color de la capa (indice en la paleta; cuadrado = muestra de esa capa)",
                             wrap=_LEFT_TEXT_WRAP,
                         )
                         with dpg.group(horizontal=True):
@@ -2099,6 +2957,85 @@ def run_gui() -> int:
                             tracked=True,
                         )
 
+            with dpg.tab(label="Backgrounds"):
+                dpg.add_text(
+                    "Crea fondos en `backgrounds/<id>.json`. Cada fondo declara una paleta; en la pestaña "
+                    "Editor solo podras asignar a la escena fondos cuya paleta coincida con la de esa escena.",
+                    wrap=520,
+                )
+                dpg.add_spacer(height=6)
+                dpg.add_input_text(
+                    tag="ts_bg_tab_pal",
+                    label="Paleta (ruta relativa al proyecto)",
+                    width=480,
+                    hint=DEFAULT_EXAMPLE_PALETTE_REL,
+                    default_value=DEFAULT_EXAMPLE_PALETTE_REL,
+                    enabled=False,
+                    use_internal_label=False,
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_bg_tab_copy_scene_pal",
+                        label="Copiar paleta de la escena activa",
+                        width=240,
+                        callback=on_bg_tab_copy_scene_pal,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_tab_refresh",
+                        label="Actualizar lista",
+                        width=200,
+                        callback=on_bg_tab_refresh_list,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    "Fondos con esta paleta (archivos en backgrounds/):",
+                    wrap=520,
+                )
+                dpg.add_listbox(
+                    tag="ts_bg_tab_list",
+                    width=480,
+                    num_items=8,
+                    items=["(abre un proyecto)"],
+                    enabled=False,
+                )
+                dpg.add_separator()
+                dpg.add_text("Nuevo fondo (v0: relleno solido por indice de paleta)", wrap=520)
+                dpg.add_input_text(
+                    tag="ts_bg_new_id",
+                    label="Id (nombre del .json)",
+                    width=480,
+                    hint="cielo_noche",
+                    enabled=False,
+                    use_internal_label=False,
+                )
+                dpg.add_input_int(
+                    tag="ts_bg_new_idx",
+                    label="Indice de color en la paleta",
+                    width=200,
+                    default_value=1,
+                    min_value=0,
+                    max_value=255,
+                    min_clamped=True,
+                    max_clamped=True,
+                    enabled=False,
+                    use_internal_label=False,
+                )
+                dpg.add_button(
+                    tag="ts_btn_bg_tab_save",
+                    label="Guardar fondo",
+                    width=280,
+                    callback=on_bg_tab_save_background,
+                    enabled=False,
+                )
+                dpg.add_spacer(height=6)
+                dpg.add_text(
+                    f"Las cuatro capas de tinte y opacidad siguen en Editor; el recurso se dibuja debajo "
+                    f"como base a pantalla completa ({_FB_W}×{_FB_H}). Mas adelante: editor de pixeles.",
+                    wrap=520,
+                    color=(180, 190, 210, 255),
+                )
+
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
                     "El cuerpo del ENTRY es el del archivo indicado (memoria del editor si el proyecto "
@@ -2185,7 +3122,7 @@ def run_gui() -> int:
                     enabled=False,
                 )
                 dpg.add_text(
-                    "Colores de esta paleta (vista previa): clic copia #RRGGBB al portapapeles y fija el indice de color",
+                    "Paleta del sprite: clic en un color = pincel (copia #RRGGBB al portapapeles).",
                     color=(200, 220, 255, 255),
                 )
                 with dpg.child_window(
@@ -2200,9 +3137,12 @@ def run_gui() -> int:
                         horizontal_spacing=3,
                     )
                 dpg.add_text(
-                    "Tamano en celdas de 8x8 px; ej. 1x1, 1x2, 2x2…",
+                    "Tamano en celdas de 8×8 px (ej. 2×2 = 16×16 px). Tras cambiar W/H: Enter, "
+                    "clic fuera o «Aplicar tamano».",
                     wrap=520,
                 )
+                with dpg.item_handler_registry(tag="ts_sprite_blocks_dim_handlers"):
+                    dpg.add_item_deactivated_handler(callback=on_sprite_dimension_change)
                 with dpg.group(horizontal=True):
                     dpg.add_input_int(
                         tag="ts_sprite_blocks_w",
@@ -2214,6 +3154,7 @@ def run_gui() -> int:
                         min_clamped=True,
                         max_clamped=True,
                         enabled=False,
+                        callback=on_sprite_dimension_change,
                     )
                     dpg.add_input_int(
                         tag="ts_sprite_blocks_h",
@@ -2225,34 +3166,91 @@ def run_gui() -> int:
                         min_clamped=True,
                         max_clamped=True,
                         enabled=False,
+                        callback=on_sprite_dimension_change,
                     )
-                dpg.add_text(
-                    "Color del sprite (indice en la paleta de arriba; cuadrado = vista previa):",
-                    wrap=520,
-                )
+                    dpg.add_button(
+                        tag="ts_btn_sprite_apply_size",
+                        label="Aplicar tamano",
+                        width=120,
+                        callback=on_sprite_apply_size,
+                        enabled=False,
+                    )
+                dpg.bind_item_handler_registry("ts_sprite_blocks_w", "ts_sprite_blocks_dim_handlers")
+                dpg.bind_item_handler_registry("ts_sprite_blocks_h", "ts_sprite_blocks_dim_handlers")
                 with dpg.group(horizontal=True):
+                    dpg.add_slider_int(
+                        tag="ts_sprite_editor_scale",
+                        label="Escala cuadricula (editor)",
+                        min_value=1,
+                        max_value=12,
+                        default_value=_SPRITE_EDITOR_SCALE_DEFAULT,
+                        clamped=True,
+                        width=220,
+                        callback=on_sprite_editor_scale_change,
+                        enabled=False,
+                    )
+                    dpg.add_checkbox(
+                        tag="ts_sprite_editor_show_grid",
+                        label="Rejilla",
+                        default_value=True,
+                        callback=on_sprite_editor_grid_toggle,
+                        enabled=False,
+                    )
                     dpg.add_input_int(
-                        tag="ts_sprite_color_idx",
-                        label="Indice",
-                        width=72,
-                        default_value=0,
-                        min_value=0,
-                        max_value=255,
+                        tag="ts_sprite_editor_grid_step",
+                        label="Paso rejilla (px)",
+                        width=100,
+                        default_value=_SPRITE_EDITOR_GRID_STEP_DEFAULT,
+                        min_value=1,
+                        max_value=_SPRITE_EDITOR_GRID_STEP_MAX,
                         min_clamped=True,
                         max_clamped=True,
                         enabled=False,
-                        callback=on_sprite_color_idx_change,
-                        use_internal_label=False,
+                        callback=on_sprite_editor_grid_step_change,
                     )
-                    with dpg.child_window(
-                        tag="ts_sprite_color_swatch",
-                        width=36,
-                        height=24,
-                        border=True,
-                        no_scrollbar=True,
-                    ):
-                        dpg.add_spacer(width=2, height=2)
-                    dpg.bind_item_theme("ts_sprite_color_swatch", "ts_sprite_swatch_theme")
+                dpg.bind_item_handler_registry(
+                    "ts_sprite_editor_grid_step", "ts_sprite_blocks_dim_handlers"
+                )
+                dpg.add_button(
+                    tag="ts_btn_sprite_fill_canvas",
+                    label="Rellenar lienzo con indice actual",
+                    width=280,
+                    callback=on_sprite_fill_canvas,
+                    enabled=False,
+                )
+                dpg.add_text(
+                    tag="ts_sprite_edit_size_label",
+                    default_value="Vista: (carga paleta y ajusta celdas)",
+                    wrap=520,
+                )
+                dpg.add_text(
+                    "Pincel = color elegido en la paleta de arriba. Clic o arrastrar en el lienzo. "
+                    "«Guardar sprite» guarda los pixeles pintados (no un bloque de un solo color).",
+                    wrap=520,
+                )
+                with dpg.item_handler_registry(tag="ts_sprite_edit_click_reg"):
+                    dpg.add_item_clicked_handler(callback=on_sprite_edit_canvas_click)
+                with dpg.child_window(
+                    tag="ts_sprite_edit_viewport",
+                    border=True,
+                    width=520,
+                    height=320,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_image(
+                        _SPRITE_EDITOR_TEX_TAG,
+                        tag=_SPRITE_EDITOR_IMG_TAG,
+                        width=8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                        height=8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                        uv_min=(0.0, 0.0),
+                        uv_max=_sprite_editor_uv_max(
+                            8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                            8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                        ),
+                    )
+                dpg.bind_item_handler_registry(
+                    _SPRITE_EDITOR_IMG_TAG, "ts_sprite_edit_click_reg"
+                )
                 dpg.add_input_text(
                     tag="ts_sprite_id",
                     label="ID del sprite (nombre del archivo sin .json)",
@@ -2350,6 +3348,12 @@ def run_gui() -> int:
                         callback=on_object_refresh,
                         enabled=False,
                     )
+
+    with dpg.handler_registry(tag="ts_sprite_paint_drag_reg"):
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Left,
+            callback=on_sprite_edit_paint_drag,
+        )
 
     dpg.create_viewport(
         title="TurtleStudio",

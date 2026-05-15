@@ -199,7 +199,7 @@ def collect_studio_bundle_files(
     """
     Datos del proyecto para el cartucho inicial `main.turtlecart`.
 
-    Solo embebe `studio/project_bundle.json` (escenas, objetos, sprites).
+    Solo embebe `studio/project_bundle.json` (escenas, objetos, sprites, fondos).
     El Lua de arranque va en el bloque ENTRY (p. ej. contenido de `scripts/global.lua`);
     los Lua de escena **no** se duplican aqui: pueden distribuirse en otros archivos / cartuchos.
     """
@@ -211,21 +211,26 @@ def collect_studio_bundle_files(
     ti = max(0, min(31, int(transparent_index)))
 
     oids: set[str] = set()
+    bg_stems: set[str] = set()
     for row in scenes:
         if not isinstance(row, dict):
             continue
         raw_objs = row.get("objects")
-        if not isinstance(raw_objs, list):
-            continue
-        for item in raw_objs:
-            if isinstance(item, dict):
-                oid = str(item.get("id", "")).strip()
-            elif isinstance(item, str):
-                oid = item.strip()
-            else:
-                continue
-            if oid:
-                oids.add(oid)
+        if isinstance(raw_objs, list):
+            for item in raw_objs:
+                if isinstance(item, dict):
+                    oid = str(item.get("id", "")).strip()
+                elif isinstance(item, str):
+                    oid = item.strip()
+                else:
+                    continue
+                if oid:
+                    oids.add(oid)
+        b = str(row.get("background", "")).strip()
+        if b:
+            bg_stems.add(b)
+
+    from turtlestudio.backgrounds import read_background_file
 
     objects_map: dict[str, Any] = {}
     for oid in sorted(oids):
@@ -248,6 +253,13 @@ def collect_studio_bundle_files(
         except ValueError:
             sprites_map[sid] = {"error": "missing_sprite_json", "id": sid}
 
+    backgrounds_map: dict[str, Any] = {}
+    for bid in sorted(bg_stems):
+        try:
+            backgrounds_map[bid] = read_background_file(root, bid)
+        except ValueError:
+            backgrounds_map[bid] = {"error": "missing_background_json", "id": bid}
+
     bundle: dict[str, Any] = {
         "format_version": 1,
         "kind": "turtlestudio.cart_bundle",
@@ -257,6 +269,7 @@ def collect_studio_bundle_files(
         "scenes": scenes,
         "objects": objects_map,
         "sprites": sprites_map,
+        "backgrounds": backgrounds_map,
     }
     text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
     return [("studio/project_bundle.json", text)]
