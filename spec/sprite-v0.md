@@ -89,7 +89,7 @@ Matriz de indices de paleta; fila **0 = arriba** del sprite (como en el editor).
 - **Crear JSON sprite** crea un sprite indexado relleno con el pincel actual.
 - Rejilla del lienzo: paso configurable (1 px o multiplos de 4).
 - Escala de vista: ampliacion por vecino mas cercano (pixeles nítidos).
-- **Referencia visual** (PNG/JPG/…): importar imagen escalada al lienzo (`pixel_w`×`pixel_h`); visible bajo el relleno del lienzo (indice 1 por defecto), tapada al pintar. Opacidad de referencia y de la **capa pintada** ajustables en la vista previa (no afectan al JSON exportado). **No** se guarda en el JSON del sprite.
+- **Referencia visual** (PNG/JPG/…): importar imagen escalada al lienzo (`pixel_w`×`pixel_h`); visible bajo el relleno del lienzo (indice 1 por defecto), tapada al pintar. **Convertir en sprite** rellena `image.rows` con el color de paleta mas cercano por pixel (escala vecino mas cercano; alpha &lt; 0.5 → indice 31). Opacidad de referencia y de la **capa pintada** ajustables en la vista previa (no afectan al JSON exportado). La referencia **no** se guarda en el JSON del sprite.
 
 Sprites cargados en modo `solid_palette_index` se muestran en el editor como lienzo relleno; al guardar pasan a `indexed_pixels`.
 

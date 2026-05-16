@@ -57,6 +57,7 @@ from turtlestudio.objects import (
 from turtlestudio.sprite_ref_image import (
     aspect_ratio_note,
     composite_sprite_editor_preview,
+    convert_ref_source_to_palette_rows,
     load_image_rgba_float01,
     resample_rgba_stretch,
 )
@@ -1392,6 +1393,7 @@ def run_gui() -> int:
             "ts_btn_sprite_swap_color",
             "ts_btn_sprite_ref_import",
             "ts_btn_sprite_ref_clear",
+            "ts_btn_sprite_ref_convert",
             "ts_sprite_ref_show",
             "ts_sprite_ref_opacity",
             "ts_sprite_paint_opacity",
@@ -2692,6 +2694,63 @@ def run_gui() -> int:
             (dpg.get_value("ts_log") or "") + "Sprites: referencia quitada.\n",
         )
 
+    def on_sprite_ref_convert_click(_sender: object, _app_data: object) -> None:
+        _ensure_sprite_edit_pixel_buffer()
+        rgbs = state.get("sprite_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            if isinstance(state.get("project_root"), Path):
+                _sprite_palette_reload_core(append_log=False)
+            rgbs = state.get("sprite_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: carga la paleta del sprite antes de convertir.\n",
+            )
+            return
+        src = state.get("sprite_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: importa una referencia antes de convertir.\n",
+            )
+            return
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        if pw <= 0 or ph <= 0:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: define tamano (celdas W/H) antes de convertir.\n",
+            )
+            return
+        try:
+            rows = convert_ref_source_to_palette_rows(src, pw, ph, rgbs)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Sprites convertir: {e}\n",
+            )
+            return
+        if not rows:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Sprites convertir: lienzo vacio.\n",
+            )
+            return
+        state["sprite_pixel_rows"] = rows
+        state["sprite_pixel_stash"] = None
+        _sprite_color_swap_cancel()
+        _refresh_sprite_edit_texture()
+        sw, sh, _rgba = src
+        n_used = len(_sprite_used_paint_indices(rows))
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Sprites: referencia {sw}×{sh} → lienzo {pw}×{ph} px "
+            f"({n_used} colores de paleta). Revisa y guarda el sprite.\n",
+        )
+
     def on_sprite_editor_preview_change(_sender: object, _app_data: object) -> None:
         _refresh_sprite_edit_texture()
 
@@ -3737,8 +3796,8 @@ def run_gui() -> int:
                         enabled=False,
                     )
                 dpg.add_text(
-                    "Referencia (PNG/JPG): debajo del arte; opacidad de referencia y de la capa "
-                    "pintada son solo vista previa del estudio (no se guardan en el .json).",
+                    "Referencia (PNG/JPG): debajo del arte; «Convertir en sprite» cuantiza cada "
+                    "pixel al color mas cercano de la paleta (alpha bajo → indice 31).",
                     wrap=520,
                     color=(200, 220, 255, 255),
                 )
@@ -3760,6 +3819,13 @@ def run_gui() -> int:
                         label="Quitar referencia",
                         width=132,
                         callback=on_sprite_ref_clear_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_sprite_ref_convert",
+                        label="Convertir en sprite",
+                        width=140,
+                        callback=on_sprite_ref_convert_click,
                         enabled=False,
                     )
                     dpg.add_checkbox(

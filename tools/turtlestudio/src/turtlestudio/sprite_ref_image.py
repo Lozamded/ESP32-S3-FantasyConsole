@@ -258,6 +258,117 @@ def composite_ref_for_sprite_editor(
     return out
 
 
+def resample_rgba_nearest(
+    src: list[float],
+    sw: int,
+    sh: int,
+    dw: int,
+    dh: int,
+) -> list[float]:
+    """Escala al tamano del lienzo; un pixel fuente por celda destino (pixel art)."""
+    if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0:
+        return []
+    if sw == dw and sh == dh:
+        return list(src)
+
+    out = [0.0] * (dw * dh * 4)
+    for dy in range(dh):
+        sy = min(sh - 1, (dy * sh) // dh)
+        for dx in range(dw):
+            sx = min(sw - 1, (dx * sw) // dw)
+            si = (sy * sw + sx) * 4
+            oi = (dy * dw + dx) * 4
+            out[oi] = src[si]
+            out[oi + 1] = src[si + 1]
+            out[oi + 2] = src[si + 2]
+            out[oi + 3] = src[si + 3]
+    return out
+
+
+def nearest_opaque_palette_index(
+    r: float,
+    g: float,
+    b: float,
+    rgbs: list[tuple[float, float, float]],
+) -> int:
+    """Indice de paleta mas cercano en RGB (excluye el indice transparente 31)."""
+    from turtlestudio.palette_policy import (
+        TRANSPARENT_PALETTE_INDEX,
+        is_transparent_palette_index,
+    )
+
+    if not rgbs:
+        return 0
+    best_i = 0
+    best_d = float("inf")
+    for i, (pr, pg, pb) in enumerate(rgbs):
+        if is_transparent_palette_index(i):
+            continue
+        d = (r - pr) ** 2 + (g - pg) ** 2 + (b - pb) ** 2
+        if d < best_d:
+            best_d = d
+            best_i = i
+    if is_transparent_palette_index(best_i):
+        return min(len(rgbs) - 1, TRANSPARENT_PALETTE_INDEX - 1)
+    return best_i
+
+
+def ref_rgba_to_palette_rows(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    alpha_cutoff: float = 0.5,
+) -> list[list[int]]:
+    """
+    Convierte RGBA 0..1 (fila 0 arriba) en matriz de indices de paleta.
+    Pixeles semitransparentes o transparentes → indice transparente (31).
+    """
+    from turtlestudio.palette_policy import TRANSPARENT_PALETTE_INDEX
+
+    if pw <= 0 or ph <= 0:
+        return []
+    need = pw * ph * 4
+    if len(rgba) < need:
+        raise ValueError("buffer RGBA mas pequeno que el lienzo")
+    ac = max(0.0, min(1.0, float(alpha_cutoff)))
+    rows: list[list[int]] = []
+    for y in range(ph):
+        row: list[int] = []
+        for x in range(pw):
+            i = (y * pw + x) * 4
+            a = rgba[i + 3]
+            if a < ac:
+                row.append(TRANSPARENT_PALETTE_INDEX)
+            else:
+                row.append(
+                    nearest_opaque_palette_index(
+                        rgba[i], rgba[i + 1], rgba[i + 2], rgbs
+                    )
+                )
+        rows.append(row)
+    return rows
+
+
+def convert_ref_source_to_palette_rows(
+    ref_source: tuple[int, int, list[float]],
+    pw: int,
+    ph: int,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    alpha_cutoff: float = 0.5,
+) -> list[list[int]]:
+    """Referencia (sw, sh, rgba) → matriz pw×ph con colores de paleta mas cercanos."""
+    sw, sh, rgba = ref_source
+    if sw <= 0 or sh <= 0 or pw <= 0 or ph <= 0:
+        return []
+    scaled = resample_rgba_nearest(rgba, sw, sh, pw, ph)
+    return ref_rgba_to_palette_rows(
+        scaled, pw, ph, rgbs, alpha_cutoff=alpha_cutoff
+    )
+
+
 def aspect_ratio_note(src_w: int, src_h: int, dst_w: int, dst_h: int) -> str | None:
     if src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0:
         return None
