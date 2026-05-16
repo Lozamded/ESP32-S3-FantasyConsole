@@ -111,6 +111,13 @@ def _sprite_used_paint_indices(rows: list[list[int]] | None) -> list[int]:
             seen.add(v)
     return sorted(seen)
 # Alto del panel de vista previa (píxeles de pantalla); el zoom grande usa scroll dentro.
+_SCENE_CANVAS_SCALE_MAX = 8
+# Textura fija (tamano max con escala + huecos entre pixeles, como el editor de sprites).
+_SCENE_PREVIEW_TEX_W = _FB_W * _SCENE_CANVAS_SCALE_MAX + max(0, _FB_W - 1)
+_SCENE_PREVIEW_TEX_H = _FB_H * _SCENE_CANVAS_SCALE_MAX + max(0, _FB_H - 1)
+_SCENE_PREVIEW_TEX_PAD_RGBA = (0.08, 0.08, 0.1, 1.0)
+_SCENE_CANVAS_TEX_TAG = "preview_texture"
+_SCENE_CANVAS_IMG_TAG = "ts_canvas_image"
 _CANVAS_VIEWPORT_H = _FB_H * _DEFAULT_CANVAS_SCALE + 48
 _GRID_STEP = 8
 # Panel izquierdo: ancho del child modesto; los controles usan ancho FIJO para que no
@@ -477,6 +484,8 @@ _SPRITE_EDITOR_IMG_TAG = "ts_sprite_edit_image"
 _SPRITE_EDITOR_SCALE_DEFAULT = 4
 _SPRITE_EDITOR_GRID_STEP_DEFAULT = DEFAULT_CELL_PX
 _SPRITE_EDITOR_GRID_STEP_MAX = 64
+# Fondo del lienzo en el editor (solo vista previa; no se guarda en el sprite).
+_SPRITE_EDITOR_CANVAS_BG_DEFAULT = (140, 140, 150, 255)
 
 
 def _normalize_sprite_grid_step(v: object) -> int:
@@ -498,6 +507,38 @@ _SPRITE_EDITOR_TEX_PAD_RGBA = (0.1, 0.1, 0.14, 1.0)
 def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
     mx = float(_SPRITE_EDITOR_TEX_MAX)
     return (max(0.0, min(1.0, pw / mx)), max(0.0, min(1.0, ph / mx)))
+
+
+def _scene_preview_uv_max(dw: int, dh: int) -> tuple[float, float]:
+    mx = float(_SCENE_PREVIEW_TEX_W)
+    my = float(_SCENE_PREVIEW_TEX_H)
+    return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / my)))
+
+
+def _pack_scene_preview_rgba_into_tex_buffer(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+) -> list[float]:
+    """Copia pw×ph al rincón superior izquierdo de la textura de vista previa de escena."""
+    tex_w, tex_h = _SCENE_PREVIEW_TEX_W, _SCENE_PREVIEW_TEX_H
+    bg = _SCENE_PREVIEW_TEX_PAD_RGBA
+    out = [0.0] * (tex_w * tex_h * 4)
+    for y in range(tex_h):
+        for x in range(tex_w):
+            i = (y * tex_w + x) * 4
+            if x < pw and y < ph:
+                si = (y * pw + x) * 4
+                out[i] = rgba[si]
+                out[i + 1] = rgba[si + 1]
+                out[i + 2] = rgba[si + 2]
+                out[i + 3] = rgba[si + 3]
+            else:
+                out[i] = bg[0]
+                out[i + 1] = bg[1]
+                out[i + 2] = bg[2]
+                out[i + 3] = bg[3]
+    return out
 
 
 def _scale_rgba_nearest(
@@ -750,6 +791,11 @@ def run_gui() -> int:
         "sprite_pixel_stash": None,
         "sprite_color_swap_active": False,
         "sprite_color_swap_source": None,
+        "sprite_canvas_bg_rgb01": (
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[0] / 255.0,
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[1] / 255.0,
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[2] / 255.0,
+        ),
         "sprite_edit_cell_px": DEFAULT_CELL_PX,
         "sprite_ui_silent": False,
         "sprite_brush_index": 1,
@@ -779,7 +825,7 @@ def run_gui() -> int:
             v = int(dpg.get_value("ts_canvas_scale"))
         except (TypeError, ValueError):
             v = _DEFAULT_CANVAS_SCALE
-        return max(1, min(8, v))
+        return max(1, min(_SCENE_CANVAS_SCALE_MAX, v))
 
     def palette_reload_from_path() -> str:
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
@@ -1479,8 +1525,34 @@ def run_gui() -> int:
                     base, _FB_W, _FB_H, placements, tr, tg, tb
                 )
         show = bool(dpg.get_value("ts_show_grid"))
-        data = _compose_preview_texture(base, _FB_W, _FB_H, show)
-        dpg.set_value("preview_texture", data)
+        sc = _canvas_display_scale()
+        if show:
+            disp_rgba, dw, dh = _scale_rgba_with_pixel_gaps(
+                base, _FB_W, _FB_H, sc, grid_step=_GRID_STEP
+            )
+        else:
+            disp_rgba, dw, dh = _scale_rgba_nearest(base, _FB_W, _FB_H, sc)
+        if dw > _SCENE_PREVIEW_TEX_W or dh > _SCENE_PREVIEW_TEX_H:
+            dw = min(dw, _SCENE_PREVIEW_TEX_W)
+            dh = min(dh, _SCENE_PREVIEW_TEX_H)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_scene_preview_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_SCENE_CANVAS_TEX_TAG, tex_rgba)
+        _sync_scene_canvas_image_widget(dw, dh)
+
+    def _sync_scene_canvas_image_widget(dw: int, dh: int) -> None:
+        """dw×dh = pixeles en textura y en pantalla (1:1, sin estirado borroso)."""
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
+            return
+        uv = _scene_preview_uv_max(dw, dh)
+        dpg.configure_item(
+            _SCENE_CANVAS_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_SCENE_CANVAS_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
 
     def _set_project_save_enabled(enabled: bool) -> None:
         dpg.configure_item("ts_menu_save_project", enabled=enabled)
@@ -1508,6 +1580,7 @@ def run_gui() -> int:
             "ts_sprite_editor_scale",
             "ts_sprite_editor_show_grid",
             "ts_sprite_editor_grid_step",
+            "ts_sprite_canvas_bg",
             "ts_btn_sprite_fill_canvas",
             "ts_btn_sprite_clear_canvas",
             "ts_btn_sprite_swap_color",
@@ -1861,19 +1934,25 @@ def run_gui() -> int:
             return
         if not isinstance(state.get("project_root"), Path):
             return
-        if not dpg.does_item_exist("ts_canvas_image"):
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
             return
         mx, my = dpg.get_mouse_pos(local=False)
-        min_x, min_y = dpg.get_item_rect_min("ts_canvas_image")
+        min_x, min_y = dpg.get_item_rect_min(_SCENE_CANVAS_IMG_TAG)
         rel_x = float(mx - min_x)
         rel_y = float(my - min_y)
         sc = _canvas_display_scale()
-        lw = float(_FB_W * sc)
-        lh = float(_FB_H * sc)
-        if rel_x < 0 or rel_y < 0 or rel_x >= lw or rel_y >= lh:
+        show_grid = bool(dpg.get_value("ts_show_grid"))
+        dw, dh = _sprite_display_size(
+            _FB_W, _FB_H, sc, with_gaps=show_grid
+        )
+        if rel_x < 0 or rel_y < 0 or rel_x >= dw or rel_y >= dh:
             return
-        lx = int(rel_x // sc)
-        ly_top = int(rel_y // sc)
+        hit = _sprite_pixel_from_display(
+            rel_x, rel_y, _FB_W, _FB_H, sc, with_gaps=show_grid
+        )
+        if hit is None:
+            return
+        lx, ly_top = hit
         sx, sy = _texture_px_to_scene_coords(lx, ly_top)
         scenes = state.get("scenes")
         active = str(state.get("active_scene_id") or "")
@@ -2071,7 +2150,12 @@ def run_gui() -> int:
         prev = dpg.get_value("ts_log") or ""
         dpg.set_value("ts_log", prev + f"Backgrounds: guardado backgrounds/{raw_id}.json\n")
 
-    initial_black = _solid_rgba_float(_FB_W, _FB_H, 0.08, 0.08, 0.1)
+    initial_black = _solid_rgba_float(
+        _SCENE_PREVIEW_TEX_W, _SCENE_PREVIEW_TEX_H, 0.08, 0.08, 0.1
+    )
+    _scene_canvas_dw0, _scene_canvas_dh0 = _sprite_display_size(
+        _FB_W, _FB_H, _DEFAULT_CANVAS_SCALE, with_gaps=False
+    )
 
     dpg.create_context()
 
@@ -2094,10 +2178,10 @@ def run_gui() -> int:
 
     with dpg.texture_registry(tag="ts_texture_registry"):
         dpg.add_dynamic_texture(
-            width=_FB_W,
-            height=_FB_H,
+            width=_SCENE_PREVIEW_TEX_W,
+            height=_SCENE_PREVIEW_TEX_H,
             default_value=initial_black,
-            tag="preview_texture",
+            tag=_SCENE_CANVAS_TEX_TAG,
         )
         dpg.add_dynamic_texture(
             width=_SPRITE_EDITOR_TEX_MAX,
@@ -2256,10 +2340,7 @@ def run_gui() -> int:
         refresh_canvas_texture()
 
     def on_canvas_scale_change(_sender: object, _app_data: object) -> None:
-        if not dpg.does_item_exist("ts_canvas_image"):
-            return
-        s = _canvas_display_scale()
-        dpg.configure_item("ts_canvas_image", width=_FB_W * s, height=_FB_H * s)
+        refresh_canvas_texture()
 
     def on_bg_index_change(_sender: object, _app_data: object) -> None:
         if isinstance(state.get("project_root"), Path):
@@ -2690,6 +2771,7 @@ def run_gui() -> int:
             norm,
             rgbs,
             ref_layer,
+            canvas_fill_rgb=_sprite_canvas_fill_rgb01(),
             ref_alpha=_sprite_ref_opacity(),
             paint_alpha=_sprite_paint_opacity(),
         )
@@ -2744,6 +2826,40 @@ def run_gui() -> int:
         except (TypeError, ValueError):
             v = 1.0
         return max(0.05, min(1.0, v))
+
+    def _sprite_canvas_fill_rgb01() -> tuple[float, float, float]:
+        """Fondo del lienzo (solo editor); independiente de la paleta del sprite."""
+        if dpg.does_item_exist("ts_sprite_canvas_bg"):
+            raw = dpg.get_value("ts_sprite_canvas_bg")
+            if isinstance(raw, (list, tuple)) and len(raw) >= 3:
+                peak = max(float(raw[0]), float(raw[1]), float(raw[2]))
+                if peak > 1.0 + 1e-6:
+                    return (
+                        max(0.0, min(1.0, float(raw[0]) / 255.0)),
+                        max(0.0, min(1.0, float(raw[1]) / 255.0)),
+                        max(0.0, min(1.0, float(raw[2]) / 255.0)),
+                    )
+                return (
+                    max(0.0, min(1.0, float(raw[0]))),
+                    max(0.0, min(1.0, float(raw[1]))),
+                    max(0.0, min(1.0, float(raw[2]))),
+                )
+        cached = state.get("sprite_canvas_bg_rgb01")
+        if isinstance(cached, (list, tuple)) and len(cached) >= 3:
+            return (
+                max(0.0, min(1.0, float(cached[0]))),
+                max(0.0, min(1.0, float(cached[1]))),
+                max(0.0, min(1.0, float(cached[2]))),
+            )
+        return (
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[0] / 255.0,
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[1] / 255.0,
+            _SPRITE_EDITOR_CANVAS_BG_DEFAULT[2] / 255.0,
+        )
+
+    def on_sprite_canvas_bg_change(_sender: object, _app_data: object) -> None:
+        state["sprite_canvas_bg_rgb01"] = _sprite_canvas_fill_rgb01()
+        _refresh_sprite_edit_texture()
 
     def _sprite_ref_visible() -> bool:
         if not dpg.does_item_exist("ts_sprite_ref_show"):
@@ -3620,8 +3736,8 @@ def run_gui() -> int:
                                 callback=on_canvas_scale_change,
                             )
                         dpg.add_text(
-                            "Con zoom alto, desplazate dentro del marco de la vista previa "
-                            "(barras horizontal y vertical).",
+                            "Escala entera en CPU (pixeles nitidos). Con zoom alto o rejilla, "
+                            "desplazate dentro del marco (barras horizontal y vertical).",
                             wrap=400,
                         )
                         with dpg.child_window(
@@ -3634,14 +3750,20 @@ def run_gui() -> int:
                             autosize_y=False,
                         ):
                             dpg.add_image(
-                                "preview_texture",
-                                tag="ts_canvas_image",
-                                width=_FB_W * _DEFAULT_CANVAS_SCALE,
-                                height=_FB_H * _DEFAULT_CANVAS_SCALE,
+                                _SCENE_CANVAS_TEX_TAG,
+                                tag=_SCENE_CANVAS_IMG_TAG,
+                                width=_scene_canvas_dw0,
+                                height=_scene_canvas_dh0,
+                                uv_min=(0.0, 0.0),
+                                uv_max=_scene_preview_uv_max(
+                                    _scene_canvas_dw0, _scene_canvas_dh0
+                                ),
                             )
                             with dpg.item_handler_registry(tag="ts_canvas_click_reg"):
                                 dpg.add_item_clicked_handler(callback=on_canvas_preview_click)
-                            dpg.bind_item_handler_registry("ts_canvas_image", "ts_canvas_click_reg")
+                            dpg.bind_item_handler_registry(
+                                _SCENE_CANVAS_IMG_TAG, "ts_canvas_click_reg"
+                            )
                         dpg.add_separator()
                         dpg.add_text(
                             "Scripts Lua: global = ENTRY en main.turtlecart; cada escena tiene su stem "
@@ -3928,6 +4050,15 @@ def run_gui() -> int:
                     )
                 dpg.bind_item_handler_registry(
                     "ts_sprite_editor_grid_step", "ts_sprite_grid_step_handlers"
+                )
+                dpg.add_color_edit(
+                    tag="ts_sprite_canvas_bg",
+                    label="Fondo del lienzo (solo editor, no es paleta)",
+                    default_value=_SPRITE_EDITOR_CANVAS_BG_DEFAULT,
+                    no_alpha=True,
+                    width=280,
+                    enabled=False,
+                    callback=on_sprite_canvas_bg_change,
                 )
                 with dpg.group(horizontal=True):
                     dpg.add_button(

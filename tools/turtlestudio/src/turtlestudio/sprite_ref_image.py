@@ -165,12 +165,14 @@ def composite_sprite_editor_preview(
     rgbs: list[tuple[float, float, float]],
     ref_rgba: list[float] | None,
     *,
+    canvas_fill_rgb: tuple[float, float, float] = (0.55, 0.55, 0.58),
     ref_alpha: float = 0.45,
     paint_alpha: float = 1.0,
 ) -> list[float]:
     """
     Vista previa del editor: relleno del lienzo, referencia opcional debajo,
     pixeles pintados encima con opacidad ajustable (indice 31 = hueco).
+    canvas_fill_rgb: color de fondo del lienzo (solo vista previa; no es paleta).
     """
     from turtlestudio.palette_policy import resolve_palette_color
 
@@ -178,12 +180,11 @@ def composite_sprite_editor_preview(
     pw = len(rows[0]) if rows else 0
     if pw <= 0 or ph <= 0:
         return []
-    if len(rgbs) > 1:
-        fill = rgbs[1]
-    elif rgbs:
-        fill = rgbs[0]
-    else:
-        fill = (0.5, 0.5, 0.5)
+    fill = (
+        max(0.0, min(1.0, float(canvas_fill_rgb[0]))),
+        max(0.0, min(1.0, float(canvas_fill_rgb[1]))),
+        max(0.0, min(1.0, float(canvas_fill_rgb[2]))),
+    )
 
     underlay = _solid_fill_rgba_float01(pw, ph, fill)
     if ref_rgba is not None and len(ref_rgba) == len(underlay):
