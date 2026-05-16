@@ -87,7 +87,7 @@ Matriz de indices de paleta; fila **0 = arriba** del sprite (como en el editor).
 - Pestana **Sprites**: paleta propia del sprite, celdas W/H, lienzo con pincel (clic en la paleta = indice de pincel). **Clic derecho** (o arrastrar con boton derecho) borra con indice **31**. **Borrar todo** vacia el lienzo (todo transparente). Debajo del lienzo, **colores usados** (clic para volver a elegir ese indice); **Intercambiar color** sustituye todos los pixeles de un indice por otro (origen resaltado con borde). Al **reducir** W/H el estudio conserva en memoria el arte fuera del lienzo para recuperarlo si se **agranda** de nuevo; al **guardar**, el JSON solo lleva el tamano activo (sin datos fuera de `pixel_w`×`pixel_h`).
 - **Guardar sprite** escribe siempre `indexed_pixels` + `image.rows` (no sobrescribe con un solo color plano).
 - **Crear JSON sprite** crea un sprite indexado relleno con el pincel actual.
-- Rejilla del lienzo: paso configurable (1 px o multiplos de 4).
+- Rejilla del lienzo (vista previa): **hueco de 1 px** entre pixeles ampliados (no lineas encima del arte); paso de celda configurable (4, 8, …) oscurece los bordes de bloque.
 - Escala de vista: ampliacion por vecino mas cercano (pixeles nítidos).
 - **Referencia visual** (PNG/JPG/…): importar imagen escalada al lienzo (`pixel_w`×`pixel_h`); visible bajo el relleno del lienzo (indice 1 por defecto), tapada al pintar. **Convertir en sprite** rellena `image.rows` con el color de paleta mas cercano por pixel (escala vecino mas cercano; alpha &lt; 0.5 → indice 31). Opacidad de referencia y de la **capa pintada** ajustables en la vista previa (no afectan al JSON exportado). La referencia **no** se guarda en el JSON del sprite.
 

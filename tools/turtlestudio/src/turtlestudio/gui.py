@@ -258,10 +258,130 @@ def _apply_sprite_editor_grid_overlay(
     *,
     grid_step: int,
 ) -> list[float]:
-    """Rejilla con paso en px: 1 o multiplo de 4."""
+    """Obsoleto en editor de sprites (se usan huecos entre pixeles). Mantener por compat."""
     st = _normalize_sprite_grid_step(grid_step)
     blend = 0.35 if st == 1 else 0.45
     return _apply_grid_overlay_to_rgba(base_rgba, width, height, step=st, blend=blend)
+
+
+_SPRITE_EDITOR_PIXEL_GAP = 1
+_SPRITE_EDITOR_GAP_RGBA = (0.14, 0.16, 0.22, 1.0)
+_SPRITE_EDITOR_CELL_GAP_RGBA = (0.08, 0.1, 0.15, 1.0)
+
+
+def _sprite_display_stride(scale: int) -> int:
+    return max(1, int(scale)) + _SPRITE_EDITOR_PIXEL_GAP
+
+
+def _sprite_display_size(
+    pw: int,
+    ph: int,
+    scale: int,
+    *,
+    with_gaps: bool,
+) -> tuple[int, int]:
+    sc = max(1, int(scale))
+    if pw <= 0 or ph <= 0:
+        return 0, 0
+    if not with_gaps:
+        return pw * sc, ph * sc
+    g = _SPRITE_EDITOR_PIXEL_GAP
+    return pw * sc + max(0, pw - 1) * g, ph * sc + max(0, ph - 1) * g
+
+
+def _scale_rgba_with_pixel_gaps(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+    scale: int,
+    *,
+    grid_step: int,
+) -> tuple[list[float], int, int]:
+    """
+    Escala entera con 1 px de separacion entre pixeles logicos (no tapa el arte).
+    grid_step > 1 oscurece los huecos en bordes de celda (multiplos de step).
+    """
+    sc = max(1, int(scale))
+    g = _SPRITE_EDITOR_PIXEL_GAP
+    if pw <= 0 or ph <= 0:
+        return [], 0, 0
+    dw, dh = _sprite_display_size(pw, ph, sc, with_gaps=True)
+    gr, gg, gb, ga = _SPRITE_EDITOR_GAP_RGBA
+    out = [gr, gg, gb, ga] * (dw * dh)
+    stride = sc + g
+    st = _normalize_sprite_grid_step(grid_step)
+
+    for sy in range(ph):
+        for sx in range(pw):
+            si = (sy * pw + sx) * 4
+            px = (rgba[si], rgba[si + 1], rgba[si + 2], rgba[si + 3])
+            x0 = sx * stride
+            y0 = sy * stride
+            for dy in range(sc):
+                row_off = (y0 + dy) * dw * 4
+                for dx in range(sc):
+                    oi = row_off + (x0 + dx) * 4
+                    out[oi] = px[0]
+                    out[oi + 1] = px[1]
+                    out[oi + 2] = px[2]
+                    out[oi + 3] = px[3]
+
+    if g > 0 and st > 1:
+        cr, cg, cb, ca = _SPRITE_EDITOR_CELL_GAP_RGBA
+        for sx in range(1, pw):
+            if sx % st != 0:
+                continue
+            x0 = sx * stride - g
+            for gy in range(dh):
+                for gg in range(g):
+                    x = x0 + gg
+                    if 0 <= x < dw:
+                        oi = (gy * dw + x) * 4
+                        out[oi] = cr
+                        out[oi + 1] = cg
+                        out[oi + 2] = cb
+                        out[oi + 3] = ca
+        for sy in range(1, ph):
+            if sy % st != 0:
+                continue
+            y0 = sy * stride - g
+            for gy in range(g):
+                y = y0 + gy
+                if 0 <= y < dh:
+                    row_off = y * dw * 4
+                    for x in range(dw):
+                        oi = row_off + x * 4
+                        out[oi] = cr
+                        out[oi + 1] = cg
+                        out[oi + 2] = cb
+                        out[oi + 3] = ca
+
+    return out, dw, dh
+
+
+def _sprite_pixel_from_display(
+    rx: float,
+    ry: float,
+    pw: int,
+    ph: int,
+    scale: int,
+    *,
+    with_gaps: bool,
+) -> tuple[int, int] | None:
+    """Coordenada de lienzo (rx, ry) en espacio pantalla → indice logico (lx, ly)."""
+    sc = max(1, int(scale))
+    if with_gaps:
+        stride = _sprite_display_stride(sc)
+        lx = int(rx // stride)
+        ly = int(ry // stride)
+        if rx % stride >= sc or ry % stride >= sc:
+            return None
+    else:
+        lx = int(rx // sc)
+        ly = int(ry // sc)
+    if lx < 0 or ly < 0 or lx >= pw or ly >= ph:
+        return None
+    return lx, ly
 
 
 def _blend_rgba_at(
@@ -2332,12 +2452,23 @@ def run_gui() -> int:
             v = _SPRITE_EDITOR_SCALE_DEFAULT
         return max(1, min(16, v))
 
+    def _sprite_editor_grid_enabled() -> bool:
+        if not dpg.does_item_exist("ts_sprite_editor_show_grid"):
+            return True
+        return bool(dpg.get_value("ts_sprite_editor_show_grid"))
+
     def _sprite_editor_effective_scale(pw: int, ph: int) -> int:
         """Escala en pantalla; acotada para caber en la textura 512×512."""
         sc = _sprite_editor_display_scale()
         if pw <= 0 or ph <= 0:
             return sc
-        cap = min(_SPRITE_EDITOR_TEX_MAX // pw, _SPRITE_EDITOR_TEX_MAX // ph)
+        if _sprite_editor_grid_enabled():
+            g = _SPRITE_EDITOR_PIXEL_GAP
+            cap_w = (_SPRITE_EDITOR_TEX_MAX - max(0, pw - 1) * g) // pw
+            cap_h = (_SPRITE_EDITOR_TEX_MAX - max(0, ph - 1) * g) // ph
+            cap = min(cap_w, cap_h)
+        else:
+            cap = min(_SPRITE_EDITOR_TEX_MAX // pw, _SPRITE_EDITOR_TEX_MAX // ph)
         return max(1, min(sc, cap))
 
     def _expected_sprite_matrix_pixel_size() -> tuple[int, int]:
@@ -2429,18 +2560,18 @@ def run_gui() -> int:
         if pw <= 0 or ph <= 0:
             return False
         sc = _sprite_editor_effective_scale(pw, ph)
+        show_grid = _sprite_editor_grid_enabled()
         mx, my = dpg.get_mouse_pos(local=False)
         min_x, min_y = dpg.get_item_rect_min(_SPRITE_EDITOR_IMG_TAG)
         rx = float(mx - min_x)
         ry = float(my - min_y)
-        lw = float(pw * sc)
-        lh = float(ph * sc)
-        if rx < 0 or ry < 0 or rx >= lw or ry >= lh:
+        dw, dh = _sprite_display_size(pw, ph, sc, with_gaps=show_grid)
+        if rx < 0 or ry < 0 or rx >= dw or ry >= dh:
             return False
-        lx = int(rx // sc)
-        ly = int(ry // sc)
-        if ly < 0 or ly >= ph or lx < 0 or lx >= pw:
+        hit = _sprite_pixel_from_display(rx, ry, pw, ph, sc, with_gaps=show_grid)
+        if hit is None:
             return False
+        lx, ly = hit
         color_i = (
             TRANSPARENT_PALETTE_INDEX
             if erase
@@ -2492,7 +2623,18 @@ def run_gui() -> int:
         if len(rgba) != expected_len:
             return
         sc = _sprite_editor_effective_scale(pw, ph)
-        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
+        show_grid = _sprite_editor_grid_enabled()
+        if show_grid:
+            gstep = (
+                parse_sprite_editor_grid_step()
+                if dpg.does_item_exist("ts_sprite_editor_grid_step")
+                else _SPRITE_EDITOR_GRID_STEP_DEFAULT
+            )
+            disp_rgba, dw, dh = _scale_rgba_with_pixel_gaps(
+                rgba, pw, ph, sc, grid_step=gstep
+            )
+        else:
+            disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
         if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
             dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
             dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
@@ -2553,12 +2695,6 @@ def run_gui() -> int:
         )
         cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         cp = max(1, min(256, cp))
-        show_g = bool(dpg.get_value("ts_sprite_editor_show_grid")) if dpg.does_item_exist(
-            "ts_sprite_editor_show_grid"
-        ) else False
-        if show_g:
-            gstep = parse_sprite_editor_grid_step()
-            base = _apply_sprite_editor_grid_overlay(base, pw, ph, grid_step=gstep)
         if len(base) != pw * ph * 4:
             _rebuild_sprite_used_swatches()
             return
@@ -2759,10 +2895,17 @@ def run_gui() -> int:
             return _SPRITE_EDITOR_GRID_STEP_DEFAULT
         return _normalize_sprite_grid_step(dpg.get_value("ts_sprite_editor_grid_step"))
 
-    def on_sprite_editor_grid_step_change(_sender: object, _app_data: object) -> None:
+    def on_sprite_editor_grid_step_change(_sender: object, app_data: object) -> None:
         if not dpg.does_item_exist("ts_sprite_editor_grid_step"):
             return
-        norm = parse_sprite_editor_grid_step()
+        if app_data is not None and not isinstance(app_data, dict):
+            try:
+                raw: object = int(app_data)
+            except (TypeError, ValueError):
+                raw = dpg.get_value("ts_sprite_editor_grid_step")
+        else:
+            raw = dpg.get_value("ts_sprite_editor_grid_step")
+        norm = _normalize_sprite_grid_step(raw)
         try:
             cur = int(dpg.get_value("ts_sprite_editor_grid_step"))
         except (TypeError, ValueError):
@@ -3710,6 +3853,10 @@ def run_gui() -> int:
                     "clic fuera o «Aplicar tamano».",
                     wrap=520,
                 )
+                with dpg.item_handler_registry(tag="ts_sprite_grid_step_handlers"):
+                    dpg.add_item_deactivated_handler(
+                        callback=on_sprite_editor_grid_step_change,
+                    )
                 with dpg.item_handler_registry(tag="ts_sprite_blocks_dim_handlers"):
                     dpg.add_item_deactivated_handler(callback=on_sprite_dimension_change)
                 with dpg.group(horizontal=True):
@@ -3772,13 +3919,15 @@ def run_gui() -> int:
                         default_value=_SPRITE_EDITOR_GRID_STEP_DEFAULT,
                         min_value=1,
                         max_value=_SPRITE_EDITOR_GRID_STEP_MAX,
+                        step=4,
+                        step_fast=8,
                         min_clamped=True,
                         max_clamped=True,
                         enabled=False,
                         callback=on_sprite_editor_grid_step_change,
                     )
                 dpg.bind_item_handler_registry(
-                    "ts_sprite_editor_grid_step", "ts_sprite_blocks_dim_handlers"
+                    "ts_sprite_editor_grid_step", "ts_sprite_grid_step_handlers"
                 )
                 with dpg.group(horizontal=True):
                     dpg.add_button(
