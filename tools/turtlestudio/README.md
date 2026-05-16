@@ -38,6 +38,7 @@ PYTHONPATH=src python3 -m turtlestudio gui
 
 - Espacio de escena y coordenadas: ver `spec/scene-v0.md` (264×198, origen abajo-izquierda, Y hacia arriba).
 - Formato cartucho: `spec/turtlecart-v0.md`.
+- Sprites y celdas (`cell_px` default **4**): `spec/sprite-v0.md`. Indice de paleta **31** = transparente (no seleccionable como pincel/fondo).
 - Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` y su texto forma el **ENTRY** dentro del cartucho inicial **`main.turtlecart`** (salida por defecto `build/main.turtlecart`). En ese cart solo se embebe ademas `studio/project_bundle.json`; los Lua por escena (`scripts/<stem>.lua`) se editan en el proyecto y pueden distribuirse en **otros archivos** al empaquetar. La primera escena suele llamarse **`intro`**; el id **`main` esta reservado** (nombre del cartucho).
 
 ## Comando `gui` (Dear PyGui)

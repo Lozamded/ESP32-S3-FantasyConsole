@@ -258,6 +258,30 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
   }
 }
 
+void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
+                                   const uint8_t* rows_top_first, int row_stride,
+                                   uint8_t transparent_index) {
+  if (w <= 0 || h <= 0 || !rows_top_first || row_stride <= 0) {
+    return;
+  }
+  const uint8_t tr = clamp_color_index(transparent_index);
+  for (int py = 0; py < h; ++py) {
+    const int sy = y0 + (h - 1 - py);
+    const int yfb = (kH - 1) - sy;
+    if (yfb < 0 || yfb >= kH) {
+      continue;
+    }
+    const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
+    for (int lx = 0; lx < w; ++lx) {
+      const uint8_t ci = row[lx];
+      if (ci == tr) {
+        continue;
+      }
+      plot_fb(x0 + lx, yfb, clamp_color_index(ci));
+    }
+  }
+}
+
 void turtle_gpu_flip(void) {
   turtle_fb_flush_to_display();
 }

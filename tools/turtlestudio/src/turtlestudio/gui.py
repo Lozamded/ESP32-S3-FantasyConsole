@@ -16,6 +16,15 @@ from turtlestudio.build import (
     normalize_export_initial_scene,
     write_turtlecart_content,
 )
+from turtlestudio.palette_policy import (
+    MAX_OPAQUE_PALETTE_INDEX,
+    TRANSPARENT_PALETTE_INDEX,
+    clamp_paint_palette_index,
+    clamp_pixel_storage_index,
+    is_transparent_palette_index,
+    resolve_palette_color,
+    swatch_indices_for_palette,
+)
 from turtlestudio.project import (
     BACKGROUND_LAYER_COUNT,
     BackgroundLayer,
@@ -45,22 +54,61 @@ from turtlestudio.objects import (
     save_object_json,
     write_object_json,
 )
+from turtlestudio.sprite_ref_image import (
+    aspect_ratio_note,
+    composite_sprite_editor_preview,
+    load_image_rgba_float01,
+    resample_rgba_stretch,
+)
 from turtlestudio.sprites import (
+    DEFAULT_CELL_PX,
     list_sprite_json_stems,
     normalize_palette_rel,
     normalize_palette_rows,
     parse_palette_rows_image,
+    palette_rows_pixel_size,
     read_sprite_file,
+    replace_palette_index_in_rows,
+    resize_palette_rows_with_stash,
     save_indexed_pixels_sprite_json,
     solid_fill_indices,
     sprite_is_indexed_pixels,
     sprite_pixel_dimensions,
+    trim_palette_rows,
 )
 
 # Resolucion logica de consola (spec scene-v0; textura = raster Y hacia abajo)
 _FB_W = SCENE_PIXEL_W
 _FB_H = SCENE_PIXEL_H
 _DEFAULT_CANVAS_SCALE = 2
+_PALETTE_TRANSPARENT_NOTE = (
+    f"Indice {TRANSPARENT_PALETTE_INDEX}: transparente (reservado; no seleccionable)"
+)
+
+
+def _max_selectable_palette_index(palette_len: int) -> int:
+    if palette_len <= 0:
+        return 0
+    return min(palette_len - 1, MAX_OPAQUE_PALETTE_INDEX)
+
+
+def _sprite_used_paint_indices(rows: list[list[int]] | None) -> list[int]:
+    """Indices opacos presentes en la matriz del sprite (sin el 31 transparente)."""
+    if not isinstance(rows, list):
+        return []
+    seen: set[int] = set()
+    for row in rows:
+        if not isinstance(row, list):
+            continue
+        for raw in row:
+            try:
+                v = clamp_pixel_storage_index(raw)
+            except (TypeError, ValueError):
+                continue
+            if is_transparent_palette_index(v):
+                continue
+            seen.add(v)
+    return sorted(seen)
 # Alto del panel de vista previa (píxeles de pantalla); el zoom grande usa scroll dentro.
 _CANVAS_VIEWPORT_H = _FB_H * _DEFAULT_CANVAS_SCALE + 48
 _GRID_STEP = 8
@@ -110,8 +158,10 @@ def _composite_background_layers_rgba(
         if not ly.enabled or ly.opacity <= 0:
             continue
         a = ly.opacity / 255.0
-        ci = max(0, min(n - 1, ly.color_index))
-        r, g, b = rgbs[ci]
+        col = resolve_palette_color(ly.color_index, rgbs)
+        if col is None:
+            continue
+        r, g, b = col
         for i in range(0, fw * fh * 4, 4):
             out[i] = out[i] * (1.0 - a) + r * a
             out[i + 1] = out[i + 1] * (1.0 - a) + g * a
@@ -144,8 +194,10 @@ def _scene_background_asset_underlay(
     n = len(rgbs)
     if n <= 0:
         return None
-    ci = max(0, min(n - 1, idx))
-    r, g, b = rgbs[ci]
+    col = resolve_palette_color(idx, rgbs)
+    if col is None:
+        return None
+    r, g, b = col
     return _solid_rgba_float(fw, fh, r, g, b)
 
 
@@ -211,6 +263,31 @@ def _apply_sprite_editor_grid_overlay(
     return _apply_grid_overlay_to_rgba(base_rgba, width, height, step=st, blend=blend)
 
 
+def _blend_rgba_at(
+    rgba: list[float],
+    i: int,
+    r: float,
+    g: float,
+    b: float,
+    *,
+    alpha: float,
+) -> None:
+    a = max(0.0, min(1.0, float(alpha)))
+    if a <= 0.0:
+        return
+    if a >= 1.0 - 1e-9:
+        rgba[i] = r
+        rgba[i + 1] = g
+        rgba[i + 2] = b
+        rgba[i + 3] = 1.0
+        return
+    inv = 1.0 - a
+    rgba[i] = rgba[i] * inv + r * a
+    rgba[i + 1] = rgba[i + 1] * inv + g * a
+    rgba[i + 2] = rgba[i + 2] * inv + b * a
+    rgba[i + 3] = 1.0
+
+
 def _blit_solid_rect_scene(
     rgba: list[float],
     fw: int,
@@ -222,6 +299,8 @@ def _blit_solid_rect_scene(
     r: float,
     g: float,
     b: float,
+    *,
+    alpha: float = 1.0,
 ) -> None:
     """Rellena un rectangulo en espacio escena; (sx0, sy_bottom) = esquina inferior izquierda."""
     for ly in range(ph):
@@ -233,10 +312,7 @@ def _blit_solid_rect_scene(
             ty = (fh - 1) - scene_y
             tx = scene_x
             i = (ty * fw + tx) * 4
-            rgba[i] = r
-            rgba[i + 1] = g
-            rgba[i + 2] = b
-            rgba[i + 3] = 1.0
+            _blend_rgba_at(rgba, i, r, g, b, alpha=alpha)
 
 
 def _draw_anchor_cross_rgba(
@@ -278,7 +354,7 @@ def _draw_anchor_cross_rgba(
 _SPRITE_EDITOR_TEX_TAG = "ts_sprite_edit_texture"
 _SPRITE_EDITOR_IMG_TAG = "ts_sprite_edit_image"
 _SPRITE_EDITOR_SCALE_DEFAULT = 4
-_SPRITE_EDITOR_GRID_STEP_DEFAULT = 8
+_SPRITE_EDITOR_GRID_STEP_DEFAULT = DEFAULT_CELL_PX
 _SPRITE_EDITOR_GRID_STEP_MAX = 64
 
 
@@ -367,6 +443,8 @@ def _blit_indexed_rect_scene(
     sy_bottom: int,
     rows: list[list[int]],
     rgbs: list[tuple[float, float, float]],
+    *,
+    alpha: float = 1.0,
 ) -> None:
     """Ancla igual que rectangulo solido: (sx0, sy_bottom) esquina inferior izquierda del bbox."""
     ph = len(rows)
@@ -383,37 +461,16 @@ def _blit_indexed_rect_scene(
                 idx = int(row[lx]) if lx < len(row) else 0
             except (TypeError, ValueError):
                 idx = 0
-            ci = max(0, min(n - 1, idx))
-            r, g, b = rgbs[ci]
+            if is_transparent_palette_index(idx):
+                continue
+            col = resolve_palette_color(idx, rgbs)
+            if col is None:
+                continue
+            r, g, b = col
             ty = (fh - 1) - scene_y
             tx = scene_x
             i = (ty * fw + tx) * 4
-            rgba[i] = r
-            rgba[i + 1] = g
-            rgba[i + 2] = b
-            rgba[i + 3] = 1.0
-
-
-def _sprite_rows_to_rgba_float01(
-    rows: list[list[int]],
-    rgbs: list[tuple[float, float, float]],
-) -> list[float]:
-    """Textura DPG: fila 0 arriba."""
-    ph = len(rows)
-    pw = len(rows[0]) if rows else 0
-    n = max(1, len(rgbs))
-    out: list[float] = []
-    for py in range(ph):
-        row = rows[py] if py < len(rows) else []
-        for lx in range(pw):
-            try:
-                idx = int(row[lx]) if lx < len(row) else 0
-            except (TypeError, ValueError):
-                idx = 0
-            ci = max(0, min(n - 1, idx))
-            r, g, b = rgbs[ci]
-            out.extend((r, g, b, 1.0))
-    return out
+            _blend_rgba_at(rgba, i, r, g, b, alpha=alpha)
 
 
 def _resolve_object_sprite_preview(
@@ -422,7 +479,12 @@ def _resolve_object_sprite_preview(
 ) -> dict[str, Any]:
     """Vista previa en escena: solido o indexed_pixels + paleta del sprite."""
     oid = object_id.strip()
-    fb = {"mode": "solid", "pw": 8, "ph": 8, "rgb": (0.42, 0.42, 0.48)}
+    fb = {
+        "mode": "solid",
+        "pw": DEFAULT_CELL_PX,
+        "ph": DEFAULT_CELL_PX,
+        "rgb": (0.42, 0.42, 0.48),
+    }
     if not oid:
         return fb
     try:
@@ -473,9 +535,11 @@ def _paint_scene_objects_preview(
     placements: list[dict[str, Any]],
     *,
     cross_rgb: tuple[float, float, float],
+    layer_alpha: float = 1.0,
 ) -> None:
     """Compone sprites (solido o pixeles indexados) y una cruz en el ancla por instancia."""
     cr, cg, cb = cross_rgb
+    a = max(0.0, min(1.0, float(layer_alpha)))
     for p in placements:
         try:
             oid = str(p.get("id", "")).strip()
@@ -488,21 +552,33 @@ def _paint_scene_objects_preview(
         sx = max(0, min(SCENE_PIXEL_W - 1, sx))
         sy = max(0, min(SCENE_PIXEL_H - 1, sy))
         info = _resolve_object_sprite_preview(project_root, oid)
-        if info.get("mode") == "indexed":
-            _blit_indexed_rect_scene(
-                rgba,
-                fw,
-                fh,
-                sx,
-                sy,
-                info["rows"],
-                info["rgbs"],
-            )
-        else:
-            pr, pg, pb = info["rgb"]
-            _blit_solid_rect_scene(
-                rgba, fw, fh, sx, sy, info["pw"], info["ph"], pr, pg, pb
-            )
+        if a > 0.0:
+            if info.get("mode") == "indexed":
+                _blit_indexed_rect_scene(
+                    rgba,
+                    fw,
+                    fh,
+                    sx,
+                    sy,
+                    info["rows"],
+                    info["rgbs"],
+                    alpha=a,
+                )
+            else:
+                pr, pg, pb = info["rgb"]
+                _blit_solid_rect_scene(
+                    rgba,
+                    fw,
+                    fh,
+                    sx,
+                    sy,
+                    info["pw"],
+                    info["ph"],
+                    pr,
+                    pg,
+                    pb,
+                    alpha=a,
+                )
         _draw_anchor_cross_rgba(rgba, fw, fh, sx, sy, cr, cg, cb)
 
 
@@ -550,9 +626,14 @@ def run_gui() -> int:
         "project_entry": DEFAULT_ENTRY,
         "edit_bg_layer_slot": 0,
         "sprite_pixel_rows": None,
-        "sprite_edit_cell_px": 8,
+        "sprite_pixel_stash": None,
+        "sprite_color_swap_active": False,
+        "sprite_color_swap_source": None,
+        "sprite_edit_cell_px": DEFAULT_CELL_PX,
         "sprite_ui_silent": False,
         "sprite_brush_index": 1,
+        "sprite_ref_source": None,
+        "sprite_ref_path": "",
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -590,16 +671,21 @@ def run_gui() -> int:
         state["rgb"] = rgbs
         state["hexes"] = hexes
         n = len(hexes)
-        max_i = max(0, n - 1)
-        if dpg.does_item_exist("ts_bg_index"):
-            dpg.configure_item("ts_bg_index", min_value=0, max_value=max_i)
-            try:
-                cur_i = int(dpg.get_value("ts_bg_index"))
-            except (TypeError, ValueError):
-                cur_i = 0
-            dpg.set_value("ts_bg_index", max(0, min(cur_i, max_i)))
+        max_i = _max_selectable_palette_index(n)
+        for tag in ("ts_bg_index", "ts_bg_new_idx"):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, min_value=0, max_value=max_i)
+                try:
+                    cur_i = int(dpg.get_value(tag))
+                except (TypeError, ValueError):
+                    cur_i = 0
+                dpg.set_value(tag, clamp_paint_palette_index(cur_i, palette_len=n))
         _rebuild_palette_swatches()
-        return msg + f"Paleta canvas: {len(hexes)} colores (indices 0..{len(hexes) - 1}).\n"
+        return (
+            msg
+            + f"Paleta canvas: {len(hexes)} colores; pintar 0..{max_i}; "
+            f"{TRANSPARENT_PALETTE_INDEX}=transparente.\n"
+        )
 
     def _clipboard_push_hex(hexes: list[str], idx: int) -> None:
         if idx < 0 or idx >= len(hexes):
@@ -619,11 +705,13 @@ def run_gui() -> int:
     ) -> None:
         idx = user_data if user_data is not None else dpg.get_item_user_data(sender)
         idx = int(idx)
+        if is_transparent_palette_index(idx):
+            return
         hexes = state.get("hexes")
         if not isinstance(hexes, list) or idx < 0 or idx >= len(hexes):
             return
         _clipboard_push_hex(hexes, idx)
-        dpg.set_value("ts_bg_index", idx)
+        dpg.set_value("ts_bg_index", clamp_paint_palette_index(idx, palette_len=len(hexes)))
         if isinstance(state.get("project_root"), Path):
             _commit_background_for_active_scene()
         refresh_canvas_texture()
@@ -633,11 +721,228 @@ def run_gui() -> int:
     ) -> None:
         idx = user_data if user_data is not None else dpg.get_item_user_data(sender)
         idx = int(idx)
+        if is_transparent_palette_index(idx):
+            return
         hexes = state.get("sprite_palette_hexes")
         if not isinstance(hexes, list) or idx < 0 or idx >= len(hexes):
             return
+        if _sprite_color_swap_handle_pick(idx):
+            return
         _clipboard_push_hex(hexes, idx)
         _set_sprite_brush_index(idx)
+
+    def _on_sprite_used_swatch_click(
+        sender: object, app_data: object, user_data: object | None = None,
+    ) -> None:
+        idx = user_data if user_data is not None else dpg.get_item_user_data(sender)
+        idx = int(idx)
+        if is_transparent_palette_index(idx):
+            return
+        hexes = state.get("sprite_palette_hexes")
+        if _sprite_color_swap_handle_pick(idx):
+            return
+        if isinstance(hexes, list) and 0 <= idx < len(hexes):
+            _clipboard_push_hex(hexes, idx)
+        _set_sprite_brush_index(idx)
+
+    def _sprite_color_swap_source_index() -> int | None:
+        raw = state.get("sprite_color_swap_source")
+        if raw is None:
+            return None
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if is_transparent_palette_index(v):
+            return None
+        return v
+
+    def _sprite_color_swap_cancel() -> None:
+        state["sprite_color_swap_active"] = False
+        state["sprite_color_swap_source"] = None
+        if dpg.does_item_exist("ts_btn_sprite_swap_color"):
+            dpg.configure_item("ts_btn_sprite_swap_color", label="Intercambiar color")
+        _update_sprite_swap_status_label()
+        _rebuild_sprite_palette_swatches()
+        _rebuild_sprite_used_swatches()
+
+    def _set_sprite_color_swap_source(idx: int | None) -> None:
+        if idx is not None and is_transparent_palette_index(idx):
+            idx = None
+        state["sprite_color_swap_source"] = idx
+        _update_sprite_swap_status_label()
+        _rebuild_sprite_palette_swatches()
+        _rebuild_sprite_used_swatches()
+
+    def _update_sprite_swap_status_label() -> None:
+        if not dpg.does_item_exist("ts_sprite_swap_status"):
+            return
+        if not state.get("sprite_color_swap_active"):
+            dpg.set_value("ts_sprite_swap_status", "")
+            return
+        src = _sprite_color_swap_source_index()
+        if src is None:
+            dpg.set_value(
+                "ts_sprite_swap_status",
+                "Paso 1/2: clic en el color a reemplazar (usados o paleta).",
+            )
+        else:
+            dpg.set_value(
+                "ts_sprite_swap_status",
+                f"Paso 2/2: color {src} resaltado — clic en el color destino.",
+            )
+
+    def _apply_sprite_color_swap(from_idx: int, to_idx: int) -> None:
+        from_idx = clamp_pixel_storage_index(from_idx)
+        to_idx = clamp_pixel_storage_index(to_idx)
+        if is_transparent_palette_index(from_idx) or is_transparent_palette_index(to_idx):
+            return
+        if from_idx == to_idx:
+            return
+        rows = state.get("sprite_pixel_rows")
+        if isinstance(rows, list):
+            state["sprite_pixel_rows"] = replace_palette_index_in_rows(
+                rows, from_idx, to_idx
+            )
+        stash = state.get("sprite_pixel_stash")
+        if isinstance(stash, dict) and isinstance(stash.get("rows"), list):
+            stash = dict(stash)
+            stash["rows"] = replace_palette_index_in_rows(
+                stash["rows"], from_idx, to_idx
+            )
+            state["sprite_pixel_stash"] = stash
+        _set_sprite_brush_index(to_idx)
+        _refresh_sprite_edit_texture()
+        prev = dpg.get_value("ts_log") or ""
+        dpg.set_value(
+            "ts_log",
+            prev
+            + f"Sprites: indice {from_idx} → {to_idx} en todo el lienzo "
+            f"({len(_sprite_used_paint_indices(state.get('sprite_pixel_rows')))} colores usados).\n",
+        )
+
+    def _sprite_color_swap_handle_pick(idx: int) -> bool:
+        """True si el clic se consumio en modo intercambio."""
+        if not state.get("sprite_color_swap_active"):
+            return False
+        idx = clamp_paint_palette_index(
+            idx, palette_len=_palette_len_sprite() or None
+        )
+        if is_transparent_palette_index(idx):
+            return True
+        src = _sprite_color_swap_source_index()
+        if src is None:
+            _set_sprite_color_swap_source(idx)
+            return True
+        if src == idx:
+            _set_sprite_color_swap_source(None)
+            return True
+        _apply_sprite_color_swap(src, idx)
+        _set_sprite_color_swap_source(None)
+        return True
+
+    def on_sprite_color_swap_click(_sender: object, _app_data: object) -> None:
+        active = not bool(state.get("sprite_color_swap_active"))
+        state["sprite_color_swap_active"] = active
+        if not active:
+            state["sprite_color_swap_source"] = None
+            if dpg.does_item_exist("ts_btn_sprite_swap_color"):
+                dpg.configure_item("ts_btn_sprite_swap_color", label="Intercambiar color")
+        else:
+            if dpg.does_item_exist("ts_btn_sprite_swap_color"):
+                dpg.configure_item(
+                    "ts_btn_sprite_swap_color",
+                    label="Intercambiar color (activo)",
+                )
+        _update_sprite_swap_status_label()
+        _rebuild_sprite_palette_swatches()
+        _rebuild_sprite_used_swatches()
+
+    def _bind_sprite_swatch_highlight(item: int | str, index: int) -> None:
+        if (
+            state.get("sprite_color_swap_active")
+            and _sprite_color_swap_source_index() == index
+            and dpg.does_item_exist("ts_sprite_swap_highlight_theme")
+        ):
+            dpg.bind_item_theme(item, "ts_sprite_swap_highlight_theme")
+
+    def _rebuild_sprite_used_swatches() -> None:
+        gid = "ts_sprite_used_swatches_group"
+        if not dpg.does_item_exist(gid):
+            return
+        dpg.delete_item(gid, children_only=True)
+        rows = state.get("sprite_pixel_rows")
+        rgbs = state.get("sprite_palette_rgb")
+        indices = _sprite_used_paint_indices(
+            rows if isinstance(rows, list) else None
+        )
+        if not indices:
+            dpg.add_text(
+                "(sin colores opacos en el lienzo)",
+                parent=gid,
+                wrap=_SPRITE_SWATCH_WRAP,
+            )
+            return
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.add_text(
+                "(carga la paleta del sprite)",
+                parent=gid,
+                wrap=_SPRITE_SWATCH_WRAP,
+            )
+            return
+        sw = 18
+        for i in indices:
+            if i < 0 or i >= len(rgbs):
+                continue
+            rgb = rgbs[i]
+            r8 = max(0, min(255, int(round(rgb[0] * 255.0))))
+            g8 = max(0, min(255, int(round(rgb[1] * 255.0))))
+            b8 = max(0, min(255, int(round(rgb[2] * 255.0))))
+            btn = dpg.add_color_button(
+                default_value=[r8, g8, b8, 255],
+                width=sw,
+                height=sw,
+                enabled=True,
+                parent=gid,
+                label="",
+                use_internal_label=True,
+                user_data=i,
+                callback=_on_sprite_used_swatch_click,
+            )
+            _bind_sprite_swatch_highlight(btn, i)
+
+    def _add_palette_swatch_buttons(
+        parent: str | int,
+        rgbs: list[tuple[float, float, float]],
+        callback: object,
+        *,
+        wrap: int,
+        highlight_index: int | None = None,
+    ) -> None:
+        sw = 16
+        for i in swatch_indices_for_palette(len(rgbs)):
+            rgb = rgbs[i]
+            r8 = max(0, min(255, int(round(rgb[0] * 255.0))))
+            g8 = max(0, min(255, int(round(rgb[1] * 255.0))))
+            b8 = max(0, min(255, int(round(rgb[2] * 255.0))))
+            btn = dpg.add_color_button(
+                default_value=[r8, g8, b8, 255],
+                width=sw,
+                height=sw,
+                enabled=True,
+                parent=parent,
+                label="",
+                use_internal_label=True,
+                user_data=i,
+                callback=callback,
+            )
+            hi = highlight_index
+            if hi is None and state.get("sprite_color_swap_active"):
+                hi = _sprite_color_swap_source_index()
+            if hi is not None and i == hi:
+                _bind_sprite_swatch_highlight(btn, i)
+        if len(rgbs) > TRANSPARENT_PALETTE_INDEX:
+            dpg.add_text(_PALETTE_TRANSPARENT_NOTE, parent=parent, wrap=wrap)
 
     def _rebuild_palette_swatches() -> None:
         gid = "ts_palette_swatches_group"
@@ -648,22 +953,9 @@ def run_gui() -> int:
         if not isinstance(rgbs, list) or not rgbs:
             dpg.add_text("(sin paleta cargada)", parent=gid, wrap=_LEFT_TEXT_WRAP)
             return
-        sw = 16
-        for i, rgb in enumerate(rgbs):
-            r8 = max(0, min(255, int(round(rgb[0] * 255.0))))
-            g8 = max(0, min(255, int(round(rgb[1] * 255.0))))
-            b8 = max(0, min(255, int(round(rgb[2] * 255.0))))
-            dpg.add_color_button(
-                default_value=[r8, g8, b8, 255],
-                width=sw,
-                height=sw,
-                enabled=True,
-                parent=gid,
-                label="",
-                use_internal_label=True,
-                user_data=i,
-                callback=_on_canvas_palette_swatch_click,
-            )
+        _add_palette_swatch_buttons(
+            gid, rgbs, _on_canvas_palette_swatch_click, wrap=_LEFT_TEXT_WRAP
+        )
 
     def _rebuild_sprite_palette_swatches() -> None:
         gid = "ts_sprite_palette_swatches_group"
@@ -678,22 +970,18 @@ def run_gui() -> int:
                 wrap=_SPRITE_SWATCH_WRAP,
             )
             return
-        sw = 16
-        for i, rgb in enumerate(rgbs):
-            r8 = max(0, min(255, int(round(rgb[0] * 255.0))))
-            g8 = max(0, min(255, int(round(rgb[1] * 255.0))))
-            b8 = max(0, min(255, int(round(rgb[2] * 255.0))))
-            dpg.add_color_button(
-                default_value=[r8, g8, b8, 255],
-                width=sw,
-                height=sw,
-                enabled=True,
-                parent=gid,
-                label="",
-                use_internal_label=True,
-                user_data=i,
-                callback=_on_sprite_palette_swatch_click,
-            )
+        hi = (
+            _sprite_color_swap_source_index()
+            if state.get("sprite_color_swap_active")
+            else None
+        )
+        _add_palette_swatch_buttons(
+            gid,
+            rgbs,
+            _on_sprite_palette_swatch_click,
+            wrap=_SPRITE_SWATCH_WRAP,
+            highlight_index=hi,
+        )
 
     def _palette_len_canvas() -> int:
         rgbs = state.get("rgb")
@@ -713,14 +1001,14 @@ def run_gui() -> int:
         n = _palette_len_canvas()
         if n <= 0:
             return 0
-        return max(0, min(v, n - 1))
+        return clamp_paint_palette_index(v, palette_len=n)
 
     def _set_sprite_brush_index(idx: int) -> None:
         n = _palette_len_sprite()
         if n <= 0:
             state["sprite_brush_index"] = max(0, int(idx))
             return
-        state["sprite_brush_index"] = max(0, min(int(idx), n - 1))
+        state["sprite_brush_index"] = clamp_paint_palette_index(int(idx), palette_len=n)
 
     def parse_sprite_palette_index() -> int:
         """Indice de pincel (paleta del sprite); no el modo solido del JSON."""
@@ -731,7 +1019,7 @@ def run_gui() -> int:
         n = _palette_len_sprite()
         if n <= 0:
             return max(0, v)
-        return max(0, min(v, n - 1))
+        return clamp_paint_palette_index(v, palette_len=n)
 
     def _palette_n_for_background() -> int:
         hexes = state.get("hexes")
@@ -993,6 +1281,20 @@ def run_gui() -> int:
         b8 = max(0, min(255, int(round(b * 255.0))))
         dpg.set_value("ts_swatch_theme_color", (r8, g8, b8, 255))
 
+    def _scene_sprites_preview_visible() -> bool:
+        if not dpg.does_item_exist("ts_scene_sprites_show"):
+            return True
+        return bool(dpg.get_value("ts_scene_sprites_show"))
+
+    def _scene_sprites_preview_opacity() -> float:
+        if not dpg.does_item_exist("ts_scene_sprites_opacity"):
+            return 1.0
+        try:
+            v = int(dpg.get_value("ts_scene_sprites_opacity"))
+        except (TypeError, ValueError):
+            v = 255
+        return max(0, min(255, v)) / 255.0
+
     def refresh_canvas_texture() -> None:
         rgbs = state["rgb"]
         if not rgbs:
@@ -1039,6 +1341,8 @@ def run_gui() -> int:
             mi = (idx + max(1, nr // 4)) % nr if nr else 0
             tr, tg, tb = rgbs[mi]
             root = state.get("project_root")
+            show_sprites = _scene_sprites_preview_visible()
+            sprite_a = _scene_sprites_preview_opacity() if show_sprites else 0.0
             if isinstance(root, Path):
                 _paint_scene_objects_preview(
                     base,
@@ -1047,6 +1351,7 @@ def run_gui() -> int:
                     root,
                     placements,
                     cross_rgb=(tr, tg, tb),
+                    layer_alpha=sprite_a,
                 )
             else:
                 _paint_placement_crosses_only(
@@ -1069,7 +1374,6 @@ def run_gui() -> int:
             "ts_btn_scene_obj_add",
             "ts_scene_obj_inscene_list",
             "ts_btn_scene_obj_remove",
-            "ts_transparent_idx",
             "ts_bg_layer",
             "ts_bg_layer_enabled",
             "ts_bg_layer_opacity",
@@ -1084,6 +1388,13 @@ def run_gui() -> int:
             "ts_sprite_editor_show_grid",
             "ts_sprite_editor_grid_step",
             "ts_btn_sprite_fill_canvas",
+            "ts_btn_sprite_clear_canvas",
+            "ts_btn_sprite_swap_color",
+            "ts_btn_sprite_ref_import",
+            "ts_btn_sprite_ref_clear",
+            "ts_sprite_ref_show",
+            "ts_sprite_ref_opacity",
+            "ts_sprite_paint_opacity",
             "ts_btn_sprite_create",
             "ts_btn_sprite_save",
             "ts_btn_sprite_refresh",
@@ -1182,15 +1493,21 @@ def run_gui() -> int:
         _rebuild_sprite_palette_swatches()
         rows_mx = state.get("sprite_pixel_rows")
         if isinstance(rows_mx, list) and rows_mx and rgbs:
-            nm = max(0, len(rgbs) - 1)
             state["sprite_pixel_rows"] = [
-                [max(0, min(nm, int(c))) for c in (rw if isinstance(rw, list) else [])]
+                [
+                    clamp_pixel_storage_index(c)
+                    for c in (rw if isinstance(rw, list) else [])
+                ]
                 for rw in rows_mx
             ]
         elif rgbs:
             _ensure_sprite_edit_pixel_buffer()
         _refresh_sprite_edit_texture()
-        tail = f"Sprite — indices en esta paleta: 0..{len(hexes) - 1}.\n"
+        max_paint = _max_selectable_palette_index(len(hexes))
+        tail = (
+            f"Sprite — pintar 0..{max_paint}; "
+            f"{TRANSPARENT_PALETTE_INDEX}=transparente.\n"
+        )
         if append_log:
             prev = dpg.get_value("ts_log") or ""
             dpg.set_value("ts_log", prev + msg + tail)
@@ -1213,13 +1530,17 @@ def run_gui() -> int:
             dpg.configure_item("ts_scene_combo", items=["—"])
             dpg.set_value("ts_scene_combo", "—")
             dpg.set_value("ts_scene_pal", "")
-            dpg.set_value("ts_transparent_idx", DEFAULT_TRANSPARENT_INDEX)
             dpg.set_value("ts_sprite_palette_rel", "")
             state["sprite_brush_index"] = 1
             state["sprite_palette_rgb"] = []
             state["sprite_palette_hexes"] = []
             _rebuild_sprite_palette_swatches()
             state["sprite_pixel_rows"] = None
+            state["sprite_pixel_stash"] = None
+            state["sprite_ref_source"] = None
+            state["sprite_ref_path"] = ""
+            if dpg.does_item_exist("ts_sprite_ref_path_label"):
+                dpg.set_value("ts_sprite_ref_path_label", "(sin referencia)")
             dpg.set_value("ts_obj_id", "")
             dpg.set_value("ts_obj_name", "")
             if dpg.does_item_exist("ts_export_initial_scene"):
@@ -1514,7 +1835,6 @@ def run_gui() -> int:
         ]
         state["active_scene_id"] = info.active_scene
         state["project_entry"] = info.entry
-        dpg.set_value("ts_transparent_idx", info.transparent_index)
         if dpg.does_item_exist("ts_export_initial_scene"):
             dpg.set_value("ts_export_initial_scene", info.active_scene)
         _refresh_scene_widgets()
@@ -1641,6 +1961,15 @@ def run_gui() -> int:
                 tag="ts_swatch_theme_color",
             )
 
+    with dpg.theme(tag="ts_sprite_swap_highlight_theme"):
+        with dpg.theme_component(dpg.mvColorButton):
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FrameBorderSize, 2, category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_color(
+                dpg.mvThemeCol_Border, (255, 210, 64, 255), category=dpg.mvThemeCat_Core
+            )
+
     with dpg.texture_registry(tag="ts_texture_registry"):
         dpg.add_dynamic_texture(
             width=_FB_W,
@@ -1753,15 +2082,11 @@ def run_gui() -> int:
             if not isinstance(scenes, list):
                 scenes = []
             try:
-                ti = int(dpg.get_value("ts_transparent_idx"))
-            except (TypeError, ValueError):
-                ti = DEFAULT_TRANSPARENT_INDEX
-            try:
                 embedded = collect_studio_bundle_files(
                     root,
                     scenes=scenes,
                     active_scene=initial_scene_s,
-                    transparent_index=ti,
+                    transparent_index=DEFAULT_TRANSPARENT_INDEX,
                     entry_relpath=entry,
                 )
             except ValueError as e:
@@ -1853,6 +2178,9 @@ def run_gui() -> int:
             _commit_background_for_active_scene()
         refresh_canvas_texture()
 
+    def on_scene_sprites_preview_change(_sender: object, _app_data: object) -> None:
+        refresh_canvas_texture()
+
     def on_reload_palette_click(_sender: object, _app_data: object) -> None:
         log = palette_reload_from_path()
         prev = dpg.get_value("ts_log") or ""
@@ -1894,17 +2222,13 @@ def run_gui() -> int:
         for rel in rels:
             lua_files[rel] = lua_m.get(rel, "")
         try:
-            ti = int(dpg.get_value("ts_transparent_idx"))
-        except (TypeError, ValueError):
-            ti = DEFAULT_TRANSPARENT_INDEX
-        try:
             script_path, pal_updated, scenes_updated = save_project(
                 root,
                 lua_files=lua_files,
                 palette_file=pal,
                 scenes=scenes_list,
                 active_scene=active,
-                transparent_index=ti,
+                transparent_index=DEFAULT_TRANSPARENT_INDEX,
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Error al guardar: {e}\n")
@@ -1953,19 +2277,9 @@ def run_gui() -> int:
             bw, bh = 1, 1
         pal_raw = str(dpg.get_value("ts_sprite_palette_rel")).strip()
         _resize_sprite_edit_matrix_for_widgets()
-        cp = int(state.get("sprite_edit_cell_px") or 8)
-        fi = parse_sprite_palette_index()
-        rows = state.get("sprite_pixel_rows")
-        if not isinstance(rows, list) or not rows:
-            pw, ph = bw * cp, bh * cp
-            rows = solid_fill_indices(pw, ph, fi)
-            state["sprite_pixel_rows"] = rows
+        cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         try:
-            n = max(1, _palette_len_sprite())
-            rows2: list[list[int]] = [
-                [max(0, min(n - 1, int(c))) for c in (r if isinstance(r, list) else [])]
-                for r in rows
-            ]
+            rows2 = _trim_sprite_pixel_rows_for_save()
             path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
@@ -2032,7 +2346,7 @@ def run_gui() -> int:
             bw, bh = 1, 1
         bw = max(1, min(32, bw))
         bh = max(1, min(32, bh))
-        cp = int(state.get("sprite_edit_cell_px") or 8)
+        cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         cp = max(1, min(256, cp))
         return bw * cp, bh * cp
 
@@ -2040,38 +2354,54 @@ def run_gui() -> int:
         """Alinea la matriz con Celdas W/H aunque el input_int no haya disparado callback."""
         pw_exp, ph_exp = _expected_sprite_matrix_pixel_size()
         rows = state.get("sprite_pixel_rows")
-        pw, ph = 0, 0
-        if isinstance(rows, list) and rows:
-            pw, ph = _sprite_matrix_pixel_size(rows)
+        pw, ph = palette_rows_pixel_size(rows if isinstance(rows, list) else None)
         if pw != pw_exp or ph != ph_exp:
             _resize_sprite_edit_matrix_for_widgets()
+
+    def _sprite_matrix_fill_index(
+        fill_from_index: int | None = None,
+    ) -> int:
+        if fill_from_index is not None:
+            return clamp_pixel_storage_index(fill_from_index)
+        fi = parse_sprite_palette_index()
+        if fi == 0:
+            fi = 1
+        return clamp_pixel_storage_index(fi)
 
     def _resize_sprite_edit_matrix_for_widgets(
         *,
         fill_from_index: int | None = None,
     ) -> None:
-        try:
-            bw = int(dpg.get_value("ts_sprite_blocks_w"))
-            bh = int(dpg.get_value("ts_sprite_blocks_h"))
-        except (TypeError, ValueError):
-            bw, bh = 1, 1
-        bw = max(1, min(32, bw))
-        bh = max(1, min(32, bh))
-        cp = int(state.get("sprite_edit_cell_px") or 8)
-        cp = max(1, min(256, cp))
-        pw, ph = bw * cp, bh * cp
-        fi = (
-            parse_sprite_palette_index()
-            if fill_from_index is None
-            else max(0, int(fill_from_index))
-        )
-        if fill_from_index is None and fi == 0:
-            fi = 1
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        fi = _sprite_matrix_fill_index(fill_from_index)
         old = state.get("sprite_pixel_rows")
+        stash = state.get("sprite_pixel_stash")
+        if not isinstance(stash, dict):
+            stash = None
         if isinstance(old, list) and old and any(isinstance(r, list) and r for r in old):
-            state["sprite_pixel_rows"] = normalize_palette_rows(old, pw, ph, fill_index=fi)
+            rows, new_stash = resize_palette_rows_with_stash(
+                old, stash, pw, ph, fill_index=fi
+            )
+            state["sprite_pixel_rows"] = rows
+            state["sprite_pixel_stash"] = new_stash
         else:
             state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, fi)
+            state["sprite_pixel_stash"] = stash
+
+    def _trim_sprite_pixel_rows_for_save() -> list[list[int]]:
+        """Recorte al tamano activo; descarta stash y datos fuera del lienzo."""
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        rows = state.get("sprite_pixel_rows")
+        fi = _sprite_matrix_fill_index()
+        trimmed = trim_palette_rows(
+            rows if isinstance(rows, list) else None,
+            pw,
+            ph,
+            fill_index=fi,
+        )
+        state["sprite_pixel_rows"] = trimmed
+        state["sprite_pixel_stash"] = None
+        return trimmed
 
     def _ensure_sprite_edit_pixel_buffer() -> None:
         """Matriz en memoria para pintar; sin esto los clics no hacen nada."""
@@ -2081,7 +2411,7 @@ def run_gui() -> int:
             return
         _sync_sprite_matrix_from_widgets()
 
-    def _sprite_edit_paint_at_mouse() -> bool:
+    def _sprite_edit_paint_at_mouse(*, erase: bool = False) -> bool:
         _ensure_sprite_edit_pixel_buffer()
         rgbs_chk = state.get("sprite_palette_rgb")
         if (not isinstance(rgbs_chk, list) or not rgbs_chk) and isinstance(
@@ -2109,12 +2439,28 @@ def run_gui() -> int:
         ly = int(ry // sc)
         if ly < 0 or ly >= ph or lx < 0 or lx >= pw:
             return False
-        color_i = parse_sprite_palette_index()
+        color_i = (
+            TRANSPARENT_PALETTE_INDEX
+            if erase
+            else parse_sprite_palette_index()
+        )
         row = rows[ly]
         if isinstance(row, list) and lx < len(row):
             row[lx] = color_i
         _refresh_sprite_edit_texture()
         return True
+
+    def _sprite_edit_paint_drag_common(*, erase: bool) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        if not dpg.does_item_exist(_SPRITE_EDITOR_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_SPRITE_EDITOR_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _sprite_edit_paint_at_mouse(erase=erase)
 
     def _sprite_matrix_pixel_size(rows: list[list[int]]) -> tuple[int, int]:
         ph = len(rows)
@@ -2155,27 +2501,55 @@ def run_gui() -> int:
 
     def _refresh_sprite_edit_texture() -> None:
         if not dpg.does_item_exist(_SPRITE_EDITOR_TEX_TAG):
+            _rebuild_sprite_used_swatches()
             return
         if dpg.does_item_exist("ts_sprite_blocks_w"):
             _sync_sprite_matrix_from_widgets()
         rows = state.get("sprite_pixel_rows")
         rgbs = state.get("sprite_palette_rgb")
         if not isinstance(rows, list) or not rows:
-            sc0 = _sprite_editor_effective_scale(8, 8)
-            _sync_sprite_edit_image_widget(8 * sc0, 8 * sc0)
+            sc0 = _sprite_editor_effective_scale(
+                DEFAULT_CELL_PX, DEFAULT_CELL_PX
+            )
+            _sync_sprite_edit_image_widget(
+                DEFAULT_CELL_PX * sc0, DEFAULT_CELL_PX * sc0
+            )
+            _rebuild_sprite_used_swatches()
             return
         if not isinstance(rgbs, list) or not rgbs:
-            sc0 = _sprite_editor_effective_scale(8, 8)
-            _sync_sprite_edit_image_widget(8 * sc0, 8 * sc0)
+            sc0 = _sprite_editor_effective_scale(
+                DEFAULT_CELL_PX, DEFAULT_CELL_PX
+            )
+            _sync_sprite_edit_image_widget(
+                DEFAULT_CELL_PX * sc0, DEFAULT_CELL_PX * sc0
+            )
+            _rebuild_sprite_used_swatches()
             return
-        pw, ph = _sprite_matrix_pixel_size(rows)
+        pw_exp, ph_exp = _expected_sprite_matrix_pixel_size()
+        pw_act, ph_act = _sprite_matrix_pixel_size(rows)
+        if pw_act != pw_exp or ph_act != ph_exp:
+            _resize_sprite_edit_matrix_for_widgets()
+            rows = state.get("sprite_pixel_rows")
+            if not isinstance(rows, list) or not rows:
+                _rebuild_sprite_used_swatches()
+                return
+        pw, ph = pw_exp, ph_exp
         if pw <= 0 or ph <= 0:
+            _rebuild_sprite_used_swatches()
             return
-        pad_i = parse_sprite_palette_index()
-        norm = normalize_palette_rows(rows, pw, ph, fill_index=pad_i)
-        state["sprite_pixel_rows"] = norm
-        base = _sprite_rows_to_rgba_float01(norm, rgbs)
-        cp = int(state.get("sprite_edit_cell_px") or 8)
+        pad_i = _sprite_matrix_fill_index()
+        norm = trim_palette_rows(rows, pw, ph, fill_index=pad_i)
+        if norm is not rows:
+            state["sprite_pixel_rows"] = norm
+        ref_layer = _sprite_ref_rgba_for_canvas(pw, ph)
+        base = composite_sprite_editor_preview(
+            norm,
+            rgbs,
+            ref_layer,
+            ref_alpha=_sprite_ref_opacity(),
+            paint_alpha=_sprite_paint_opacity(),
+        )
+        cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         cp = max(1, min(256, cp))
         show_g = bool(dpg.get_value("ts_sprite_editor_show_grid")) if dpg.does_item_exist(
             "ts_sprite_editor_show_grid"
@@ -2184,8 +2558,10 @@ def run_gui() -> int:
             gstep = parse_sprite_editor_grid_step()
             base = _apply_sprite_editor_grid_overlay(base, pw, ph, grid_step=gstep)
         if len(base) != pw * ph * 4:
+            _rebuild_sprite_used_swatches()
             return
         _apply_sprite_edit_rgba(pw, ph, base)
+        _rebuild_sprite_used_swatches()
         if dpg.does_item_exist("ts_sprite_edit_size_label"):
             try:
                 bw = int(dpg.get_value("ts_sprite_blocks_w"))
@@ -2213,6 +2589,112 @@ def run_gui() -> int:
     def on_sprite_editor_grid_toggle(_sender: object, _app_data: object) -> None:
         _refresh_sprite_edit_texture()
 
+    def _sprite_ref_opacity() -> float:
+        if not dpg.does_item_exist("ts_sprite_ref_opacity"):
+            return 0.45
+        try:
+            v = float(dpg.get_value("ts_sprite_ref_opacity"))
+        except (TypeError, ValueError):
+            v = 0.45
+        return max(0.05, min(1.0, v))
+
+    def _sprite_paint_opacity() -> float:
+        if not dpg.does_item_exist("ts_sprite_paint_opacity"):
+            return 1.0
+        try:
+            v = float(dpg.get_value("ts_sprite_paint_opacity"))
+        except (TypeError, ValueError):
+            v = 1.0
+        return max(0.05, min(1.0, v))
+
+    def _sprite_ref_visible() -> bool:
+        if not dpg.does_item_exist("ts_sprite_ref_show"):
+            return True
+        return bool(dpg.get_value("ts_sprite_ref_show"))
+
+    def _sprite_ref_rgba_for_canvas(pw: int, ph: int) -> list[float] | None:
+        if not _sprite_ref_visible():
+            return None
+        src = state.get("sprite_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return None
+        sw, sh, rgba = src
+        if not isinstance(rgba, list) or sw <= 0 or sh <= 0 or pw <= 0 or ph <= 0:
+            return None
+        return resample_rgba_stretch(rgba, int(sw), int(sh), pw, ph)
+
+    def _update_sprite_ref_path_label() -> None:
+        if not dpg.does_item_exist("ts_sprite_ref_path_label"):
+            return
+        p = str(state.get("sprite_ref_path") or "").strip()
+        if not p:
+            dpg.set_value("ts_sprite_ref_path_label", "(sin referencia)")
+            return
+        dpg.set_value("ts_sprite_ref_path_label", f"Referencia: {p}")
+
+    def _load_sprite_ref_from_path(path: str) -> None:
+        _ensure_sprite_edit_pixel_buffer()
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: define tamano (celdas W/H) antes de importar referencia.\n",
+            )
+            return
+        pw, ph = _sprite_matrix_pixel_size(rows)
+        if pw <= 0 or ph <= 0:
+            return
+        try:
+            sw, sh, rgba = load_image_rgba_float01(path)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Sprites referencia: {e}\n",
+            )
+            return
+        state["sprite_ref_source"] = (sw, sh, rgba)
+        state["sprite_ref_path"] = str(Path(path).expanduser())
+        _update_sprite_ref_path_label()
+        note = aspect_ratio_note(sw, sh, pw, ph)
+        tail = f"Sprites: referencia cargada ({sw}×{sh} px)."
+        if note:
+            tail += f" {note}."
+        tail += " No se guarda en el .json del sprite.\n"
+        dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + tail)
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_ref_import_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_sprite_ref_file_dialog"):
+            dpg.show_item("ts_sprite_ref_file_dialog")
+
+    def on_sprite_ref_file_picked(_sender: object, app_data: object) -> None:
+        if not isinstance(app_data, dict):
+            return
+        path = ""
+        fp = app_data.get("file_path_name")
+        if isinstance(fp, str) and fp.strip():
+            path = fp.strip()
+        else:
+            selections = app_data.get("selections")
+            if isinstance(selections, dict) and selections:
+                path = str(next(iter(selections.values()))).strip()
+        if path:
+            _load_sprite_ref_from_path(path)
+
+    def on_sprite_ref_clear_click(_sender: object, _app_data: object) -> None:
+        state["sprite_ref_source"] = None
+        state["sprite_ref_path"] = ""
+        _update_sprite_ref_path_label()
+        _refresh_sprite_edit_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + "Sprites: referencia quitada.\n",
+        )
+
+    def on_sprite_editor_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_sprite_edit_texture()
+
     def parse_sprite_editor_grid_step() -> int:
         if not dpg.does_item_exist("ts_sprite_editor_grid_step"):
             return _SPRITE_EDITOR_GRID_STEP_DEFAULT
@@ -2235,20 +2717,35 @@ def run_gui() -> int:
         _resize_sprite_edit_matrix_for_widgets(fill_from_index=fi)
         _refresh_sprite_edit_texture()
 
+    def on_sprite_clear_canvas(_sender: object, _app_data: object) -> None:
+        _ensure_sprite_edit_pixel_buffer()
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            _resize_sprite_edit_matrix_for_widgets()
+            rows = state.get("sprite_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            return
+        pw, ph = _sprite_matrix_pixel_size(rows)
+        if pw <= 0 or ph <= 0:
+            return
+        state["sprite_pixel_rows"] = solid_fill_indices(
+            pw, ph, TRANSPARENT_PALETTE_INDEX
+        )
+        state["sprite_pixel_stash"] = None
+        _sprite_color_swap_cancel()
+        _refresh_sprite_edit_texture()
+
     def on_sprite_edit_canvas_click(_sender: object, _app_data: object) -> None:
-        _sprite_edit_paint_at_mouse()
+        _sprite_edit_paint_at_mouse(erase=False)
+
+    def on_sprite_edit_canvas_erase_click(_sender: object, _app_data: object) -> None:
+        _sprite_edit_paint_at_mouse(erase=True)
 
     def on_sprite_edit_paint_drag(_sender: object, _app_data: object) -> None:
-        if state.get("sprite_ui_silent"):
-            return
-        if not dpg.does_item_exist(_SPRITE_EDITOR_IMG_TAG):
-            return
-        try:
-            if not dpg.is_item_hovered(_SPRITE_EDITOR_IMG_TAG):
-                return
-        except SystemError:
-            return
-        _sprite_edit_paint_at_mouse()
+        _sprite_edit_paint_drag_common(erase=False)
+
+    def on_sprite_edit_erase_drag(_sender: object, _app_data: object) -> None:
+        _sprite_edit_paint_drag_common(erase=True)
 
     def _load_sprite_into_form(stem: str, *, quiet: bool = False) -> None:
         root = state.get("project_root")
@@ -2273,9 +2770,9 @@ def run_gui() -> int:
             except (TypeError, ValueError):
                 pi = 0
         try:
-            cp = int(data.get("cell_px", 8))
+            cp = int(data.get("cell_px", DEFAULT_CELL_PX))
         except (TypeError, ValueError):
-            cp = 8
+            cp = DEFAULT_CELL_PX
         cp = max(1, min(cp, 256))
         bw, bh = 1, 1
         try:
@@ -2295,10 +2792,14 @@ def run_gui() -> int:
         bh = max(1, min(bh, 32))
         state["sprite_edit_cell_px"] = cp
         pw, ph = bw * cp, bh * cp
+        state["sprite_pixel_stash"] = None
+        _sprite_color_swap_cancel()
         if sprite_is_indexed_pixels(data):
             parsed = parse_palette_rows_image(data)
             if parsed:
-                state["sprite_pixel_rows"] = [list(r) for r in parsed]
+                state["sprite_pixel_rows"] = trim_palette_rows(
+                    parsed, pw, ph, fill_index=pi
+                )
             else:
                 state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
         else:
@@ -2341,14 +2842,9 @@ def run_gui() -> int:
         pal_raw = str(dpg.get_value("ts_sprite_palette_rel")).strip()
         try:
             _resize_sprite_edit_matrix_for_widgets()
-            rows = state.get("sprite_pixel_rows")
-            if not isinstance(rows, list) or not rows:
+            rows2 = _trim_sprite_pixel_rows_for_save()
+            if not rows2:
                 raise ValueError("matriz de pixeles vacia; recarga el sprite o la paleta.")
-            n = max(1, _palette_len_sprite())
-            rows2: list[list[int]] = [
-                [max(0, min(n - 1, int(c))) for c in (r if isinstance(r, list) else [])]
-                for r in rows
-            ]
             path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
@@ -2356,7 +2852,9 @@ def run_gui() -> int:
                 blocks_w=bw,
                 blocks_h=bh,
                 rows=rows2,
-                cell_px=int(state.get("sprite_edit_cell_px") or 8),
+                cell_px=int(
+                    state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX
+                ),
             )
         except ValueError as e:
             dpg.set_value(
@@ -2586,7 +3084,6 @@ def run_gui() -> int:
         dpg.set_value("ts_entry", DEFAULT_ENTRY)
         dpg.set_value("ts_pal_path", "")
         dpg.set_value("ts_out_path", "main.turtlecart")
-        dpg.set_value("ts_transparent_idx", DEFAULT_TRANSPARENT_INDEX)
         enter_main_editor(log_append="Modo sin proyecto (solo editor y export manual).\n")
 
     with dpg.window(
@@ -2781,17 +3278,30 @@ def run_gui() -> int:
                             callback=on_scene_remove_object,
                             enabled=False,
                         )
-                        dpg.add_input_int(
-                            tag="ts_transparent_idx",
-                            label="Indice transparente (chroma)",
-                            width=_LEFT_FORM_WIDTH,
-                            default_value=DEFAULT_TRANSPARENT_INDEX,
+                        dpg.add_text(
+                            "Capa de sprites en la vista previa (solo estudio; no afecta al firmware).",
+                            wrap=_LEFT_TEXT_WRAP,
+                        )
+                        dpg.add_checkbox(
+                            tag="ts_scene_sprites_show",
+                            label="Mostrar sprites",
+                            default_value=True,
+                            callback=on_scene_sprites_preview_change,
+                        )
+                        dpg.add_slider_int(
+                            tag="ts_scene_sprites_opacity",
+                            label="Opacidad sprites (vista previa)",
                             min_value=0,
-                            max_value=31,
-                            min_clamped=True,
-                            max_clamped=True,
-                            enabled=False,
+                            max_value=255,
+                            default_value=255,
+                            clamped=True,
+                            width=_LEFT_FORM_WIDTH,
+                            callback=on_scene_sprites_preview_change,
                             use_internal_label=False,
+                        )
+                        dpg.add_text(
+                            f"Transparente: indice {TRANSPARENT_PALETTE_INDEX} (fijo en todas las paletas)",
+                            wrap=_LEFT_TEXT_WRAP,
                         )
                         dpg.add_text(
                             "Fondo: 4 capas a pantalla completa (mismo tamano que la escena). "
@@ -3137,7 +3647,7 @@ def run_gui() -> int:
                         horizontal_spacing=3,
                     )
                 dpg.add_text(
-                    "Tamano en celdas de 8×8 px (ej. 2×2 = 16×16 px). Tras cambiar W/H: Enter, "
+                    "Tamano en celdas de 4×4 px por defecto (ej. 4×4 celdas = 16×16 px). Tras cambiar W/H: Enter, "
                     "clic fuera o «Aplicar tamano».",
                     wrap=520,
                 )
@@ -3211,11 +3721,74 @@ def run_gui() -> int:
                 dpg.bind_item_handler_registry(
                     "ts_sprite_editor_grid_step", "ts_sprite_blocks_dim_handlers"
                 )
-                dpg.add_button(
-                    tag="ts_btn_sprite_fill_canvas",
-                    label="Rellenar lienzo con indice actual",
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_sprite_fill_canvas",
+                        label="Rellenar lienzo (indice actual)",
+                        width=200,
+                        callback=on_sprite_fill_canvas,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_sprite_clear_canvas",
+                        label="Borrar todo",
+                        width=120,
+                        callback=on_sprite_clear_canvas,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    "Referencia (PNG/JPG): debajo del arte; opacidad de referencia y de la capa "
+                    "pintada son solo vista previa del estudio (no se guardan en el .json).",
+                    wrap=520,
+                    color=(200, 220, 255, 255),
+                )
+                dpg.add_text(
+                    tag="ts_sprite_ref_path_label",
+                    default_value="(sin referencia)",
+                    wrap=520,
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_sprite_ref_import",
+                        label="Importar referencia…",
+                        width=160,
+                        callback=on_sprite_ref_import_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_sprite_ref_clear",
+                        label="Quitar referencia",
+                        width=132,
+                        callback=on_sprite_ref_clear_click,
+                        enabled=False,
+                    )
+                    dpg.add_checkbox(
+                        tag="ts_sprite_ref_show",
+                        label="Mostrar ref.",
+                        default_value=True,
+                        callback=on_sprite_editor_preview_change,
+                        enabled=False,
+                    )
+                dpg.add_slider_float(
+                    tag="ts_sprite_ref_opacity",
+                    label="Opacidad referencia",
+                    min_value=0.05,
+                    max_value=1.0,
+                    default_value=0.45,
+                    clamped=True,
                     width=280,
-                    callback=on_sprite_fill_canvas,
+                    callback=on_sprite_editor_preview_change,
+                    enabled=False,
+                )
+                dpg.add_slider_float(
+                    tag="ts_sprite_paint_opacity",
+                    label="Opacidad capa pintada",
+                    min_value=0.05,
+                    max_value=1.0,
+                    default_value=1.0,
+                    clamped=True,
+                    width=280,
+                    callback=on_sprite_editor_preview_change,
                     enabled=False,
                 )
                 dpg.add_text(
@@ -3224,12 +3797,20 @@ def run_gui() -> int:
                     wrap=520,
                 )
                 dpg.add_text(
-                    "Pincel = color elegido en la paleta de arriba. Clic o arrastrar en el lienzo. "
-                    "«Guardar sprite» guarda los pixeles pintados (no un bloque de un solo color).",
+                    "Pincel = color en la paleta. Clic izquierdo o arrastrar: pintar. "
+                    "Clic derecho o arrastrar: borrar (indice transparente 31). "
+                    "«Guardar sprite» guarda los pixeles pintados.",
                     wrap=520,
                 )
                 with dpg.item_handler_registry(tag="ts_sprite_edit_click_reg"):
-                    dpg.add_item_clicked_handler(callback=on_sprite_edit_canvas_click)
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Left,
+                        callback=on_sprite_edit_canvas_click,
+                    )
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Right,
+                        callback=on_sprite_edit_canvas_erase_click,
+                    )
                 with dpg.child_window(
                     tag="ts_sprite_edit_viewport",
                     border=True,
@@ -3240,16 +3821,48 @@ def run_gui() -> int:
                     dpg.add_image(
                         _SPRITE_EDITOR_TEX_TAG,
                         tag=_SPRITE_EDITOR_IMG_TAG,
-                        width=8 * _SPRITE_EDITOR_SCALE_DEFAULT,
-                        height=8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                        width=DEFAULT_CELL_PX * _SPRITE_EDITOR_SCALE_DEFAULT,
+                        height=DEFAULT_CELL_PX * _SPRITE_EDITOR_SCALE_DEFAULT,
                         uv_min=(0.0, 0.0),
                         uv_max=_sprite_editor_uv_max(
-                            8 * _SPRITE_EDITOR_SCALE_DEFAULT,
-                            8 * _SPRITE_EDITOR_SCALE_DEFAULT,
+                            DEFAULT_CELL_PX * _SPRITE_EDITOR_SCALE_DEFAULT,
+                            DEFAULT_CELL_PX * _SPRITE_EDITOR_SCALE_DEFAULT,
                         ),
                     )
                 dpg.bind_item_handler_registry(
                     _SPRITE_EDITOR_IMG_TAG, "ts_sprite_edit_click_reg"
+                )
+                dpg.add_text(
+                    "Colores usados (clic = pincel). Intercambiar: sustituye un indice "
+                    "por otro en todo el lienzo.",
+                    color=(200, 220, 255, 255),
+                    wrap=520,
+                )
+                with dpg.group(horizontal=True):
+                    with dpg.child_window(
+                        width=400,
+                        height=40,
+                        border=True,
+                        horizontal_scrollbar=True,
+                    ):
+                        dpg.add_group(
+                            tag="ts_sprite_used_swatches_group",
+                            horizontal=True,
+                            horizontal_spacing=3,
+                        )
+                    dpg.add_button(
+                        tag="ts_btn_sprite_swap_color",
+                        label="Intercambiar color",
+                        width=116,
+                        height=40,
+                        callback=on_sprite_color_swap_click,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    tag="ts_sprite_swap_status",
+                    default_value="",
+                    wrap=520,
+                    color=(255, 210, 120, 255),
                 )
                 dpg.add_input_text(
                     tag="ts_sprite_id",
@@ -3354,6 +3967,25 @@ def run_gui() -> int:
             button=dpg.mvMouseButton_Left,
             callback=on_sprite_edit_paint_drag,
         )
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Right,
+            callback=on_sprite_edit_erase_drag,
+        )
+
+    with dpg.file_dialog(
+        directory_selector=False,
+        show=False,
+        callback=on_sprite_ref_file_picked,
+        tag="ts_sprite_ref_file_dialog",
+        width=700,
+        height=400,
+        modal=True,
+    ):
+        dpg.add_file_extension(".png", color=(150, 255, 150, 255))
+        dpg.add_file_extension(".jpg")
+        dpg.add_file_extension(".jpeg")
+        dpg.add_file_extension(".webp")
+        dpg.add_file_extension(".bmp")
 
     dpg.create_viewport(
         title="TurtleStudio",

@@ -14,8 +14,12 @@ FORMAT_VERSION = 1
 SCENE_JSON_VERSION = 1
 SCENE_JSON_KIND = "turtlestudio.scene"
 
-# Indice reservado para chroma key (convencion FantasyConsole / scene-v0.md).
-DEFAULT_TRANSPARENT_INDEX = 31
+from turtlestudio.palette_policy import (
+    DEFAULT_TRANSPARENT_INDEX,
+    PALETTE_SIZE,
+    clamp_paint_palette_index,
+    clamp_transparent_index,
+)
 
 # Rutas relativas al crear un proyecto (POSIX en el JSON; se crean con Path).
 STANDARD_SUBDIRS: tuple[str, ...] = (
@@ -245,11 +249,7 @@ def _safe_lua_write_relpath(root: Path, rel: str) -> Path:
 
 
 def _clamp_transparent_index(raw: Any) -> int:
-    try:
-        v = int(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_TRANSPARENT_INDEX
-    return max(0, min(31, v))
+    return clamp_transparent_index(raw)
 
 
 def _palette_n_colors(pal_path: Path) -> int:
@@ -271,16 +271,16 @@ def _scene_background_index(raw: Any, *, pal_path: Path) -> int:
     except (TypeError, ValueError):
         v = 1
     n = max(1, _palette_n_colors(pal_path))
-    return max(0, min(n - 1, v))
+    return clamp_paint_palette_index(v, palette_len=n)
 
 
 def clamp_palette_color_index(idx: int, *, n_colors: int) -> int:
-    n = max(1, min(32, int(n_colors)))
+    n = max(1, min(PALETTE_SIZE, int(n_colors)))
     try:
         v = int(idx)
     except (TypeError, ValueError):
         v = 0
-    return max(0, min(n - 1, v))
+    return clamp_paint_palette_index(v, palette_len=n)
 
 
 def default_background_layers(fallback_flat_index: int) -> tuple[BackgroundLayer, ...]:
@@ -331,10 +331,10 @@ def firmware_background_index_from_layers(
     fallback: int,
 ) -> int:
     """Indice unico para cls() en firmware hasta que soporte mezcla por capas."""
-    fb = max(0, min(31, int(fallback)))
+    fb = clamp_paint_palette_index(fallback, palette_len=PALETTE_SIZE)
     for ly in reversed(layers):
         if ly.enabled and ly.opacity > 0:
-            return max(0, min(31, ly.color_index))
+            return clamp_paint_palette_index(ly.color_index, palette_len=PALETTE_SIZE)
     return fb
 
 

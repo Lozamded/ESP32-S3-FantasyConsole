@@ -63,4 +63,10 @@ int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len);
 void turtle_gpu_cls(uint8_t color_index);
 /** Rectangulo en coordenadas de escena (spec/scene-v0.md): esquina inferior izquierda (x0,y0), Y hacia arriba. */
 void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index);
+/**
+ * Pixeles indexados (fila 0 = arriba del sprite). (x0,y0) = esquina inferior izquierda del bbox.
+ * Omite indice `transparent_index` (p. ej. 31).
+ */
+void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h, const uint8_t* rows_top_first,
+                                   int row_stride, uint8_t transparent_index);
 void turtle_gpu_flip(void);

@@ -1,4 +1,4 @@
-"""Definicion JSON de sprites (v0: paleta propia del sprite + bloques 8x8 + indice de color)."""
+"""Definicion JSON de sprites (v0: paleta propia del sprite + bloques cell_px × cell_px)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,11 @@ import re
 from pathlib import Path
 from typing import Any
 
+from turtlestudio.palette_policy import (
+    PALETTE_SIZE,
+    clamp_paint_palette_index,
+    clamp_pixel_storage_index,
+)
 from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
 
 SPRITE_JSON_VERSION = 1
@@ -14,9 +19,9 @@ SPRITE_JSON_KIND = "turtlestudio.sprite"
 SPRITE_RENDER_SOLID = "solid_palette_index"
 SPRITE_RENDER_INDEXED_PIXELS = "indexed_pixels"
 SPRITE_IMAGE_FORMAT_ROWS = "palette_rows"
-# Tamano logico en celdas de 8x8 (evita sprites enormes en disco por error).
+# Tamano logico en celdas (evita sprites enormes en disco por error).
 MAX_BLOCKS_PER_AXIS = 32
-DEFAULT_CELL_PX = 8
+DEFAULT_CELL_PX = 4
 _SPRITE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
 
@@ -78,7 +83,7 @@ def solid_sprite_payload(
     bw = max(1, min(int(blocks_w), MAX_BLOCKS_PER_AXIS))
     bh = max(1, min(int(blocks_h), MAX_BLOCKS_PER_AXIS))
     cp = max(1, min(int(cell_px), 256))
-    pi = max(0, int(palette_index))
+    pi = clamp_paint_palette_index(palette_index, palette_len=PALETTE_SIZE)
     return {
         "format_version": SPRITE_JSON_VERSION,
         "kind": SPRITE_JSON_KIND,
@@ -149,13 +154,13 @@ def parse_palette_rows_image(data: dict[str, Any]) -> list[list[int]] | None:
                 v = int(src[x]) if x < len(src) else 0
             except (TypeError, ValueError):
                 v = 0
-            row.append(max(0, v))
+            row.append(clamp_pixel_storage_index(v))
         out.append(row)
     return out
 
 
 def solid_fill_indices(pw: int, ph: int, fill_index: int) -> list[list[int]]:
-    fi = max(0, int(fill_index))
+    fi = clamp_pixel_storage_index(fill_index)
     return [[fi for _ in range(pw)] for _ in range(ph)]
 
 
@@ -167,7 +172,7 @@ def normalize_palette_rows(
     fill_index: int = 0,
 ) -> list[list[int]]:
     """pw x ph indices; filas incompletas se rellenan con fill_index."""
-    fi = max(0, int(fill_index))
+    fi = clamp_pixel_storage_index(fill_index)
     out: list[list[int]] = []
     for y in range(ph):
         src = rows[y] if rows and y < len(rows) else []
@@ -179,8 +184,153 @@ def normalize_palette_rows(
                 v = int(src[x]) if x < len(src) else fi
             except (TypeError, ValueError):
                 v = fi
-            row.append(max(0, v))
+            row.append(clamp_pixel_storage_index(v))
         out.append(row)
+    return out
+
+
+def palette_rows_pixel_size(rows: list[list[int]] | None) -> tuple[int, int]:
+    if not isinstance(rows, list) or not rows:
+        return 0, 0
+    ph = len(rows)
+    pw = max((len(r) for r in rows if isinstance(r, list)), default=0)
+    return pw, ph
+
+
+def clone_palette_rows(rows: list[list[int]]) -> list[list[int]]:
+    return [
+        [clamp_pixel_storage_index(c) for c in (r if isinstance(r, list) else [])]
+        for r in rows
+    ]
+
+
+def _merge_current_into_stash(
+    stash: dict[str, Any],
+    current: list[list[int]],
+    old_pw: int,
+    old_ph: int,
+) -> dict[str, Any]:
+    """Actualiza la esquina superior izquierda del stash con el lienzo activo."""
+    sw = int(stash.get("pw", 0))
+    sh = int(stash.get("ph", 0))
+    raw = stash.get("rows")
+    if sw <= 0 or sh <= 0 or not isinstance(raw, list):
+        return {
+            "pw": old_pw,
+            "ph": old_ph,
+            "rows": clone_palette_rows(current),
+        }
+    merged = normalize_palette_rows(raw, sw, sh, fill_index=0)
+    for y in range(min(old_ph, sh)):
+        src = current[y] if y < len(current) else []
+        if not isinstance(src, list):
+            continue
+        for x in range(min(old_pw, sw)):
+            if x < len(src):
+                merged[y][x] = clamp_pixel_storage_index(src[x])
+    return {"pw": sw, "ph": sh, "rows": merged}
+
+
+def resize_palette_rows_with_stash(
+    rows: list[list[int]] | None,
+    stash: dict[str, Any] | None,
+    new_pw: int,
+    new_ph: int,
+    *,
+    fill_index: int,
+) -> tuple[list[list[int]], dict[str, Any] | None]:
+    """
+  Redimensiona la matriz activa. Al encoger guarda el contenido previo en stash
+  (para recuperarlo si se agranda de nuevo). Al guardar en disco usar solo
+  trim_palette_rows al tamano final y descartar el stash.
+    """
+    new_pw = max(0, int(new_pw))
+    new_ph = max(0, int(new_ph))
+    if new_pw <= 0 or new_ph <= 0:
+        return [], stash
+
+    fi = clamp_pixel_storage_index(fill_index)
+    old_pw, old_ph = palette_rows_pixel_size(
+        rows if isinstance(rows, list) else None
+    )
+    if old_pw <= 0 or old_ph <= 0:
+        return solid_fill_indices(new_pw, new_ph, fi), stash
+
+    current = normalize_palette_rows(rows, old_pw, old_ph, fill_index=fi)
+    shrinking = new_pw < old_pw or new_ph < old_ph
+    growing = new_pw > old_pw or new_ph > old_ph
+
+    if shrinking:
+        if (
+            isinstance(stash, dict)
+            and int(stash.get("pw", 0)) >= old_pw
+            and int(stash.get("ph", 0)) >= old_ph
+        ):
+            stash = _merge_current_into_stash(stash, current, old_pw, old_ph)
+        else:
+            stash = {
+                "pw": old_pw,
+                "ph": old_ph,
+                "rows": clone_palette_rows(current),
+            }
+        return normalize_palette_rows(current, new_pw, new_ph, fill_index=fi), stash
+
+    if growing:
+        result = solid_fill_indices(new_pw, new_ph, fi)
+        for y in range(min(old_ph, new_ph)):
+            for x in range(min(old_pw, new_pw)):
+                result[y][x] = current[y][x]
+        if isinstance(stash, dict):
+            sw = int(stash.get("pw", 0))
+            sh = int(stash.get("ph", 0))
+            srows = stash.get("rows")
+            if sw > 0 and sh > 0 and isinstance(srows, list):
+                sn = normalize_palette_rows(srows, sw, sh, fill_index=fi)
+                for y in range(new_ph):
+                    for x in range(new_pw):
+                        if x < old_pw and y < old_ph:
+                            continue
+                        if x < sw and y < sh:
+                            result[y][x] = sn[y][x]
+        return result, stash
+
+    return normalize_palette_rows(current, new_pw, new_ph, fill_index=fi), stash
+
+
+def trim_palette_rows(
+    rows: list[list[int]] | None,
+    pw: int,
+    ph: int,
+    *,
+    fill_index: int = 0,
+) -> list[list[int]]:
+    """Recorte estricto al tamano del sprite (p. ej. al guardar en JSON)."""
+    return normalize_palette_rows(rows, pw, ph, fill_index=fill_index)
+
+
+def replace_palette_index_in_rows(
+    rows: list[list[int]] | None,
+    from_index: int,
+    to_index: int,
+) -> list[list[int]] | None:
+    """Sustituye todos los pixeles con from_index por to_index (matriz in-place nueva)."""
+    if not isinstance(rows, list) or not rows:
+        return rows
+    src = clamp_pixel_storage_index(from_index)
+    dst = clamp_pixel_storage_index(to_index)
+    if src == dst:
+        return rows
+    out: list[list[int]] = []
+    for row in rows:
+        if not isinstance(row, list):
+            out.append([])
+            continue
+        out.append(
+            [
+                dst if clamp_pixel_storage_index(c) == src else clamp_pixel_storage_index(c)
+                for c in row
+            ]
+        )
     return out
 
 
@@ -200,7 +350,7 @@ def indexed_pixels_sprite_payload(
     bh = max(1, min(int(blocks_h), MAX_BLOCKS_PER_AXIS))
     pw = bw * cp
     ph = bh * cp
-    norm = normalize_palette_rows(rows, pw, ph, fill_index=0)
+    norm = trim_palette_rows(rows, pw, ph, fill_index=0)
     return {
         "format_version": SPRITE_JSON_VERSION,
         "kind": SPRITE_JSON_KIND,

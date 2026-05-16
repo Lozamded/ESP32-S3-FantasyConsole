@@ -27,7 +27,7 @@ print("hola")
 
 `PALETTE:` es **opcional**. Si falta, el firmware usa una paleta por defecto.
 
-En TurtleStudio el arranque se edita como `scripts/global.lua` en el proyecto y se exporta convencionalmente al cartucho inicial **`main.turtlecart`**: el `ENTRY:` en el archivo es la ruta del bloque embebido de ese script (p. ej. `scripts/global.lua`). Opcionalmente el mismo cartucho incluye `studio/project_bundle.json` con escenas, objetos y sprites; **no** incluye por defecto los Lua de cada escena (pueden ir en otros archivos).
+En TurtleStudio el arranque se edita como `scripts/global.lua` en el proyecto y se exporta convencionalmente al cartucho inicial **`main.turtlecart`**: el `ENTRY:` en el archivo es la ruta del bloque embebido de ese script (p. ej. `scripts/global.lua`). Opcionalmente el mismo cartucho incluye `studio/project_bundle.json` con escenas, objetos y sprites (ver **`spec/sprite-v0.md`**); **no** incluye por defecto los Lua de cada escena (pueden ir en otros archivos).
 
 ## Reglas v0
 
@@ -57,7 +57,7 @@ El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scen
 - Cargar el cartucho desde SD.
 - Aplicar paleta opcional antes de ejecutar el script.
 - Extraer el archivo indicado en `ENTRY` (p. ej. `scripts/global.lua`).
-- Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (rectangulos `solid_palette_index`, fondo `background_index`) antes de ejecutar el `ENTRY`.
+- Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (fondo `background_index`, objetos con sprites `solid_palette_index` o `indexed_pixels`; ver **`spec/sprite-v0.md`**) antes de ejecutar el `ENTRY`.
 - Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
   - `print` → Serial
   - `cls(color)`, `pix(x,y,color)` (framebuffer), **`spix(sx,sy,color)`** (escena: abajo-izquierda, Y arriba), `flip()` → framebuffer 264×198 (**32 indices** de color)
@@ -67,7 +67,7 @@ El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scen
 
 - Compresion.
 - Checksums.
-- Sprites/binarios embebidos (salvo texto en secciones FILE).
+- Sprites en binario dedicado (`sprites.bin`); en v0 van como JSON dentro de `studio/project_bundle.json` (texto embebido).
 - Firma digital.
 
 ## Evolucion sugerida (v1+)

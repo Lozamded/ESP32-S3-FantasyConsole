@@ -49,18 +49,26 @@ con campos como nombre, limites, gravedad, capas, etc. Fuera de alcance de este 
 
 ## Transparencia (chroma key, convencion TurtleStudio)
 
-Para **sprites y composicion futura** (no para el framebuffer indice actual del firmware), se adopta un **indice de paleta reservado** como “transparente” al dibujar por encima del fondo:
+Para **sprites indexados**, fondos con pixeles indexados (futuro) y herramientas, el **ultimo indice de la paleta de 32 colores** es siempre transparente al componer:
 
-- **Indice por defecto: 31** (`0..31` son los indices validos del runtime).
-- Ese indice sigue teniendo un color en la paleta del cartucho (util para ver el recorte en herramientas); al implementar `spr`/capas, el runtime **no copiara** píxeles con ese indice.
+- **Indice fijo: 31** (base 0; el “color 32” si se cuenta desde 1). Valido en **cualquier** archivo de paleta del proyecto, independientemente de cuantos `#RRGGBB` tenga el `.txt`.
+- Ese indice puede tener un color en la paleta (util para previsualizar el recorte en el editor); al blitear `indexed_pixels`, el runtime **no copia** pixeles con ese indice.
+- TurtleStudio **no permite seleccionar** el 31 como pincel ni como indice de fondo/capa; solo como valor guardado en matrices (`image.rows`).
 
-El manifest de proyecto (`turtlestudio.json`) puede declarar `transparent_index` (entero `0..31`); si falta, las herramientas asumen **31**.
+El manifest (`turtlestudio.json`) y el bundle (`studio/project_bundle.json`) pueden incluir `transparent_index` por compatibilidad; herramientas y firmware lo tratan como **31** siempre.
+
+Detalle de sprites y modos de dibujo: **`spec/sprite-v0.md`**.
 
 ## Escenas en proyecto TurtleStudio (manifest)
 
 En la carpeta de proyecto, `turtlestudio.json` puede incluir una lista **`scenes`**: cada entrada tiene `id` (identificador unico; por defecto la primera escena suele ser **`intro`**, p. ej. titulo o logo), **`script`** (stem del archivo `scripts/<script>.lua` con la logica Lua de esa escena), `palette` (ruta relativa a un archivo de paleta en el proyecto, p. ej. `palettes/nivel1.txt`) y opcionalmente **`background_index`** (entero `0..N-1` con `N` = numero de colores en esa paleta; indice de fondo para la vista previa del estudio, alineado con `cls()` en el cartucho). El id **`main` esta reservado** (no usar como escena: corresponde al nombre del cartucho inicial `main.turtlecart`). El campo **`active_scene`** indica la escena seleccionada en TurtleStudio para vista previa y edicion. El **`entry`** del manifest apunta al Lua de arranque del cartucho (en TurtleStudio se convenciona `scripts/global.lua`, cuyo texto se embebe como bloque `ENTRY` en `main.turtlecart`). Al exportar ese cartucho inicial, las herramientas pueden embeber solo `studio/project_bundle.json` ademas del `ENTRY`; los Lua de escena en disco **no** se copian obligatoriamente al mismo archivo (pueden distribuirse en otros `.turtlecart` o archivos cuando el runtime lo permita). Esto no sustituye aun un bloque `SCENE:` en el `.turtlecart` v0; el cartucho sigue usando la paleta embebida opcional y el script `ENTRY` como hasta ahora.
 
 Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena en `scenes/<id>.json` (`kind: "turtlestudio.scene"`, `id`, `palette`, `background_index` = indice de color de fondo en esa paleta para vista previa en el estudio) para revision en Git o edicion externa; **al abrir el proyecto la fuente de verdad sigue siendo el manifest** para no divergir listas de escenas.
+
+## Vista previa TurtleStudio (canvas)
+
+- Las **cuatro capas de fondo** admiten opacidad `0..255` en el manifest; el estudio las mezcla en la vista previa (el firmware sigue usando un unico `cls()` hasta soporte multilayer).
+- La **capa de sprites** (objetos colocados en la escena) tiene en el editor **Mostrar sprites** y **Opacidad sprites (vista previa)** `0..255`; no se guarda en el proyecto. Las cruces de ancla siguen visibles para colocar objetos.
 
 ## Objetos y capas (v0)
 

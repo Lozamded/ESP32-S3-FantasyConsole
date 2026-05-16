@@ -1,0 +1,271 @@
+"""Imagen de referencia (PNG/JPG) para el editor de sprites; no modifica la matriz guardada."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+_REF_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+
+
+def is_supported_ref_image_path(path: str | Path) -> bool:
+    return Path(path).suffix.lower() in _REF_SUFFIXES
+
+
+def load_image_rgba_float01(path: str | Path) -> tuple[int, int, list[float]]:
+    """
+    Carga imagen con Dear PyGui. Devuelve (ancho, alto, rgba 0..1 fila 0 arriba).
+    """
+    import dearpygui.dearpygui as dpg
+
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise ValueError(f"no existe el archivo: {p}")
+    if not is_supported_ref_image_path(p):
+        raise ValueError("formato no soportado (usa .png, .jpg, .jpeg, .webp o .bmp)")
+
+    loaded = dpg.load_image(str(p.resolve()))
+    if not loaded:
+        raise ValueError(f"no se pudo decodificar la imagen: {p.name}")
+
+    w, h, ch, data = loaded
+    w = int(w)
+    h = int(h)
+    ch = int(ch)
+    if w <= 0 or h <= 0:
+        raise ValueError("imagen vacia o tamano invalido")
+
+    n = w * h * ch
+    if ch == 4:
+        rgba = [float(data[i]) for i in range(n)]
+    elif ch == 3:
+        rgba = []
+        for i in range(0, n, 3):
+            rgba.extend((float(data[i]), float(data[i + 1]), float(data[i + 2]), 1.0))
+    elif ch == 1:
+        rgba = []
+        for i in range(n):
+            g = float(data[i])
+            rgba.extend((g, g, g, 1.0))
+    else:
+        raise ValueError(f"canales de imagen no soportados: {ch}")
+
+    rgba = _coerce_rgba_float01(rgba)
+    return w, h, rgba
+
+
+def _coerce_rgba_float01(rgba: list[float]) -> list[float]:
+    """DPG a veces devuelve 0..255 en lugar de 0..1."""
+    if not rgba:
+        return rgba
+    peak = max(rgba)
+    if peak <= 1.0 + 1e-6:
+        return rgba
+    inv = 1.0 / 255.0
+    return [max(0.0, min(1.0, v * inv)) for v in rgba]
+
+
+def resample_rgba_stretch(
+    src: list[float],
+    sw: int,
+    sh: int,
+    dw: int,
+    dh: int,
+) -> list[float]:
+    """Escala la imagen al tamano del lienzo (dw x dh), interpolacion bilineal."""
+    if sw <= 0 or sh <= 0 or dw <= 0 or dh <= 0:
+        return []
+    if sw == dw and sh == dh:
+        return list(src)
+
+    out = [0.0] * (dw * dh * 4)
+    if dw == 1 and dh == 1:
+        out[0:4] = _sample_bilinear(src, sw, sh, 0.0, 0.0)
+        return out
+
+    for dy in range(dh):
+        sy = ((dy + 0.5) * sh / dh) - 0.5
+        for dx in range(dw):
+            sx = ((dx + 0.5) * sw / dw) - 0.5
+            oi = (dy * dw + dx) * 4
+            r, g, b, a = _sample_bilinear(src, sw, sh, sx, sy)
+            out[oi] = r
+            out[oi + 1] = g
+            out[oi + 2] = b
+            out[oi + 3] = a
+    return out
+
+
+def _sample_bilinear(
+    src: list[float],
+    sw: int,
+    sh: int,
+    sx: float,
+    sy: float,
+) -> tuple[float, float, float, float]:
+    if sw <= 0 or sh <= 0:
+        return (0.0, 0.0, 0.0, 0.0)
+    if sw == 1:
+        x0 = x1 = 0
+        tx = 0.0
+    else:
+        sx = max(0.0, min(float(sw - 1), sx))
+        x0 = int(sx)
+        x1 = min(x0 + 1, sw - 1)
+        tx = sx - x0
+    if sh == 1:
+        y0 = y1 = 0
+        ty = 0.0
+    else:
+        sy = max(0.0, min(float(sh - 1), sy))
+        y0 = int(sy)
+        y1 = min(y0 + 1, sh - 1)
+        ty = sy - y0
+
+    def px(x: int, y: int) -> tuple[float, float, float, float]:
+        i = (y * sw + x) * 4
+        return (src[i], src[i + 1], src[i + 2], src[i + 3])
+
+    c00 = px(x0, y0)
+    c10 = px(x1, y0)
+    c01 = px(x0, y1)
+    c11 = px(x1, y1)
+    out: list[float] = []
+    for k in range(4):
+        top = c00[k] * (1.0 - tx) + c10[k] * tx
+        bot = c01[k] * (1.0 - tx) + c11[k] * tx
+        out.append(top * (1.0 - ty) + bot * ty)
+    return (out[0], out[1], out[2], out[3])
+
+
+def _rgb_close(
+    a: tuple[float, float, float],
+    b: tuple[float, float, float],
+    eps: float = 0.02,
+) -> bool:
+    return (
+        abs(a[0] - b[0]) <= eps
+        and abs(a[1] - b[1]) <= eps
+        and abs(a[2] - b[2]) <= eps
+    )
+
+
+def _solid_fill_rgba_float01(
+    pw: int,
+    ph: int,
+    rgb: tuple[float, float, float],
+) -> list[float]:
+    out: list[float] = []
+    for _ in range(pw * ph):
+        out.extend((rgb[0], rgb[1], rgb[2], 1.0))
+    return out
+
+
+def composite_sprite_editor_preview(
+    rows: list[list[int]],
+    rgbs: list[tuple[float, float, float]],
+    ref_rgba: list[float] | None,
+    *,
+    ref_alpha: float = 0.45,
+    paint_alpha: float = 1.0,
+) -> list[float]:
+    """
+    Vista previa del editor: relleno del lienzo, referencia opcional debajo,
+    pixeles pintados encima con opacidad ajustable (indice 31 = hueco).
+    """
+    from turtlestudio.palette_policy import resolve_palette_color
+
+    ph = len(rows)
+    pw = len(rows[0]) if rows else 0
+    if pw <= 0 or ph <= 0:
+        return []
+    if len(rgbs) > 1:
+        fill = rgbs[1]
+    elif rgbs:
+        fill = rgbs[0]
+    else:
+        fill = (0.5, 0.5, 0.5)
+
+    underlay = _solid_fill_rgba_float01(pw, ph, fill)
+    if ref_rgba is not None and len(ref_rgba) == len(underlay):
+        underlay = composite_ref_for_sprite_editor(
+            underlay,
+            ref_rgba,
+            ref_alpha=ref_alpha,
+            canvas_fill_rgb=fill,
+        )
+
+    pa = max(0.0, min(1.0, float(paint_alpha)))
+    if pa <= 0.0:
+        return underlay
+
+    out = list(underlay)
+    for py in range(ph):
+        row = rows[py] if py < len(rows) else []
+        for lx in range(pw):
+            try:
+                idx = int(row[lx]) if lx < len(row) else 0
+            except (TypeError, ValueError):
+                idx = 0
+            col = resolve_palette_color(idx, rgbs)
+            if col is None:
+                continue
+            i = (py * pw + lx) * 4
+            if pa >= 1.0 - 1e-6:
+                out[i] = col[0]
+                out[i + 1] = col[1]
+                out[i + 2] = col[2]
+            else:
+                inv = 1.0 - pa
+                br, bg, bb = out[i], out[i + 1], out[i + 2]
+                out[i] = br * inv + col[0] * pa
+                out[i + 1] = bg * inv + col[1] * pa
+                out[i + 2] = bb * inv + col[2] * pa
+            out[i + 3] = 1.0
+    return out
+
+
+def composite_ref_for_sprite_editor(
+    pixel_rgba: list[float],
+    ref_rgba: list[float],
+    *,
+    ref_alpha: float = 0.45,
+    canvas_fill_rgb: tuple[float, float, float] | None = None,
+) -> list[float]:
+    """
+    Referencia visible en celdas aun con color de relleno del lienzo; lo pintado tapa la ref.
+    Si canvas_fill_rgb es None, mezcla la referencia encima de todo (calco).
+    """
+    if len(pixel_rgba) != len(ref_rgba):
+        return pixel_rgba
+    fa = max(0.0, min(1.0, float(ref_alpha)))
+    if fa <= 0.0:
+        return pixel_rgba
+
+    out = list(pixel_rgba)
+    inv = 1.0 - fa
+    for i in range(0, len(out), 4):
+        br, bg, bb = out[i], out[i + 1], out[i + 2]
+        rr, rg, rb = ref_rgba[i], ref_rgba[i + 1], ref_rgba[i + 2]
+        if canvas_fill_rgb is not None and _rgb_close((br, bg, bb), canvas_fill_rgb):
+            out[i] = br * inv + rr * fa
+            out[i + 1] = bg * inv + rg * fa
+            out[i + 2] = bb * inv + rb * fa
+        elif canvas_fill_rgb is None:
+            out[i] = br * inv + rr * fa
+            out[i + 1] = bg * inv + rg * fa
+            out[i + 2] = bb * inv + rb * fa
+        out[i + 3] = 1.0
+    return out
+
+
+def aspect_ratio_note(src_w: int, src_h: int, dst_w: int, dst_h: int) -> str | None:
+    if src_w <= 0 or src_h <= 0 or dst_w <= 0 or dst_h <= 0:
+        return None
+    ar_s = src_w / float(src_h)
+    ar_d = dst_w / float(dst_h)
+    if abs(ar_s - ar_d) <= 0.02:
+        return None
+    return (
+        f"referencia {src_w}x{src_h} escalada a lienzo {dst_w}x{dst_h} "
+        f"(relacion de aspecto distinta)"
+    )

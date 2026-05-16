@@ -102,7 +102,12 @@ def save_solid_background_json(
 ) -> Path:
     """Crea o sobrescribe `backgrounds/<id>.json` (relleno solido v0)."""
     bid = validate_background_id(background_id)
+    from turtlestudio.palette_policy import clamp_paint_palette_index
+    from turtlestudio.project import _palette_n_colors
+
     pal_ok = validate_palette_file_under_project(project_root, palette_rel)
+    n_colors = _palette_n_colors((project_root / pal_ok).resolve())
+    palette_index = clamp_paint_palette_index(palette_index, palette_len=n_colors)
     d = backgrounds_dir(project_root)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{bid}.json"
@@ -136,7 +141,12 @@ def write_solid_background_json(
     palette_index: int,
 ) -> Path:
     bid = validate_background_id(background_id)
+    from turtlestudio.palette_policy import clamp_paint_palette_index
+    from turtlestudio.project import _palette_n_colors
+
     pal_ok = validate_palette_file_under_project(project_root, palette_rel)
+    n_colors = _palette_n_colors((project_root / pal_ok).resolve())
+    palette_index = clamp_paint_palette_index(palette_index, palette_len=n_colors)
     d = backgrounds_dir(project_root)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{bid}.json"

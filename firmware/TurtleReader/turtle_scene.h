@@ -6,7 +6,8 @@
 /**
  * Dibuja en el framebuffer la escena `scene_id` del bundle TurtleStudio embebido
  * (`studio/project_bundle.json`): fondo `background_index` y objetos con sprites
- * `render.mode == solid_palette_index` (rectangulos pixel_w x pixel_h).
+ * Sprites por `pixel_w` x `pixel_h` (independiente de `cell_px`, default 4 en herramientas):
+ * `solid_palette_index` (rectangulo) o `indexed_pixels` + `image.rows` (indice 31 = transparente).
  *
  * Requiere paleta del cartucho ya cargada. Solo actualiza RAM; el host llama turtle_gpu_flip()
  * despues (en TurtleReader: tras el ENTRY Lua, para que cls() en cartuchos viejos no deje negro).

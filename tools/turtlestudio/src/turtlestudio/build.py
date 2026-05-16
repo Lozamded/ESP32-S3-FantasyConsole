@@ -208,7 +208,9 @@ def collect_studio_bundle_files(
 
     root = project_root.expanduser().resolve()
     entry = _normalize_entry_path(entry_relpath)
-    ti = max(0, min(31, int(transparent_index)))
+    from turtlestudio.palette_policy import clamp_transparent_index
+
+    ti = clamp_transparent_index(transparent_index)
 
     oids: set[str] = set()
     bg_stems: set[str] = set()

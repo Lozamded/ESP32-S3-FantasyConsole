@@ -10,6 +10,13 @@
 namespace {
 
 constexpr int kMaxPlacements = 96;
+/** Mismo default que TurtleStudio (sprites.DEFAULT_CELL_PX). */
+constexpr int kDefaultCellPx = 4;
+constexpr int kDefaultTransparentIndex = 31;
+constexpr int kMaxSpriteW = 128;
+constexpr int kMaxSpriteH = 128;
+
+static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
 
 struct Placement {
   char obj_id[32];
@@ -195,8 +202,8 @@ static const char* find_root_objects_dict_brace(const char* json, const char* js
   return nullptr;
 }
 
-static bool resolve_sprite_dims(const char* json, const char* json_end, const char* sprite_id,
-                                int* pw, int* ph, int* pal_idx) {
+static bool find_sprite_inner(const char* json, const char* json_end, const char* sprite_id,
+                              const char** inner, const char** inner_end) {
   const char* p = strstr_bounded(json, json_end, "\"sprites\"");
   if (!p) {
     return false;
@@ -226,25 +233,143 @@ static bool resolve_sprite_dims(const char* json, const char* json_end, const ch
   if (!hit) {
     return false;
   }
-  const char* inner = strchr(hit + strlen(pat), '{');
-  if (!inner || inner >= sd_end) {
+  const char* in = strchr(hit + strlen(pat), '{');
+  if (!in || in >= sd_end) {
     return false;
   }
-  const char* inner_end = json_object_end(inner);
-  if (!inner_end) {
+  const char* in_end = json_object_end(in);
+  if (!in_end) {
     return false;
   }
-  if (!json_extract_int_for_key(inner, inner_end, "pixel_w", pw)) {
-    return false;
-  }
-  if (!json_extract_int_for_key(inner, inner_end, "pixel_h", ph)) {
-    return false;
-  }
-  return extract_palette_index_sprite(inner, inner_end, pal_idx);
+  *inner = in;
+  *inner_end = in_end;
+  return true;
 }
 
-static bool resolve_sprite_for_object(const char* json, const char* json_end, const char* obj_id,
-                                      int* pw, int* ph, int* pal_idx) {
+static bool resolve_pixel_dims_sprite(const char* inner, const char* inner_end, int* pw,
+                                      int* ph) {
+  if (json_extract_int_for_key(inner, inner_end, "pixel_w", pw) &&
+      json_extract_int_for_key(inner, inner_end, "pixel_h", ph) && *pw > 0 && *ph > 0) {
+    return true;
+  }
+  int bw = 1;
+  int bh = 1;
+  int cp = kDefaultCellPx;
+  json_extract_int_for_key(inner, inner_end, "blocks_w", &bw);
+  json_extract_int_for_key(inner, inner_end, "blocks_h", &bh);
+  json_extract_int_for_key(inner, inner_end, "cell_px", &cp);
+  if (bw < 1) {
+    bw = 1;
+  }
+  if (bh < 1) {
+    bh = 1;
+  }
+  if (cp < 1) {
+    cp = kDefaultCellPx;
+  }
+  *pw = bw * cp;
+  *ph = bh * cp;
+  return *pw > 0 && *ph > 0;
+}
+
+static bool render_mode_is_indexed_pixels(const char* inner, const char* inner_end) {
+  const char* r = strstr_bounded(inner, inner_end, "\"render\"");
+  if (!r) {
+    return false;
+  }
+  while (r < inner_end && *r != ':') {
+    ++r;
+  }
+  if (r >= inner_end) {
+    return false;
+  }
+  ++r;
+  while (r < inner_end && isspace(static_cast<unsigned char>(*r))) {
+    ++r;
+  }
+  if (r >= inner_end || *r != '{') {
+    return false;
+  }
+  const char* rb = r;
+  const char* re = json_object_end(rb);
+  if (!re) {
+    return false;
+  }
+  char mode[32];
+  if (!json_extract_string_for_key(rb, re, "mode", mode, sizeof mode)) {
+    return false;
+  }
+  return strcmp(mode, "indexed_pixels") == 0;
+}
+
+static bool parse_palette_rows_image(const char* inner, const char* inner_end, int expect_w,
+                                     int expect_h, uint8_t* out, int out_stride) {
+  const char* im = strstr_bounded(inner, inner_end, "\"image\"");
+  if (!im) {
+    return false;
+  }
+  const char* rows_k = strstr_bounded(im, inner_end, "\"rows\"");
+  if (!rows_k) {
+    return false;
+  }
+  const char* p = rows_k + 6;
+  while (p < inner_end && *p != '[') {
+    ++p;
+  }
+  if (p >= inner_end || *p != '[') {
+    return false;
+  }
+  ++p;
+
+  int y = 0;
+  while (p < inner_end && *p != ']' && y < expect_h) {
+    while (p < inner_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= inner_end || *p == ']') {
+      break;
+    }
+    if (*p != '[') {
+      return false;
+    }
+    ++p;
+    int x = 0;
+    while (p < inner_end && *p != ']') {
+      while (p < inner_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+        ++p;
+      }
+      if (p >= inner_end || *p == ']') {
+        break;
+      }
+      int v = 0;
+      if (!parse_int_bounded(p, inner_end, &v)) {
+        return false;
+      }
+      while (p < inner_end && (*p == '-' || isdigit(static_cast<unsigned char>(*p)))) {
+        ++p;
+      }
+      if (x < expect_w && x < out_stride) {
+        int ci = v;
+        if (ci < 0) {
+          ci = 0;
+        }
+        if (ci > 31) {
+          ci = 31;
+        }
+        out[y * out_stride + x] = static_cast<uint8_t>(ci);
+      }
+      ++x;
+    }
+    if (p < inner_end && *p == ']') {
+      ++p;
+    }
+    ++y;
+  }
+  return y > 0;
+}
+
+static bool draw_sprite_for_object(const char* json, const char* json_end, const char* obj_id,
+                                   int scene_x, int scene_y, uint8_t transparent_index) {
   const char* od = find_root_objects_dict_brace(json, json_end);
   if (!od || *od != '{') {
     return false;
@@ -260,19 +385,60 @@ static bool resolve_sprite_for_object(const char* json, const char* json_end, co
   if (!hit) {
     return false;
   }
-  const char* inner = strchr(hit + strlen(pat), '{');
-  if (!inner || inner >= od_end) {
+  const char* oinner = strchr(hit + strlen(pat), '{');
+  if (!oinner || oinner >= od_end) {
     return false;
   }
-  const char* inner_end = json_object_end(inner);
-  if (!inner_end) {
+  const char* oinner_end = json_object_end(oinner);
+  if (!oinner_end) {
     return false;
   }
   char sprite_id[48];
-  if (!json_extract_string_for_key(inner, inner_end, "sprite_id", sprite_id, sizeof sprite_id)) {
+  if (!json_extract_string_for_key(oinner, oinner_end, "sprite_id", sprite_id, sizeof sprite_id)) {
     return false;
   }
-  return resolve_sprite_dims(json, json_end, sprite_id, pw, ph, pal_idx);
+
+  const char* inner = nullptr;
+  const char* inner_end = nullptr;
+  if (!find_sprite_inner(json, json_end, sprite_id, &inner, &inner_end)) {
+    return false;
+  }
+
+  int pw = 0;
+  int ph = 0;
+  if (!resolve_pixel_dims_sprite(inner, inner_end, &pw, &ph)) {
+    return false;
+  }
+  if (pw > kMaxSpriteW || ph > kMaxSpriteH) {
+    Serial.printf("turtle_scene: sprite \"%s\" %dx%d > max %dx%d\n", sprite_id, pw, ph, kMaxSpriteW,
+                   kMaxSpriteH);
+    return false;
+  }
+
+  if (render_mode_is_indexed_pixels(inner, inner_end)) {
+    memset(s_sprite_pixels, 0, sizeof(s_sprite_pixels));
+    if (!parse_palette_rows_image(inner, inner_end, pw, ph, s_sprite_pixels, pw)) {
+      Serial.printf("turtle_scene: filas indexed_pixels invalidas en \"%s\"\n", sprite_id);
+      return false;
+    }
+    turtle_gpu_blit_indexed_scene(scene_x, scene_y, pw, ph, s_sprite_pixels, pw,
+                                  transparent_index);
+    return true;
+  }
+
+  int pci = 0;
+  if (!extract_palette_index_sprite(inner, inner_end, &pci)) {
+    Serial.printf("turtle_scene: sprite solido \"%s\" sin palette_index\n", sprite_id);
+    return false;
+  }
+  if (pci < 0) {
+    pci = 0;
+  }
+  if (pci > 31) {
+    pci = 31;
+  }
+  turtle_gpu_fill_rect_scene(scene_x, scene_y, pw, ph, static_cast<uint8_t>(pci));
+  return true;
 }
 
 static bool parse_placements(const char* scene_start, const char* scene_end, Placement* out,
@@ -400,6 +566,17 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     bg = 31;
   }
 
+  int transp = kDefaultTransparentIndex;
+  if (!json_extract_int_for_key(json, json_end, "transparent_index", &transp)) {
+    transp = kDefaultTransparentIndex;
+  }
+  if (transp < 0) {
+    transp = 0;
+  }
+  if (transp > 31) {
+    transp = 31;
+  }
+
   Placement placements[kMaxPlacements];
   int npl = 0;
   if (!parse_placements(sc_start, sc_end, placements, &npl)) {
@@ -409,22 +586,10 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
   turtle_gpu_cls(static_cast<uint8_t>(bg));
 
   for (int i = 0; i < npl; ++i) {
-    int pw = 0, ph = 0, pci = 0;
-    if (!resolve_sprite_for_object(json, json_end, placements[i].obj_id, &pw, &ph, &pci)) {
+    if (!draw_sprite_for_object(json, json_end, placements[i].obj_id, placements[i].x,
+                                placements[i].y, static_cast<uint8_t>(transp))) {
       Serial.printf("turtle_scene: no sprite para objeto \"%s\"\n", placements[i].obj_id);
-      continue;
     }
-    if (pw <= 0 || ph <= 0) {
-      continue;
-    }
-    if (pci < 0) {
-      pci = 0;
-    }
-    if (pci > 31) {
-      pci = 31;
-    }
-    turtle_gpu_fill_rect_scene(placements[i].x, placements[i].y, pw, ph,
-                               static_cast<uint8_t>(pci));
   }
 
   Serial.printf("turtle_scene: escena \"%s\" (%d objetos), fondo idx %d (flip = host)\n", scene_id,
