@@ -42,12 +42,14 @@ Sprites antiguos con `cell_px: 8` siguen siendo validos si `pixel_w` / `pixel_h`
   "origin_y": 0,
   "render": { "mode": "..." },
   "image": null,
+  "frame_count": 1,
   "frames": []
 }
 ```
 
 - **`palette`**: ruta relativa al proyecto (`#RRGGBB` por linea). Los indices en `render` / `image` son respecto a **esa** paleta (la escena puede usar otra; validacion cruzada es responsabilidad de herramientas).
-- **`frames`**: reservado (animacion futura).
+- **`frame_count`**: numero de fotogramas (`1..32`). **Default `1`**.
+- **`frames`**: fotogramas adicionales (`1..N-1`). Cada entrada es `{"image": {"format": "palette_rows", "rows": [...]}}`. El fotograma **0** va siempre en `image` (compatibilidad firmware).
 
 ### Origen (`origin_x`, `origin_y`)
 
@@ -95,6 +97,7 @@ Matriz de indices de paleta; fila **0 = arriba** del sprite (como en el editor).
 ## TurtleStudio (editor)
 
 - Pestana **Sprites**: paleta propia del sprite, celdas W/H, lienzo con pincel (clic en la paleta = indice de pincel). **Clic derecho** (o arrastrar con boton derecho) borra con indice **31**. **Borrar todo** vacia el lienzo (todo transparente). Debajo del lienzo, **colores usados** (clic para volver a elegir ese indice); **Intercambiar color** sustituye todos los pixeles de un indice por otro (origen resaltado con borde). Al **reducir** W/H el estudio conserva en memoria el arte fuera del lienzo para recuperarlo si se **agranda** de nuevo; al **guardar**, el JSON solo lleva el tamano activo (sin datos fuera de `pixel_w`×`pixel_h`).
+- **Fotogramas**: campo **Fotogramas** + pestañas **F0, F1, …** sobre el lienzo; cada pestaña edita una matriz distinta. **Guardar sprite** escribe `frame_count`, `image` (F0) y `frames[]` (resto).
 - **Guardar sprite** escribe siempre `indexed_pixels` + `image.rows` (no sobrescribe con un solo color plano).
 - **Crear JSON sprite** crea un sprite indexado relleno con el pincel actual.
 - Rejilla del lienzo (vista previa): **hueco de 1 px** entre pixeles ampliados (no lineas encima del arte); paso de celda configurable (4, 8, …) oscurece los bordes de bloque.
@@ -165,7 +168,7 @@ Ver `spec/scene-v0.md`: indice **31** fijo en todas las paletas. En el editor, l
 
 ## Fuera de alcance (v0)
 
-- Animacion (`frames[]`).
+- Reproduccion de animacion en escena / firmware (solo edicion y almacenamiento multi-frame en v0).
 - Rotacion / flip en hardware.
 - Compresion de matrices.
 - Tilemaps y capas de fondo multiples en firmware (parcial en manifest; dibujo simple de fondo + objetos).

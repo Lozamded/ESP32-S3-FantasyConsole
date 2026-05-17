@@ -63,10 +63,12 @@ from turtlestudio.sprite_ref_image import (
 )
 from turtlestudio.sprites import (
     DEFAULT_CELL_PX,
+    MAX_SPRITE_FRAMES,
     list_sprite_json_stems,
     normalize_palette_rel,
     normalize_palette_rows,
     parse_palette_rows_image,
+    parse_sprite_all_frame_rows,
     parse_sprite_origin,
     palette_rows_pixel_size,
     read_sprite_file,
@@ -838,6 +840,9 @@ def run_gui() -> int:
         "edit_bg_layer_slot": 0,
         "sprite_pixel_rows": None,
         "sprite_pixel_stash": None,
+        "sprite_frame_pixels": None,
+        "sprite_frame_stash": None,
+        "sprite_active_frame": 0,
         "sprite_color_swap_active": False,
         "sprite_color_swap_source": None,
         "sprite_canvas_bg_rgb01": (
@@ -1627,6 +1632,7 @@ def run_gui() -> int:
             "ts_sprite_blocks_h",
             "ts_sprite_origin_x",
             "ts_sprite_origin_y",
+            "ts_sprite_frame_count",
             "ts_btn_sprite_apply_size",
             "ts_sprite_editor_scale",
             "ts_sprite_editor_show_grid",
@@ -1783,6 +1789,9 @@ def run_gui() -> int:
             _rebuild_sprite_palette_swatches()
             state["sprite_pixel_rows"] = None
             state["sprite_pixel_stash"] = None
+            state["sprite_frame_pixels"] = None
+            state["sprite_frame_stash"] = None
+            state["sprite_active_frame"] = 0
             state["sprite_ref_source"] = None
             state["sprite_ref_path"] = ""
             if dpg.does_item_exist("ts_sprite_ref_path_label"):
@@ -2533,7 +2542,8 @@ def run_gui() -> int:
         _resize_sprite_edit_matrix_for_widgets()
         cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         try:
-            rows2 = _trim_sprite_pixel_rows_for_save()
+            all_frames = _trim_all_sprite_frames_for_save()
+            rows2 = all_frames[0] if all_frames else []
             pw_o, ph_o = _expected_sprite_matrix_pixel_size()
             ox, oy = _clamp_sprite_origin_widgets(pw_o, ph_o)
             path = save_indexed_pixels_sprite_json(
@@ -2543,6 +2553,7 @@ def run_gui() -> int:
                 blocks_w=bw,
                 blocks_h=bh,
                 rows=rows2,
+                frame_rows=all_frames,
                 cell_px=cp,
                 origin_x=ox,
                 origin_y=oy,
@@ -2641,36 +2652,214 @@ def run_gui() -> int:
         *,
         fill_from_index: int | None = None,
     ) -> None:
+        _sprite_flush_current_frame()
         pw, ph = _expected_sprite_matrix_pixel_size()
         fi = _sprite_matrix_fill_index(fill_from_index)
-        old = state.get("sprite_pixel_rows")
-        stash = state.get("sprite_pixel_stash")
-        if not isinstance(stash, dict):
-            stash = None
-        if isinstance(old, list) and old and any(isinstance(r, list) and r for r in old):
-            rows, new_stash = resize_palette_rows_with_stash(
-                old, stash, pw, ph, fill_index=fi
-            )
-            state["sprite_pixel_rows"] = rows
-            state["sprite_pixel_stash"] = new_stash
-        else:
-            state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, fi)
-            state["sprite_pixel_stash"] = stash
+        frames = _ensure_sprite_frame_buffers()
+        stashes = state.get("sprite_frame_stash")
+        if not isinstance(stashes, list):
+            stashes = [None] * len(frames)
+        new_frames: list[list[list[int]]] = []
+        new_stashes: list[dict[str, list[list[int]]] | None] = []
+        for i, old in enumerate(frames):
+            stash = stashes[i] if i < len(stashes) else None
+            if not isinstance(stash, dict):
+                stash = None
+            if isinstance(old, list) and old and any(
+                isinstance(r, list) and r for r in old
+            ):
+                rows, new_stash = resize_palette_rows_with_stash(
+                    old, stash, pw, ph, fill_index=fi
+                )
+            else:
+                rows = solid_fill_indices(pw, ph, fi)
+                new_stash = stash
+            new_frames.append(rows)
+            new_stashes.append(new_stash)
+        if not new_frames:
+            new_frames = [solid_fill_indices(pw, ph, fi)]
+            new_stashes = [None]
+        state["sprite_frame_pixels"] = new_frames
+        state["sprite_frame_stash"] = new_stashes
+        _sprite_load_active_frame_into_editor()
 
     def _trim_sprite_pixel_rows_for_save() -> list[list[int]]:
-        """Recorte al tamano activo; descarta stash y datos fuera del lienzo."""
+        """Recorte del fotograma activo (compat); usar _trim_all_sprite_frames_for_save al guardar."""
+        all_f = _trim_all_sprite_frames_for_save()
+        idx = _sprite_active_frame_index()
+        if idx < len(all_f):
+            return all_f[idx]
+        return all_f[0] if all_f else []
+
+    def _trim_all_sprite_frames_for_save() -> list[list[list[int]]]:
+        """Recorta todos los fotogramas al tamano activo."""
+        _sprite_flush_current_frame()
         pw, ph = _expected_sprite_matrix_pixel_size()
-        rows = state.get("sprite_pixel_rows")
         fi = _sprite_matrix_fill_index()
-        trimmed = trim_palette_rows(
-            rows if isinstance(rows, list) else None,
-            pw,
-            ph,
-            fill_index=fi,
-        )
-        state["sprite_pixel_rows"] = trimmed
-        state["sprite_pixel_stash"] = None
+        frames = _ensure_sprite_frame_buffers()
+        trimmed: list[list[list[int]]] = []
+        for old in frames:
+            trimmed.append(
+                trim_palette_rows(
+                    old if isinstance(old, list) else None,
+                    pw,
+                    ph,
+                    fill_index=fi,
+                )
+            )
+        state["sprite_frame_pixels"] = trimmed
+        state["sprite_frame_stash"] = [None] * len(trimmed)
+        _sprite_load_active_frame_into_editor()
         return trimmed
+
+    def _sprite_active_frame_index() -> int:
+        try:
+            i = int(state.get("sprite_active_frame") or 0)
+        except (TypeError, ValueError):
+            i = 0
+        frames = state.get("sprite_frame_pixels")
+        n = len(frames) if isinstance(frames, list) else 1
+        return max(0, min(max(0, n - 1), i))
+
+    def _sprite_frame_count_from_state() -> int:
+        frames = state.get("sprite_frame_pixels")
+        if isinstance(frames, list) and frames:
+            return len(frames)
+        return 1
+
+    def _ensure_sprite_frame_buffers() -> list[list[list[int]]]:
+        frames = state.get("sprite_frame_pixels")
+        rows = state.get("sprite_pixel_rows")
+        if not isinstance(frames, list) or not frames:
+            if isinstance(rows, list) and rows:
+                state["sprite_frame_pixels"] = [rows]
+            else:
+                state["sprite_frame_pixels"] = []
+            frames = state.get("sprite_frame_pixels")
+        if not isinstance(frames, list):
+            return []
+        stashes = state.get("sprite_frame_stash")
+        if not isinstance(stashes, list) or len(stashes) != len(frames):
+            state["sprite_frame_stash"] = [None] * len(frames)
+        return frames
+
+    def _sprite_flush_current_frame() -> None:
+        rows = state.get("sprite_pixel_rows")
+        stash = state.get("sprite_pixel_stash")
+        frames = _ensure_sprite_frame_buffers()
+        if not frames:
+            return
+        idx = _sprite_active_frame_index()
+        if isinstance(rows, list):
+            frames[idx] = rows
+        stashes = state.get("sprite_frame_stash")
+        if isinstance(stashes, list) and idx < len(stashes):
+            stashes[idx] = stash if isinstance(stash, dict) else None
+
+    def _sprite_load_active_frame_into_editor() -> None:
+        frames = _ensure_sprite_frame_buffers()
+        if not frames:
+            return
+        idx = _sprite_active_frame_index()
+        state["sprite_pixel_rows"] = frames[idx]
+        stashes = state.get("sprite_frame_stash")
+        if isinstance(stashes, list) and idx < len(stashes):
+            state["sprite_pixel_stash"] = stashes[idx]
+        else:
+            state["sprite_pixel_stash"] = None
+
+    def _read_sprite_frame_count_widget() -> int:
+        if not dpg.does_item_exist("ts_sprite_frame_count"):
+            return _sprite_frame_count_from_state()
+        try:
+            n = int(dpg.get_value("ts_sprite_frame_count"))
+        except (TypeError, ValueError):
+            n = 1
+        return max(1, min(MAX_SPRITE_FRAMES, n))
+
+    def _apply_sprite_frame_count(target: int) -> None:
+        _sprite_flush_current_frame()
+        target = max(1, min(MAX_SPRITE_FRAMES, int(target)))
+        frames = _ensure_sprite_frame_buffers()
+        stashes = state.get("sprite_frame_stash")
+        if not isinstance(stashes, list):
+            stashes = []
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        fi = _sprite_matrix_fill_index()
+        while len(frames) < target:
+            if frames:
+                last = frames[-1]
+                dup = [list(r) for r in last if isinstance(r, list)]
+                frames.append(trim_palette_rows(dup, pw, ph, fill_index=fi))
+            else:
+                frames.append(solid_fill_indices(pw, ph, fi))
+            stashes.append(None)
+        while len(frames) > target:
+            frames.pop()
+            if stashes:
+                stashes.pop()
+        state["sprite_frame_pixels"] = frames
+        state["sprite_frame_stash"] = stashes
+        if _sprite_active_frame_index() >= target:
+            state["sprite_active_frame"] = target - 1
+        _sprite_load_active_frame_into_editor()
+
+    def _rebuild_sprite_frame_tabs(*, select_index: int | None = None) -> None:
+        if not dpg.does_item_exist("ts_sprite_frame_tabs_group"):
+            return
+        if dpg.does_item_exist("ts_sprite_frame_tab_bar"):
+            dpg.delete_item("ts_sprite_frame_tab_bar")
+        n = _sprite_frame_count_from_state()
+        idx = select_index if select_index is not None else _sprite_active_frame_index()
+        idx = max(0, min(n - 1, idx))
+        state["sprite_active_frame"] = idx
+        state["sprite_ui_silent"] = True
+        try:
+            with dpg.tab_bar(
+                tag="ts_sprite_frame_tab_bar",
+                parent="ts_sprite_frame_tabs_group",
+                callback=on_sprite_frame_tab_select,
+            ):
+                for i in range(n):
+                    dpg.add_tab(
+                        label=f"F{i}",
+                        tag=f"ts_sprite_frame_tab_{i}",
+                    )
+        finally:
+            state["sprite_ui_silent"] = False
+
+    def on_sprite_frame_tab_select(_sender: object, app_data: object) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        _sprite_flush_current_frame()
+        idx = 0
+        if isinstance(app_data, str) and app_data.startswith("ts_sprite_frame_tab_"):
+            try:
+                idx = int(app_data.rsplit("_", 1)[-1])
+            except ValueError:
+                idx = 0
+        else:
+            try:
+                idx = int(app_data)  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                idx = _sprite_active_frame_index()
+        state["sprite_active_frame"] = max(0, idx)
+        _sprite_load_active_frame_into_editor()
+        _refresh_sprite_edit_texture()
+
+    def on_sprite_frame_count_change(_sender: object, _app_data: object) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        target = _read_sprite_frame_count_widget()
+        state["sprite_ui_silent"] = True
+        try:
+            if dpg.does_item_exist("ts_sprite_frame_count"):
+                dpg.set_value("ts_sprite_frame_count", target)
+        finally:
+            state["sprite_ui_silent"] = False
+        _apply_sprite_frame_count(target)
+        _rebuild_sprite_frame_tabs()
+        _refresh_sprite_edit_texture()
 
     def _clamp_sprite_origin_widgets(pw: int, ph: int) -> tuple[int, int]:
         try:
@@ -3095,7 +3284,18 @@ def run_gui() -> int:
                 (dpg.get_value("ts_log") or "") + "Sprites convertir: lienzo vacio.\n",
             )
             return
+        _sprite_flush_current_frame()
+        frames = _ensure_sprite_frame_buffers()
+        idx = _sprite_active_frame_index()
+        if idx < len(frames):
+            frames[idx] = rows
+        else:
+            frames.append(rows)
+        state["sprite_frame_pixels"] = frames
         state["sprite_pixel_rows"] = rows
+        stashes = state.get("sprite_frame_stash")
+        if isinstance(stashes, list) and idx < len(stashes):
+            stashes[idx] = None
         state["sprite_pixel_stash"] = None
         _sprite_color_swap_cancel()
         _refresh_sprite_edit_texture()
@@ -3215,19 +3415,14 @@ def run_gui() -> int:
         bh = max(1, min(bh, 32))
         state["sprite_edit_cell_px"] = cp
         pw, ph = bw * cp, bh * cp
-        state["sprite_pixel_stash"] = None
         _sprite_color_swap_cancel()
-        if sprite_is_indexed_pixels(data):
-            parsed = parse_palette_rows_image(data)
-            if parsed:
-                state["sprite_pixel_rows"] = trim_palette_rows(
-                    parsed, pw, ph, fill_index=pi
-                )
-            else:
-                state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
-        else:
-            state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
+        all_frames = parse_sprite_all_frame_rows(data, fill_index=pi)
+        state["sprite_frame_pixels"] = all_frames
+        state["sprite_frame_stash"] = [None] * len(all_frames)
+        state["sprite_active_frame"] = 0
+        _sprite_load_active_frame_into_editor()
         ox, oy = parse_sprite_origin(data, pw=pw, ph=ph)
+        fc = len(all_frames)
         state["sprite_ui_silent"] = True
         try:
             dpg.set_value("ts_sprite_blocks_w", bw)
@@ -3237,10 +3432,14 @@ def run_gui() -> int:
                 dpg.configure_item("ts_sprite_origin_y", max_value=max(0, ph - 1))
                 dpg.set_value("ts_sprite_origin_x", ox)
                 dpg.set_value("ts_sprite_origin_y", oy)
+            if dpg.does_item_exist("ts_sprite_frame_count"):
+                dpg.set_value("ts_sprite_frame_count", fc)
         finally:
             state["sprite_ui_silent"] = False
+        _rebuild_sprite_frame_tabs(select_index=0)
         _set_sprite_brush_index(pi)
         _sprite_palette_reload_core(append_log=False, preferred_palette_index=pi)
+        _refresh_sprite_edit_texture()
         if not quiet:
             dpg.set_value(
                 "ts_log",
@@ -3271,9 +3470,10 @@ def run_gui() -> int:
         pal_raw = str(dpg.get_value("ts_sprite_palette_rel")).strip()
         try:
             _resize_sprite_edit_matrix_for_widgets()
-            rows2 = _trim_sprite_pixel_rows_for_save()
-            if not rows2:
+            all_frames = _trim_all_sprite_frames_for_save()
+            if not all_frames:
                 raise ValueError("matriz de pixeles vacia; recarga el sprite o la paleta.")
+            rows2 = all_frames[0]
             pw_o, ph_o = _expected_sprite_matrix_pixel_size()
             ox, oy = _clamp_sprite_origin_widgets(pw_o, ph_o)
             path = save_indexed_pixels_sprite_json(
@@ -3283,6 +3483,7 @@ def run_gui() -> int:
                 blocks_w=bw,
                 blocks_h=bh,
                 rows=rows2,
+                frame_rows=all_frames,
                 cell_px=int(
                     state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX
                 ),
@@ -4293,6 +4494,25 @@ def run_gui() -> int:
                     "«Guardar sprite» guarda los pixeles pintados.",
                     wrap=520,
                 )
+                with dpg.group(horizontal=True):
+                    dpg.add_input_int(
+                        tag="ts_sprite_frame_count",
+                        label="Fotogramas",
+                        width=120,
+                        default_value=1,
+                        min_value=1,
+                        max_value=MAX_SPRITE_FRAMES,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_sprite_frame_count_change,
+                    )
+                dpg.add_text(
+                    "Pestañas F0, F1, …: un lienzo por fotograma. F0 → image; resto → frames[]. "
+                    "La escena usa F0 por ahora.",
+                    wrap=520,
+                )
+                dpg.add_group(tag="ts_sprite_frame_tabs_group", horizontal=True)
                 with dpg.item_handler_registry(tag="ts_sprite_edit_click_reg"):
                     dpg.add_item_clicked_handler(
                         button=dpg.mvMouseButton_Left,
@@ -4477,6 +4697,8 @@ def run_gui() -> int:
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".webp")
         dpg.add_file_extension(".bmp")
+
+    _rebuild_sprite_frame_tabs(select_index=0)
 
     dpg.create_viewport(
         title="TurtleStudio",

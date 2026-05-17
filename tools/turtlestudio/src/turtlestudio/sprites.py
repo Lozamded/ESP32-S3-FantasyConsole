@@ -21,6 +21,7 @@ SPRITE_RENDER_INDEXED_PIXELS = "indexed_pixels"
 SPRITE_IMAGE_FORMAT_ROWS = "palette_rows"
 # Tamano logico en celdas (evita sprites enormes en disco por error).
 MAX_BLOCKS_PER_AXIS = 32
+MAX_SPRITE_FRAMES = 32
 DEFAULT_CELL_PX = 4
 _SPRITE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
 
@@ -108,6 +109,7 @@ def solid_sprite_payload(
             "palette_index": pi,
         },
         "image": None,
+        "frame_count": 1,
         "frames": [],
     }
 
@@ -200,6 +202,117 @@ def parse_palette_rows_image(data: dict[str, Any]) -> list[list[int]] | None:
             row.append(clamp_pixel_storage_index(v))
         out.append(row)
     return out
+
+
+def parse_sprite_frame_count(data: dict[str, Any]) -> int:
+    """Numero de fotogramas (>=1). Si falta, se infiere de image + frames[]."""
+    try:
+        fc = int(data.get("frame_count", 0))
+    except (TypeError, ValueError):
+        fc = 0
+    extra = data.get("frames")
+    n_extra = len(extra) if isinstance(extra, list) else 0
+    if fc < 1:
+        fc = 1 + n_extra if parse_palette_rows_image(data) is not None else 1
+    return max(1, min(MAX_SPRITE_FRAMES, fc))
+
+
+def _parse_palette_rows_from_image_dict(
+    im: dict[str, Any],
+    *,
+    pw: int,
+    ph: int,
+) -> list[list[int]] | None:
+    if im.get("format") != SPRITE_IMAGE_FORMAT_ROWS:
+        return None
+    raw_rows = im.get("rows")
+    if not isinstance(raw_rows, list) or not raw_rows:
+        return None
+    out: list[list[int]] = []
+    for y in range(ph):
+        row: list[int] = []
+        src = raw_rows[y] if y < len(raw_rows) else []
+        if not isinstance(src, list):
+            src = []
+        for x in range(pw):
+            try:
+                v = int(src[x]) if x < len(src) else 0
+            except (TypeError, ValueError):
+                v = 0
+            row.append(clamp_pixel_storage_index(v))
+        out.append(row)
+    return out
+
+
+def parse_sprite_frame_rows_entry(
+    entry: object,
+    *,
+    pw: int,
+    ph: int,
+    fill_index: int = 0,
+) -> list[list[int]]:
+    """Un fotograma desde frames[] (objeto con image o image directo)."""
+    fi = clamp_pixel_storage_index(fill_index)
+    if isinstance(entry, dict):
+        im = entry.get("image")
+        if isinstance(im, dict):
+            parsed = _parse_palette_rows_from_image_dict(im, pw=pw, ph=ph)
+            if parsed is not None:
+                return parsed
+        if entry.get("format") == SPRITE_IMAGE_FORMAT_ROWS:
+            parsed = _parse_palette_rows_from_image_dict(entry, pw=pw, ph=ph)
+            if parsed is not None:
+                return parsed
+    return solid_fill_indices(pw, ph, fi)
+
+
+def parse_sprite_all_frame_rows(
+    data: dict[str, Any],
+    *,
+    fill_index: int = 0,
+) -> list[list[list[int]]]:
+    """Lista de matrices [frame][y][x]; frame 0 = image principal."""
+    _, pw, ph = sprite_pixel_dimensions(data)
+    fc = parse_sprite_frame_count(data)
+    fi = clamp_pixel_storage_index(fill_index)
+    base = parse_palette_rows_image(data)
+    if base is None:
+        base = solid_fill_indices(pw, ph, fi)
+    else:
+        base = trim_palette_rows(base, pw, ph, fill_index=fi)
+    out: list[list[list[int]]] = [base]
+    raw_frames = data.get("frames")
+    if isinstance(raw_frames, list):
+        for entry in raw_frames:
+            out.append(parse_sprite_frame_rows_entry(entry, pw=pw, ph=ph, fill_index=fi))
+    while len(out) < fc:
+        out.append(solid_fill_indices(pw, ph, fi))
+    return out[:fc]
+
+
+def serialize_sprite_frames(
+    frame_rows: list[list[list[int]]],
+    *,
+    pw: int,
+    ph: int,
+    fill_index: int = 0,
+) -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+    """frame 0 → image; frames 1..N-1 → lista de {image: ...}."""
+    fi = clamp_pixel_storage_index(fill_index)
+    if not frame_rows:
+        frame_rows = [solid_fill_indices(pw, ph, fi)]
+    fc = max(1, min(MAX_SPRITE_FRAMES, len(frame_rows)))
+
+    def pack(rows: list[list[int]]) -> dict[str, Any]:
+        norm = trim_palette_rows(rows, pw, ph, fill_index=fi)
+        return {"format": SPRITE_IMAGE_FORMAT_ROWS, "rows": norm}
+
+    trimmed = [pack(fr) for fr in frame_rows[:fc]]
+    while len(trimmed) < fc:
+        trimmed.append(pack(solid_fill_indices(pw, ph, fi)))
+    image0 = trimmed[0]
+    extras = [{"image": block} for block in trimmed[1:]]
+    return image0, extras, fc
 
 
 def solid_fill_indices(pw: int, ph: int, fill_index: int) -> list[list[int]]:
@@ -385,6 +498,7 @@ def indexed_pixels_sprite_payload(
     blocks_w: int,
     blocks_h: int,
     rows: list[list[int]],
+    frame_rows: list[list[list[int]]] | None = None,
     origin_x: int = 0,
     origin_y: int = 0,
 ) -> dict[str, object]:
@@ -395,7 +509,8 @@ def indexed_pixels_sprite_payload(
     bh = max(1, min(int(blocks_h), MAX_BLOCKS_PER_AXIS))
     pw = bw * cp
     ph = bh * cp
-    norm = trim_palette_rows(rows, pw, ph, fill_index=0)
+    all_frames = frame_rows if frame_rows else [rows]
+    image0, extras, fc = serialize_sprite_frames(all_frames, pw=pw, ph=ph, fill_index=0)
     ox, oy = parse_sprite_origin(
         {"origin_x": origin_x, "origin_y": origin_y}, pw=pw, ph=ph
     )
@@ -412,9 +527,10 @@ def indexed_pixels_sprite_payload(
         "pixel_h": ph,
         "origin_x": ox,
         "origin_y": oy,
+        "frame_count": fc,
         "render": {"mode": SPRITE_RENDER_INDEXED_PIXELS},
-        "image": {"format": SPRITE_IMAGE_FORMAT_ROWS, "rows": norm},
-        "frames": [],
+        "image": image0,
+        "frames": extras,
     }
 
 
@@ -438,8 +554,8 @@ def _preserve_sprite_extras(new: dict[str, Any], previous: dict[str, Any] | None
         new["notes"] = previous["notes"]
     if "image" in previous:
         new["image"] = previous["image"]
-    if isinstance(previous.get("frames"), list):
-        new["frames"] = previous["frames"]
+    if isinstance(previous.get("frame_count"), int) and "frame_count" not in new:
+        new["frame_count"] = previous["frame_count"]
     return new
 
 
@@ -558,6 +674,7 @@ def save_indexed_pixels_sprite_json(
     blocks_w: int,
     blocks_h: int,
     rows: list[list[int]],
+    frame_rows: list[list[list[int]]] | None = None,
     cell_px: int | None = None,
     origin_x: int = 0,
     origin_y: int = 0,
@@ -586,6 +703,7 @@ def save_indexed_pixels_sprite_json(
     ox, oy = parse_sprite_origin(
         {"origin_x": origin_x, "origin_y": origin_y}, pw=pw_i, ph=ph_i
     )
+    all_frames = frame_rows if frame_rows is not None else [rows]
     payload = indexed_pixels_sprite_payload(
         sid,
         palette_rel=pal_ok,
@@ -593,13 +711,12 @@ def save_indexed_pixels_sprite_json(
         blocks_w=blocks_w,
         blocks_h=blocks_h,
         rows=rows,
+        frame_rows=all_frames,
         origin_x=ox,
         origin_y=oy,
     )
     if isinstance(previous, dict) and isinstance(previous.get("notes"), str):
         payload["notes"] = previous["notes"]
-    if isinstance(previous, dict) and isinstance(previous.get("frames"), list):
-        payload["frames"] = previous["frames"]
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
