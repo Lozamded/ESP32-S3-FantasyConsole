@@ -38,6 +38,8 @@ Sprites antiguos con `cell_px: 8` siguen siendo validos si `pixel_w` / `pixel_h`
   "blocks_h": 6,
   "pixel_w": 16,
   "pixel_h": 24,
+  "origin_x": 0,
+  "origin_y": 0,
   "render": { "mode": "..." },
   "image": null,
   "frames": []
@@ -46,6 +48,14 @@ Sprites antiguos con `cell_px: 8` siguen siendo validos si `pixel_w` / `pixel_h`
 
 - **`palette`**: ruta relativa al proyecto (`#RRGGBB` por linea). Los indices en `render` / `image` son respecto a **esa** paleta (la escena puede usar otra; validacion cruzada es responsabilidad de herramientas).
 - **`frames`**: reservado (animacion futura).
+
+### Origen (`origin_x`, `origin_y`)
+
+Punto de ancla del sprite en **coordenadas sprite** (mismo sistema que la escena: `(0,0)` = esquina **inferior izquierda** del bbox `pixel_w`×`pixel_h`). Enteros `0 .. pixel_w-1` y `0 .. pixel_h-1`. **Default `0,0`** (comportamiento anterior: la esquina inferior izquierda del bbox es el ancla).
+
+Al colocar un objeto en escena, `(x, y)` es donde cae el **origen**, no la esquina del rectangulo. El dibujo usa esquina inferior izquierda del bbox en `(x - origin_x, y - origin_y)`.
+
+TurtleStudio: pestana Sprites, campos **Origen X / Origen Y** (vista previa con cruz magenta en el lienzo).
 
 ## Modos de render (`render.mode`)
 
@@ -125,7 +135,7 @@ El cartucho referencia la escena inicial con `INITIAL_SCENE:<id>` en el header (
 Si existe `studio/project_bundle.json` y `INITIAL_SCENE` coincide con una escena del bundle, **antes del `ENTRY` Lua** el firmware:
 
 1. Rellena el framebuffer con `background_index` de esa escena (`cls`).
-2. Para cada objeto en la lista de la escena, resuelve `sprite_id` y dibuja en `(x, y)` (**esquina inferior izquierda** del bbox del sprite, espacio escena).
+2. Para cada objeto en la lista de la escena, resuelve `sprite_id` y dibuja con ancla en `(x, y)` del objeto = **`origin_x` / `origin_y`** del sprite (esquina inferior izquierda del bbox en `(x - origin_x, y - origin_y)`).
 
 ### Resolucion de tamano
 

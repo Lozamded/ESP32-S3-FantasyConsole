@@ -77,6 +77,8 @@ def solid_sprite_payload(
     blocks_h: int,
     palette_index: int,
     cell_px: int = DEFAULT_CELL_PX,
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> dict[str, object]:
     """Sprite v0: rectangulo lleno; indice respecto a la paleta propia del sprite (no la de la escena)."""
     pal = normalize_palette_rel(palette_rel)
@@ -84,6 +86,10 @@ def solid_sprite_payload(
     bh = max(1, min(int(blocks_h), MAX_BLOCKS_PER_AXIS))
     cp = max(1, min(int(cell_px), 256))
     pi = clamp_paint_palette_index(palette_index, palette_len=PALETTE_SIZE)
+    pw, ph = bw * cp, bh * cp
+    ox, oy = parse_sprite_origin(
+        {"origin_x": origin_x, "origin_y": origin_y}, pw=pw, ph=ph
+    )
     return {
         "format_version": SPRITE_JSON_VERSION,
         "kind": SPRITE_JSON_KIND,
@@ -93,8 +99,10 @@ def solid_sprite_payload(
         "cell_px": cp,
         "blocks_w": bw,
         "blocks_h": bh,
-        "pixel_w": bw * cp,
-        "pixel_h": bh * cp,
+        "pixel_w": pw,
+        "pixel_h": ph,
+        "origin_x": ox,
+        "origin_y": oy,
         "render": {
             "mode": SPRITE_RENDER_SOLID,
             "palette_index": pi,
@@ -130,6 +138,41 @@ def sprite_pixel_dimensions(data: dict[str, Any]) -> tuple[int, int, int]:
     pw = max(1, min(pw, MAX_BLOCKS_PER_AXIS * cp))
     ph = max(1, min(ph, MAX_BLOCKS_PER_AXIS * cp))
     return cp, pw, ph
+
+
+def parse_sprite_origin(
+    data: dict[str, Any],
+    *,
+    pw: int,
+    ph: int,
+) -> tuple[int, int]:
+    """
+    Punto de ancla en espacio sprite (0,0)=esquina inferior izquierda del bbox).
+    En escena, (x,y) del objeto coincide con este punto, no con la esquina del bbox.
+    """
+    try:
+        ox = int(data.get("origin_x", 0))
+    except (TypeError, ValueError):
+        ox = 0
+    try:
+        oy = int(data.get("origin_y", 0))
+    except (TypeError, ValueError):
+        oy = 0
+    cap_w = max(1, int(pw))
+    cap_h = max(1, int(ph))
+    ox = max(0, min(cap_w - 1, ox))
+    oy = max(0, min(cap_h - 1, oy))
+    return ox, oy
+
+
+def sprite_blit_bottom_left(
+    anchor_x: int,
+    anchor_y: int,
+    origin_x: int,
+    origin_y: int,
+) -> tuple[int, int]:
+    """Ancla en escena → esquina inferior izquierda del rectangulo a dibujar."""
+    return anchor_x - int(origin_x), anchor_y - int(origin_y)
 
 
 def parse_palette_rows_image(data: dict[str, Any]) -> list[list[int]] | None:
@@ -342,6 +385,8 @@ def indexed_pixels_sprite_payload(
     blocks_w: int,
     blocks_h: int,
     rows: list[list[int]],
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> dict[str, object]:
     sid = validate_sprite_id(sprite_id)
     pal = normalize_palette_rel(palette_rel)
@@ -351,6 +396,9 @@ def indexed_pixels_sprite_payload(
     pw = bw * cp
     ph = bh * cp
     norm = trim_palette_rows(rows, pw, ph, fill_index=0)
+    ox, oy = parse_sprite_origin(
+        {"origin_x": origin_x, "origin_y": origin_y}, pw=pw, ph=ph
+    )
     return {
         "format_version": SPRITE_JSON_VERSION,
         "kind": SPRITE_JSON_KIND,
@@ -362,6 +410,8 @@ def indexed_pixels_sprite_payload(
         "blocks_h": bh,
         "pixel_w": pw,
         "pixel_h": ph,
+        "origin_x": ox,
+        "origin_y": oy,
         "render": {"mode": SPRITE_RENDER_INDEXED_PIXELS},
         "image": {"format": SPRITE_IMAGE_FORMAT_ROWS, "rows": norm},
         "frames": [],
@@ -414,6 +464,8 @@ def save_solid_sprite_json(
     blocks_h: int,
     palette_index: int,
     cell_px: int | None = None,
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> Path:
     """Crea o sobrescribe objects/Sprites/<id>.json (modo solido). Conserva notes y frames; borra image."""
     sid = validate_sprite_id(sprite_id)
@@ -434,6 +486,12 @@ def save_solid_sprite_json(
         cp = max(1, min(int(cell_px), 256))
     elif isinstance(previous, dict) and isinstance(previous.get("cell_px"), int):
         cp = max(1, min(int(previous["cell_px"]), 256))
+    bw_ok = max(1, min(int(blocks_w), MAX_BLOCKS_PER_AXIS))
+    bh_ok = max(1, min(int(blocks_h), MAX_BLOCKS_PER_AXIS))
+    pw_i, ph_i = bw_ok * cp, bh_ok * cp
+    ox, oy = parse_sprite_origin(
+        {"origin_x": origin_x, "origin_y": origin_y}, pw=pw_i, ph=ph_i
+    )
     payload = solid_sprite_payload(
         sid,
         palette_rel=pal_ok,
@@ -441,6 +499,8 @@ def save_solid_sprite_json(
         blocks_h=blocks_h,
         palette_index=palette_index,
         cell_px=cp,
+        origin_x=ox,
+        origin_y=oy,
     )
     _preserve_sprite_extras(payload, previous)
     payload["image"] = None
@@ -499,6 +559,8 @@ def save_indexed_pixels_sprite_json(
     blocks_h: int,
     rows: list[list[int]],
     cell_px: int | None = None,
+    origin_x: int = 0,
+    origin_y: int = 0,
 ) -> Path:
     """Crea o sobrescribe sprite en modo indexed_pixels + image.palette_rows."""
     sid = validate_sprite_id(sprite_id)
@@ -519,6 +581,11 @@ def save_indexed_pixels_sprite_json(
         cp = max(1, min(int(cell_px), 256))
     elif isinstance(previous, dict) and isinstance(previous.get("cell_px"), int):
         cp = max(1, min(int(previous["cell_px"]), 256))
+    pw_i = len(rows[0]) if rows and rows[0] else 1
+    ph_i = len(rows) if rows else 1
+    ox, oy = parse_sprite_origin(
+        {"origin_x": origin_x, "origin_y": origin_y}, pw=pw_i, ph=ph_i
+    )
     payload = indexed_pixels_sprite_payload(
         sid,
         palette_rel=pal_ok,
@@ -526,6 +593,8 @@ def save_indexed_pixels_sprite_json(
         blocks_w=blocks_w,
         blocks_h=blocks_h,
         rows=rows,
+        origin_x=ox,
+        origin_y=oy,
     )
     if isinstance(previous, dict) and isinstance(previous.get("notes"), str):
         payload["notes"] = previous["notes"]

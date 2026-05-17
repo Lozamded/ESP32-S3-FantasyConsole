@@ -67,12 +67,14 @@ from turtlestudio.sprites import (
     normalize_palette_rel,
     normalize_palette_rows,
     parse_palette_rows_image,
+    parse_sprite_origin,
     palette_rows_pixel_size,
     read_sprite_file,
     replace_palette_index_in_rows,
     resize_palette_rows_with_stash,
     save_indexed_pixels_sprite_json,
     solid_fill_indices,
+    sprite_blit_bottom_left,
     sprite_is_indexed_pixels,
     sprite_pixel_dimensions,
     trim_palette_rows,
@@ -597,6 +599,29 @@ def _pack_sprite_rgba_into_tex_buffer(
     return out
 
 
+def _mark_sprite_origin_on_logical_rgba(
+    rgba: list[float],
+    pw: int,
+    ph: int,
+    origin_x: int,
+    origin_y: int,
+) -> None:
+    """Cruz magenta en el origen del sprite (vista previa del editor)."""
+    if pw <= 0 or ph <= 0 or len(rgba) != pw * ph * 4:
+        return
+    ox = max(0, min(pw - 1, int(origin_x)))
+    oy = max(0, min(ph - 1, int(origin_y)))
+    py = ph - 1 - oy
+    for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+        x, y = ox + dx, py + dy
+        if 0 <= x < pw and 0 <= y < ph:
+            i = (y * pw + x) * 4
+            rgba[i] = 1.0
+            rgba[i + 1] = 0.15
+            rgba[i + 2] = 0.95
+            rgba[i + 3] = 1.0
+
+
 def _blit_indexed_rect_scene(
     rgba: list[float],
     fw: int,
@@ -608,7 +633,7 @@ def _blit_indexed_rect_scene(
     *,
     alpha: float = 1.0,
 ) -> None:
-    """Ancla igual que rectangulo solido: (sx0, sy_bottom) esquina inferior izquierda del bbox."""
+    """(sx0, sy_bottom) = esquina inferior izquierda del bbox del sprite."""
     ph = len(rows)
     pw = len(rows[0]) if rows else 0
     n = max(1, len(rgbs))
@@ -646,6 +671,8 @@ def _resolve_object_sprite_preview(
         "pw": DEFAULT_CELL_PX,
         "ph": DEFAULT_CELL_PX,
         "rgb": (0.42, 0.42, 0.48),
+        "origin_x": 0,
+        "origin_y": 0,
     }
     if not oid:
         return fb
@@ -673,10 +700,19 @@ def _resolve_object_sprite_preview(
     rgbs, _ = load_palette_rgb01_for_preview(pal_file)
     if not rgbs:
         rgbs = [(0.5, 0.5, 0.5)]
+    ox, oy = parse_sprite_origin(sd, pw=pw, ph=ph)
     if sprite_is_indexed_pixels(sd):
         rows = parse_palette_rows_image(sd)
         if rows:
-            return {"mode": "indexed", "pw": pw, "ph": ph, "rows": rows, "rgbs": rgbs}
+            return {
+                "mode": "indexed",
+                "pw": pw,
+                "ph": ph,
+                "rows": rows,
+                "rgbs": rgbs,
+                "origin_x": ox,
+                "origin_y": oy,
+            }
     pi = 0
     render = sd.get("render")
     if isinstance(render, dict):
@@ -686,7 +722,14 @@ def _resolve_object_sprite_preview(
             pi = 0
     pi = max(0, min(len(rgbs) - 1, pi))
     r, g, b = rgbs[pi]
-    return {"mode": "solid", "pw": pw, "ph": ph, "rgb": (r, g, b)}
+    return {
+        "mode": "solid",
+        "pw": pw,
+        "ph": ph,
+        "rgb": (r, g, b),
+        "origin_x": ox,
+        "origin_y": oy,
+    }
 
 
 def _paint_scene_objects_preview(
@@ -714,14 +757,20 @@ def _paint_scene_objects_preview(
         sx = max(0, min(SCENE_PIXEL_W - 1, sx))
         sy = max(0, min(SCENE_PIXEL_H - 1, sy))
         info = _resolve_object_sprite_preview(project_root, oid)
+        bx, by = sprite_blit_bottom_left(
+            sx,
+            sy,
+            int(info.get("origin_x", 0)),
+            int(info.get("origin_y", 0)),
+        )
         if a > 0.0:
             if info.get("mode") == "indexed":
                 _blit_indexed_rect_scene(
                     rgba,
                     fw,
                     fh,
-                    sx,
-                    sy,
+                    bx,
+                    by,
                     info["rows"],
                     info["rgbs"],
                     alpha=a,
@@ -732,8 +781,8 @@ def _paint_scene_objects_preview(
                     rgba,
                     fw,
                     fh,
-                    sx,
-                    sy,
+                    bx,
+                    by,
                     info["pw"],
                     info["ph"],
                     pr,
@@ -1576,6 +1625,8 @@ def run_gui() -> int:
             "ts_sprite_id",
             "ts_sprite_blocks_w",
             "ts_sprite_blocks_h",
+            "ts_sprite_origin_x",
+            "ts_sprite_origin_y",
             "ts_btn_sprite_apply_size",
             "ts_sprite_editor_scale",
             "ts_sprite_editor_show_grid",
@@ -2483,6 +2534,8 @@ def run_gui() -> int:
         cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         try:
             rows2 = _trim_sprite_pixel_rows_for_save()
+            pw_o, ph_o = _expected_sprite_matrix_pixel_size()
+            ox, oy = _clamp_sprite_origin_widgets(pw_o, ph_o)
             path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
@@ -2491,6 +2544,8 @@ def run_gui() -> int:
                 blocks_h=bh,
                 rows=rows2,
                 cell_px=cp,
+                origin_x=ox,
+                origin_y=oy,
             )
         except ValueError as e:
             dpg.set_value(
@@ -2616,6 +2671,45 @@ def run_gui() -> int:
         state["sprite_pixel_rows"] = trimmed
         state["sprite_pixel_stash"] = None
         return trimmed
+
+    def _clamp_sprite_origin_widgets(pw: int, ph: int) -> tuple[int, int]:
+        try:
+            ox_in = int(dpg.get_value("ts_sprite_origin_x"))
+        except (TypeError, ValueError):
+            ox_in = 0
+        try:
+            oy_in = int(dpg.get_value("ts_sprite_origin_y"))
+        except (TypeError, ValueError):
+            oy_in = 0
+        ox, oy = parse_sprite_origin(
+            {"origin_x": ox_in, "origin_y": oy_in},
+            pw=pw,
+            ph=ph,
+        )
+        max_x = max(0, pw - 1)
+        max_y = max(0, ph - 1)
+        if dpg.does_item_exist("ts_sprite_origin_x"):
+            dpg.configure_item("ts_sprite_origin_x", max_value=max_x)
+            dpg.configure_item("ts_sprite_origin_y", max_value=max_y)
+        silent = bool(state.get("sprite_ui_silent"))
+        if silent:
+            dpg.set_value("ts_sprite_origin_x", ox)
+            dpg.set_value("ts_sprite_origin_y", oy)
+        else:
+            state["sprite_ui_silent"] = True
+            try:
+                dpg.set_value("ts_sprite_origin_x", ox)
+                dpg.set_value("ts_sprite_origin_y", oy)
+            finally:
+                state["sprite_ui_silent"] = False
+        return ox, oy
+
+    def on_sprite_origin_change(_sender: object, _app_data: object) -> None:
+        if state.get("sprite_ui_silent"):
+            return
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        _clamp_sprite_origin_widgets(pw, ph)
+        _refresh_sprite_edit_texture()
 
     def _ensure_sprite_edit_pixel_buffer() -> None:
         """Matriz en memoria para pintar; sin esto los clics no hacen nada."""
@@ -2780,6 +2874,13 @@ def run_gui() -> int:
         if len(base) != pw * ph * 4:
             _rebuild_sprite_used_swatches()
             return
+        if dpg.does_item_exist("ts_sprite_origin_x"):
+            try:
+                ox_m = int(dpg.get_value("ts_sprite_origin_x"))
+                oy_m = int(dpg.get_value("ts_sprite_origin_y"))
+            except (TypeError, ValueError):
+                ox_m, oy_m = 0, 0
+            _mark_sprite_origin_on_logical_rgba(base, pw, ph, ox_m, oy_m)
         _apply_sprite_edit_rgba(pw, ph, base)
         _rebuild_sprite_used_swatches()
         if dpg.does_item_exist("ts_sprite_edit_size_label"):
@@ -2797,10 +2898,14 @@ def run_gui() -> int:
         if state.get("sprite_ui_silent"):
             return
         _sync_sprite_matrix_from_widgets()
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        _clamp_sprite_origin_widgets(pw, ph)
         _refresh_sprite_edit_texture()
 
     def on_sprite_apply_size(_sender: object, _app_data: object) -> None:
         _resize_sprite_edit_matrix_for_widgets()
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        _clamp_sprite_origin_widgets(pw, ph)
         _refresh_sprite_edit_texture()
 
     def on_sprite_editor_scale_change(_sender: object, _app_data: object) -> None:
@@ -3122,10 +3227,16 @@ def run_gui() -> int:
                 state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
         else:
             state["sprite_pixel_rows"] = solid_fill_indices(pw, ph, pi)
+        ox, oy = parse_sprite_origin(data, pw=pw, ph=ph)
         state["sprite_ui_silent"] = True
         try:
             dpg.set_value("ts_sprite_blocks_w", bw)
             dpg.set_value("ts_sprite_blocks_h", bh)
+            if dpg.does_item_exist("ts_sprite_origin_x"):
+                dpg.configure_item("ts_sprite_origin_x", max_value=max(0, pw - 1))
+                dpg.configure_item("ts_sprite_origin_y", max_value=max(0, ph - 1))
+                dpg.set_value("ts_sprite_origin_x", ox)
+                dpg.set_value("ts_sprite_origin_y", oy)
         finally:
             state["sprite_ui_silent"] = False
         _set_sprite_brush_index(pi)
@@ -3163,6 +3274,8 @@ def run_gui() -> int:
             rows2 = _trim_sprite_pixel_rows_for_save()
             if not rows2:
                 raise ValueError("matriz de pixeles vacia; recarga el sprite o la paleta.")
+            pw_o, ph_o = _expected_sprite_matrix_pixel_size()
+            ox, oy = _clamp_sprite_origin_widgets(pw_o, ph_o)
             path = save_indexed_pixels_sprite_json(
                 root,
                 sid,
@@ -3173,6 +3286,8 @@ def run_gui() -> int:
                 cell_px=int(
                     state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX
                 ),
+                origin_x=ox,
+                origin_y=oy,
             )
         except ValueError as e:
             dpg.set_value(
@@ -4015,6 +4130,36 @@ def run_gui() -> int:
                     )
                 dpg.bind_item_handler_registry("ts_sprite_blocks_w", "ts_sprite_blocks_dim_handlers")
                 dpg.bind_item_handler_registry("ts_sprite_blocks_h", "ts_sprite_blocks_dim_handlers")
+                with dpg.group(horizontal=True):
+                    dpg.add_input_int(
+                        tag="ts_sprite_origin_x",
+                        label="Origen X",
+                        width=120,
+                        default_value=0,
+                        min_value=0,
+                        max_value=0,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_sprite_origin_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_sprite_origin_y",
+                        label="Origen Y",
+                        width=120,
+                        default_value=0,
+                        min_value=0,
+                        max_value=0,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_sprite_origin_change,
+                    )
+                dpg.add_text(
+                    "Origen en px (0,0)=esquina inferior izquierda del sprite. "
+                    "En escena, (x,y) del objeto marca ese punto (cruz magenta en el editor).",
+                    wrap=520,
+                )
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(
                         tag="ts_sprite_editor_scale",

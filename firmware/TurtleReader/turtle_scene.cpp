@@ -368,6 +368,38 @@ static bool parse_palette_rows_image(const char* inner, const char* inner_end, i
   return y > 0;
 }
 
+static void extract_sprite_origin(const char* inner, const char* inner_end, int pw, int ph, int* ox,
+                                  int* oy) {
+  int tx = 0;
+  int ty = 0;
+  if (!json_extract_int_for_key(inner, inner_end, "origin_x", &tx)) {
+    tx = 0;
+  }
+  if (!json_extract_int_for_key(inner, inner_end, "origin_y", &ty)) {
+    ty = 0;
+  }
+  if (pw < 1) {
+    pw = 1;
+  }
+  if (ph < 1) {
+    ph = 1;
+  }
+  if (tx < 0) {
+    tx = 0;
+  }
+  if (ty < 0) {
+    ty = 0;
+  }
+  if (tx >= pw) {
+    tx = pw - 1;
+  }
+  if (ty >= ph) {
+    ty = ph - 1;
+  }
+  *ox = tx;
+  *oy = ty;
+}
+
 static bool draw_sprite_for_object(const char* json, const char* json_end, const char* obj_id,
                                    int scene_x, int scene_y, uint8_t transparent_index) {
   const char* od = find_root_objects_dict_brace(json, json_end);
@@ -415,14 +447,19 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
     return false;
   }
 
+  int origin_x = 0;
+  int origin_y = 0;
+  extract_sprite_origin(inner, inner_end, pw, ph, &origin_x, &origin_y);
+  const int blit_x = scene_x - origin_x;
+  const int blit_y = scene_y - origin_y;
+
   if (render_mode_is_indexed_pixels(inner, inner_end)) {
     memset(s_sprite_pixels, 0, sizeof(s_sprite_pixels));
     if (!parse_palette_rows_image(inner, inner_end, pw, ph, s_sprite_pixels, pw)) {
       Serial.printf("turtle_scene: filas indexed_pixels invalidas en \"%s\"\n", sprite_id);
       return false;
     }
-    turtle_gpu_blit_indexed_scene(scene_x, scene_y, pw, ph, s_sprite_pixels, pw,
-                                  transparent_index);
+    turtle_gpu_blit_indexed_scene(blit_x, blit_y, pw, ph, s_sprite_pixels, pw, transparent_index);
     return true;
   }
 
@@ -437,7 +474,7 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
   if (pci > 31) {
     pci = 31;
   }
-  turtle_gpu_fill_rect_scene(scene_x, scene_y, pw, ph, static_cast<uint8_t>(pci));
+  turtle_gpu_fill_rect_scene(blit_x, blit_y, pw, ph, static_cast<uint8_t>(pci));
   return true;
 }
 

@@ -1,5 +1,0 @@
-print("turtlestudio build OK")
-cls(1)
--- spix: escena (0,0) abajo-izquierda, Y hacia arriba (indice 3 = verde en examples/minimal/palette.txt)
-spix(10, 10, 3)
-flip()
