@@ -54,6 +54,7 @@ from turtlestudio.objects import (
     save_object_json,
     write_object_json,
 )
+from turtlestudio.sprite_png_export import export_sprite_frames_to_png_dir
 from turtlestudio.sprite_ref_image import (
     aspect_ratio_note,
     composite_sprite_editor_preview,
@@ -1649,6 +1650,7 @@ def run_gui() -> int:
             "ts_sprite_paint_opacity",
             "ts_btn_sprite_create",
             "ts_btn_sprite_save",
+            "ts_btn_sprite_export_png",
             "ts_btn_sprite_refresh",
             "ts_sprite_list",
             "ts_obj_list",
@@ -3212,6 +3214,82 @@ def run_gui() -> int:
         dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + tail)
         _refresh_sprite_edit_texture()
 
+    def on_sprite_export_png_click(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: abre o crea un proyecto primero.\n",
+            )
+            return
+        rgbs = state.get("sprite_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: carga la paleta del sprite antes de exportar PNG.\n",
+            )
+            return
+        _sprite_flush_current_frame()
+        frames = _trim_all_sprite_frames_for_save()
+        if not frames or not any(
+            isinstance(fr, list) and fr and any(isinstance(r, list) and r for r in fr)
+            for fr in frames
+        ):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Sprites: no hay pixeles para exportar; pinta o carga un sprite.\n",
+            )
+            return
+        if dpg.does_item_exist("ts_sprite_export_dir_dialog"):
+            dpg.show_item("ts_sprite_export_dir_dialog")
+
+    def on_sprite_export_dir_picked(_sender: object, app_data: object) -> None:
+        if not isinstance(app_data, dict):
+            return
+        out_dir = ""
+        fp = app_data.get("file_path_name")
+        if isinstance(fp, str) and fp.strip():
+            out_dir = fp.strip()
+        else:
+            cp = app_data.get("current_path")
+            if isinstance(cp, str) and cp.strip():
+                out_dir = cp.strip()
+            else:
+                selections = app_data.get("selections")
+                if isinstance(selections, dict) and selections:
+                    out_dir = str(next(iter(selections.values()))).strip()
+        if not out_dir:
+            return
+        rgbs = state.get("sprite_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            return
+        _sprite_flush_current_frame()
+        frames = _trim_all_sprite_frames_for_save()
+        base = str(dpg.get_value("ts_sprite_id")).strip() if dpg.does_item_exist(
+            "ts_sprite_id"
+        ) else ""
+        if not base:
+            base = _sprite_list_selected_stem() or "sprite"
+        try:
+            written = export_sprite_frames_to_png_dir(
+                out_dir, base, frames, rgbs
+            )
+        except (ValueError, OSError) as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Sprites exportar PNG: {e}\n",
+            )
+            return
+        names = ", ".join(p.name for p in written)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Sprites: exportados {len(written)} PNG en {out_dir} ({names}).\n",
+        )
+
     def on_sprite_ref_import_click(_sender: object, _app_data: object) -> None:
         if dpg.does_item_exist("ts_sprite_ref_file_dialog"):
             dpg.show_item("ts_sprite_ref_file_dialog")
@@ -4599,6 +4677,13 @@ def run_gui() -> int:
                         enabled=False,
                     )
                     dpg.add_button(
+                        tag="ts_btn_sprite_export_png",
+                        label="Exportar PNG…",
+                        width=132,
+                        callback=on_sprite_export_png_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
                         tag="ts_btn_sprite_refresh",
                         label="Actualizar lista",
                         width=132,
@@ -4697,6 +4782,17 @@ def run_gui() -> int:
         dpg.add_file_extension(".jpeg")
         dpg.add_file_extension(".webp")
         dpg.add_file_extension(".bmp")
+
+    with dpg.file_dialog(
+        directory_selector=True,
+        show=False,
+        callback=on_sprite_export_dir_picked,
+        tag="ts_sprite_export_dir_dialog",
+        width=700,
+        height=400,
+        modal=True,
+    ):
+        pass
 
     _rebuild_sprite_frame_tabs(select_index=0)
 
