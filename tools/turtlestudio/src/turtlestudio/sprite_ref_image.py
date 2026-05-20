@@ -160,6 +160,44 @@ def _solid_fill_rgba_float01(
     return out
 
 
+def blend_indexed_rows_on_rgba(
+    base: list[float],
+    rows: list[list[int]],
+    rgbs: list[tuple[float, float, float]],
+    *,
+    alpha: float = 0.35,
+) -> list[float]:
+    """Mezcla pixeles opacos de una capa indexada sobre base RGBA (mismo tamano)."""
+    from turtlestudio.palette_policy import resolve_palette_color
+
+    ph = len(rows)
+    pw = len(rows[0]) if rows else 0
+    if pw <= 0 or ph <= 0 or len(base) != pw * ph * 4:
+        return base
+    fa = max(0.0, min(1.0, float(alpha)))
+    if fa <= 0.0:
+        return base
+    out = list(base)
+    inv = 1.0 - fa
+    for py in range(ph):
+        row = rows[py] if py < len(rows) else []
+        for lx in range(pw):
+            try:
+                idx = int(row[lx]) if lx < len(row) else 0
+            except (TypeError, ValueError):
+                idx = 0
+            col = resolve_palette_color(idx, rgbs)
+            if col is None:
+                continue
+            i = (py * pw + lx) * 4
+            br, bg, bb = out[i], out[i + 1], out[i + 2]
+            out[i] = br * inv + col[0] * fa
+            out[i + 1] = bg * inv + col[1] * fa
+            out[i + 2] = bb * inv + col[2] * fa
+            out[i + 3] = 1.0
+    return out
+
+
 def composite_sprite_editor_preview(
     rows: list[list[int]],
     rgbs: list[tuple[float, float, float]],
@@ -168,10 +206,15 @@ def composite_sprite_editor_preview(
     canvas_fill_rgb: tuple[float, float, float] = (0.55, 0.55, 0.58),
     ref_alpha: float = 0.45,
     paint_alpha: float = 1.0,
+    behind_rows: list[list[int]] | None = None,
+    behind_alpha: float = 0.35,
+    over_rows: list[list[int]] | None = None,
+    over_alpha: float = 0.35,
 ) -> list[float]:
     """
     Vista previa del editor: relleno del lienzo, referencia opcional debajo,
-    pixeles pintados encima con opacidad ajustable (indice 31 = hueco).
+    fotograma vecino opcional detras, pixeles del fotograma activo,
+    fotograma vecino opcional encima (indice 31 = hueco en todas las capas).
     canvas_fill_rgb: color de fondo del lienzo (solo vista previa; no es paleta).
     """
     from turtlestudio.palette_policy import resolve_palette_color
@@ -194,34 +237,41 @@ def composite_sprite_editor_preview(
             ref_alpha=ref_alpha,
             canvas_fill_rgb=fill,
         )
+    if behind_rows is not None:
+        underlay = blend_indexed_rows_on_rgba(
+            underlay, behind_rows, rgbs, alpha=behind_alpha
+        )
 
     pa = max(0.0, min(1.0, float(paint_alpha)))
     if pa <= 0.0:
-        return underlay
+        out = list(underlay)
+    else:
+        out = list(underlay)
+        for py in range(ph):
+            row = rows[py] if py < len(rows) else []
+            for lx in range(pw):
+                try:
+                    idx = int(row[lx]) if lx < len(row) else 0
+                except (TypeError, ValueError):
+                    idx = 0
+                col = resolve_palette_color(idx, rgbs)
+                if col is None:
+                    continue
+                i = (py * pw + lx) * 4
+                if pa >= 1.0 - 1e-6:
+                    out[i] = col[0]
+                    out[i + 1] = col[1]
+                    out[i + 2] = col[2]
+                else:
+                    inv = 1.0 - pa
+                    br, bg, bb = out[i], out[i + 1], out[i + 2]
+                    out[i] = br * inv + col[0] * pa
+                    out[i + 1] = bg * inv + col[1] * pa
+                    out[i + 2] = bb * inv + col[2] * pa
+                out[i + 3] = 1.0
 
-    out = list(underlay)
-    for py in range(ph):
-        row = rows[py] if py < len(rows) else []
-        for lx in range(pw):
-            try:
-                idx = int(row[lx]) if lx < len(row) else 0
-            except (TypeError, ValueError):
-                idx = 0
-            col = resolve_palette_color(idx, rgbs)
-            if col is None:
-                continue
-            i = (py * pw + lx) * 4
-            if pa >= 1.0 - 1e-6:
-                out[i] = col[0]
-                out[i + 1] = col[1]
-                out[i + 2] = col[2]
-            else:
-                inv = 1.0 - pa
-                br, bg, bb = out[i], out[i + 1], out[i + 2]
-                out[i] = br * inv + col[0] * pa
-                out[i + 1] = bg * inv + col[1] * pa
-                out[i + 2] = bb * inv + col[2] * pa
-            out[i + 3] = 1.0
+    if over_rows is not None:
+        out = blend_indexed_rows_on_rgba(out, over_rows, rgbs, alpha=over_alpha)
     return out
 
 

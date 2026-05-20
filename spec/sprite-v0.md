@@ -115,7 +115,39 @@ Sprites cargados en modo `solid_palette_index` se muestran en el editor como lie
   "kind": "turtlestudio.object",
   "id": "bloque",
   "name": "bloque",
-  "sprite_id": "bloque_rojo"
+  "sprite_id": "bloque_rojo",
+  "animations": [
+    { "name": "walk", "sprite_id": "bloque_rojo_walk" }
+  ]
+}
+```
+
+- **`sprite_id`**: sprite por defecto (reposo, colocacion en escena, etc.).
+- **`collision`** (opcional, v0): forma en espacio **local del ancla** (`(0,0)` = origen del sprite en escena, **Y hacia arriba**). Modos:
+  - **`aabb`** (cuadrado): `x0`, `y0`, `x1`, `y1` — esquina inferior izquierda y superior derecha (inclusivas).
+  - **`triangle`**: `points` — lista de **3** vértices `[[x,y], …]`.
+  - **`hexagon`**: `points` — lista de **6** vértices (hexágono plano; orden en sentido horario o antihorario).
+  TurtleStudio: selector **Cuadrado / Triángulo / Hexágono**; **Desde sprite** rellena la forma inscrita en el bbox del sprite. Contorno **amarillo** en la vista de escena. El firmware/Lua aún no aplican física.
+- **`animations`** (opcional): lista de `{ "name", "sprite_id" }`. Cada entrada enlaza un **nombre logico** con otro stem en `objects/Sprites/`. Nombres: letra inicial, luego letras, digitos, `_` o `-` (max 32). Max **32** animaciones por objeto. Al exportar el cartucho, todos los sprites referenciados (default + animaciones) se embeben en `sprites` del bundle.
+
+Ejemplo `collision` cuadrado (sprite 24×24, origen en pies `origin_x=12`, `origin_y=0`):
+
+```json
+"collision": {
+  "mode": "aabb",
+  "x0": -12,
+  "y0": 0,
+  "x1": 11,
+  "y1": 23
+}
+```
+
+Triángulo (base en los pies, punta arriba):
+
+```json
+"collision": {
+  "mode": "triangle",
+  "points": [[-12, 0], [11, 0], [0, 23]]
 }
 ```
 

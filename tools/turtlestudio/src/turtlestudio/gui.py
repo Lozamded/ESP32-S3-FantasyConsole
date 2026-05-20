@@ -48,11 +48,27 @@ from turtlestudio.project import (
     validate_scene_script_stem,
 )
 from turtlestudio.objects import (
+    OBJECT_COLLISION_MODE_AABB,
+    OBJECT_COLLISION_MODE_HEXAGON,
+    OBJECT_COLLISION_MODE_TRIANGLE,
+    default_collision_for_sprite_ref,
     list_object_ids_for_scene_palette,
     list_object_json_stems,
+    normalize_object_animations,
+    normalize_object_collision,
+    parse_object_animations,
+    parse_object_collision,
     read_object_file,
     save_object_json,
+    validate_animation_name,
     write_object_json,
+)
+
+_OBJ_COLL_SHAPE_LABELS = ("Cuadrado", "Triangulo", "Hexagono")
+_OBJ_COLL_SHAPE_MODES = (
+    OBJECT_COLLISION_MODE_AABB,
+    OBJECT_COLLISION_MODE_TRIANGLE,
+    OBJECT_COLLISION_MODE_HEXAGON,
 )
 from turtlestudio.sprite_png_export import export_sprite_frames_to_png_dir
 from turtlestudio.sprite_ref_image import (
@@ -448,6 +464,131 @@ def _blit_solid_rect_scene(
             _blend_rgba_at(rgba, i, r, g, b, alpha=alpha)
 
 
+def _plot_scene_pixel_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    scene_x: int,
+    scene_y: int,
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    if scene_x < 0 or scene_x >= fw or scene_y < 0 or scene_y >= fh:
+        return
+    ty = (fh - 1) - scene_y
+    tx = scene_x
+    i = (ty * fw + tx) * 4
+    rgba[i] = r
+    rgba[i + 1] = g
+    rgba[i + 2] = b
+    rgba[i + 3] = 1.0
+
+
+def _draw_scene_line_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    """Segmento en espacio escena (Y hacia arriba)."""
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    x, y = x0, y0
+    while True:
+        _plot_scene_pixel_rgba(rgba, fw, fh, x, y, r, g, b)
+        if x == x1 and y == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+
+
+def _draw_scene_polygon_outline_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    anchor_x: int,
+    anchor_y: int,
+    points: list[list[int]],
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    if len(points) < 2:
+        return
+    n = len(points)
+    for i in range(n):
+        x0, y0 = points[i]
+        x1, y1 = points[(i + 1) % n]
+        _draw_scene_line_rgba(
+            rgba,
+            fw,
+            fh,
+            anchor_x + int(x0),
+            anchor_y + int(y0),
+            anchor_x + int(x1),
+            anchor_y + int(y1),
+            r,
+            g,
+            b,
+        )
+
+
+def _draw_object_collision_outline_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    anchor_x: int,
+    anchor_y: int,
+    collision: dict[str, Any],
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    mode = str(collision.get("mode", OBJECT_COLLISION_MODE_AABB))
+    if mode == OBJECT_COLLISION_MODE_AABB:
+        x0 = int(collision.get("x0", 0))
+        y0 = int(collision.get("y0", 0))
+        x1 = int(collision.get("x1", 0))
+        y1 = int(collision.get("y1", 0))
+        _draw_scene_polygon_outline_rgba(
+            rgba,
+            fw,
+            fh,
+            anchor_x,
+            anchor_y,
+            [[x0, y0], [x1, y0], [x1, y1], [x0, y1]],
+            r,
+            g,
+            b,
+        )
+        return
+    raw_pts = collision.get("points")
+    if isinstance(raw_pts, list):
+        pts: list[list[int]] = []
+        for item in raw_pts:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                pts.append([int(item[0]), int(item[1])])
+        if pts:
+            _draw_scene_polygon_outline_rgba(
+                rgba, fw, fh, anchor_x, anchor_y, pts, r, g, b
+            )
+
+
 def _draw_anchor_cross_rgba(
     rgba: list[float],
     fw: int,
@@ -507,11 +648,229 @@ def _normalize_sprite_grid_step(v: object) -> int:
 # Textura fija (no borrar/recrear): evita segfault en DPG al cambiar de sprite.
 _SPRITE_EDITOR_TEX_MAX = 512
 _SPRITE_EDITOR_TEX_PAD_RGBA = (0.1, 0.1, 0.14, 1.0)
+_OBJ_COLL_PREVIEW_TEX_TAG = "ts_obj_coll_preview_tex"
+_OBJ_COLL_PREVIEW_IMG_TAG = "ts_obj_coll_preview_img"
+_OBJ_COLL_PREVIEW_TEX_MAX = 128
+_OBJ_COLL_PREVIEW_SCALE_MAX = 6
+_OBJ_COLL_PREVIEW_PAD_RGBA = (0.38, 0.4, 0.46, 1.0)
 
 
 def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
     mx = float(_SPRITE_EDITOR_TEX_MAX)
     return (max(0.0, min(1.0, pw / mx)), max(0.0, min(1.0, ph / mx)))
+
+
+def _obj_coll_preview_uv_max(dw: int, dh: int) -> tuple[float, float]:
+    mx = float(_OBJ_COLL_PREVIEW_TEX_MAX)
+    return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / mx)))
+
+
+def _collision_outline_local_points(collision: dict[str, Any]) -> list[list[int]]:
+    mode = str(collision.get("mode", OBJECT_COLLISION_MODE_AABB))
+    if mode == OBJECT_COLLISION_MODE_AABB:
+        x0 = int(collision.get("x0", 0))
+        y0 = int(collision.get("y0", 0))
+        x1 = int(collision.get("x1", 0))
+        y1 = int(collision.get("y1", 0))
+        return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+    raw = collision.get("points")
+    if not isinstance(raw, list):
+        return []
+    out: list[list[int]] = []
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            out.append([int(item[0]), int(item[1])])
+    return out
+
+
+def _plot_raster_pixel_rgba(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    tx: int,
+    ty: int,
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    if tx < 0 or tx >= lw or ty < 0 or ty >= lh:
+        return
+    i = (ty * lw + tx) * 4
+    rgba[i] = r
+    rgba[i + 1] = g
+    rgba[i + 2] = b
+    rgba[i + 3] = 1.0
+
+
+def _draw_raster_line_rgba(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    x0: int,
+    y0: int,
+    x1: int,
+    y1: int,
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    dx = abs(x1 - x0)
+    dy = abs(y1 - y0)
+    sx = 1 if x0 < x1 else -1
+    sy = 1 if y0 < y1 else -1
+    err = dx - dy
+    x, y = x0, y0
+    while True:
+        _plot_raster_pixel_rgba(rgba, lw, lh, x, y, r, g, b)
+        if x == x1 and y == y1:
+            break
+        e2 = 2 * err
+        if e2 > -dy:
+            err -= dy
+            x += sx
+        if e2 < dx:
+            err += dx
+            y += sy
+
+
+def _local_to_raster_xy(lx: int, ly: int, min_x: int, max_y: int) -> tuple[int, int]:
+    return lx - min_x, max_y - ly
+
+
+def _draw_local_polygon_outline_rgba(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    min_x: int,
+    max_y: int,
+    local_points: list[list[int]],
+    r: float,
+    g: float,
+    b: float,
+) -> None:
+    if len(local_points) < 2:
+        return
+    n = len(local_points)
+    for i in range(n):
+        x0, y0 = local_points[i]
+        x1, y1 = local_points[(i + 1) % n]
+        tx0, ty0 = _local_to_raster_xy(x0, y0, min_x, max_y)
+        tx1, ty1 = _local_to_raster_xy(x1, y1, min_x, max_y)
+        _draw_raster_line_rgba(rgba, lw, lh, tx0, ty0, tx1, ty1, r, g, b)
+
+
+def _mark_local_anchor_cross_rgba(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    min_x: int,
+    max_y: int,
+    *,
+    arm: int = 4,
+) -> None:
+    tx, ty = _local_to_raster_xy(0, 0, min_x, max_y)
+    for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+        _plot_raster_pixel_rgba(
+            rgba, lw, lh, tx + dx * arm, ty + dy * arm, 1.0, 0.15, 0.95
+        )
+
+
+def _build_object_collision_preview_rgba(
+    project_root: Path,
+    sprite_id: str,
+    collision: dict[str, Any],
+) -> tuple[list[float], int, int] | None:
+    """RGBA logico (Y local hacia arriba) + tamano; None si no hay sprite."""
+    try:
+        sd = read_sprite_file(project_root, sprite_id)
+    except ValueError:
+        return None
+    _, pw, ph = sprite_pixel_dimensions(sd)
+    ox, oy = parse_sprite_origin(sd, pw=pw, ph=ph)
+    outline_pts = _collision_outline_local_points(collision)
+    bounds_pts: list[list[int]] = list(outline_pts)
+    bounds_pts.extend(
+        [
+            [-ox, -oy],
+            [pw - 1 - ox, -oy],
+            [pw - 1 - ox, ph - 1 - oy],
+            [-ox, ph - 1 - oy],
+            [0, 0],
+        ]
+    )
+    if not bounds_pts:
+        return None
+    xs = [p[0] for p in bounds_pts]
+    ys = [p[1] for p in bounds_pts]
+    pad = 2
+    min_x = min(xs) - pad
+    max_x = max(xs) + pad
+    min_y = min(ys) - pad
+    max_y = max(ys) + pad
+    lw = max(1, max_x - min_x + 1)
+    lh = max(1, max_y - min_y + 1)
+    bg = _OBJ_COLL_PREVIEW_PAD_RGBA
+    rgba = [0.0] * (lw * lh * 4)
+    for y in range(lh):
+        for x in range(lw):
+            i = (y * lw + x) * 4
+            rgba[i] = bg[0]
+            rgba[i + 1] = bg[1]
+            rgba[i + 2] = bg[2]
+            rgba[i + 3] = 1.0
+
+    raw_pal = str(sd.get("palette", "")).strip()
+    pal_file = None
+    if raw_pal:
+        rel = normalize_palette_rel(raw_pal)
+        cand = (project_root / rel).resolve()
+        if cand.is_file():
+            pal_file = cand
+    rgbs, _ = load_palette_rgb01_for_preview(pal_file)
+    if not rgbs:
+        rgbs = [(0.5, 0.5, 0.5)]
+
+    if sprite_is_indexed_pixels(sd):
+        frames = parse_sprite_all_frame_rows(sd, fill_index=0)
+        rows = frames[0] if frames else None
+        if isinstance(rows, list) and rows:
+            for py_top in range(min(ph, len(rows))):
+                row = rows[py_top] if py_top < len(rows) else []
+                for lx in range(pw):
+                    try:
+                        idx = int(row[lx]) if lx < len(row) else 0
+                    except (TypeError, ValueError):
+                        idx = 0
+                    col = resolve_palette_color(idx, rgbs)
+                    if col is None:
+                        continue
+                    local_x = lx - ox
+                    local_y = (ph - 1 - py_top) - oy
+                    tx, ty = _local_to_raster_xy(local_x, local_y, min_x, max_y)
+                    _plot_raster_pixel_rgba(
+                        rgba, lw, lh, tx, ty, col[0], col[1], col[2]
+                    )
+    else:
+        pi = 0
+        render = sd.get("render")
+        if isinstance(render, dict):
+            try:
+                pi = int(render.get("palette_index", 0))
+            except (TypeError, ValueError):
+                pi = 0
+        pi = max(0, min(len(rgbs) - 1, pi))
+        sr, sg, sb = rgbs[pi]
+        for local_y in range(-oy, ph - oy):
+            for local_x in range(-ox, pw - ox):
+                tx, ty = _local_to_raster_xy(local_x, local_y, min_x, max_y)
+                _plot_raster_pixel_rgba(rgba, lw, lh, tx, ty, sr, sg, sb)
+
+    if outline_pts:
+        _draw_local_polygon_outline_rgba(
+            rgba, lw, lh, min_x, max_y, outline_pts, 0.95, 0.85, 0.15
+        )
+    _mark_local_anchor_cross_rgba(rgba, lw, lh, min_x, max_y)
+    return rgba, lw, lh
 
 
 def _scene_preview_uv_max(dw: int, dh: int) -> tuple[float, float]:
@@ -794,6 +1153,15 @@ def _paint_scene_objects_preview(
                     alpha=a,
                 )
         _draw_anchor_cross_rgba(rgba, fw, fh, sx, sy, cr, cg, cb)
+        try:
+            od = read_object_file(project_root, oid)
+            coll = parse_object_collision(od)
+            if coll is not None:
+                _draw_object_collision_outline_rgba(
+                    rgba, fw, fh, sx, sy, coll, 0.95, 0.85, 0.15
+                )
+        except ValueError:
+            pass
 
 
 def _paint_placement_crosses_only(
@@ -856,6 +1224,7 @@ def run_gui() -> int:
         "sprite_brush_index": 1,
         "sprite_ref_source": None,
         "sprite_ref_path": "",
+        "obj_animations": [],
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -1648,6 +2017,10 @@ def run_gui() -> int:
             "ts_sprite_ref_show",
             "ts_sprite_ref_opacity",
             "ts_sprite_paint_opacity",
+            "ts_sprite_onion_prev_show",
+            "ts_sprite_onion_prev_opacity",
+            "ts_sprite_onion_next_show",
+            "ts_sprite_onion_next_opacity",
             "ts_btn_sprite_create",
             "ts_btn_sprite_save",
             "ts_btn_sprite_export_png",
@@ -1657,6 +2030,35 @@ def run_gui() -> int:
             "ts_obj_id",
             "ts_obj_name",
             "ts_obj_sprite_combo",
+            "ts_obj_coll_shape",
+            "ts_obj_coll_x0",
+            "ts_obj_coll_y0",
+            "ts_obj_coll_x1",
+            "ts_obj_coll_y1",
+            "ts_obj_coll_t0x",
+            "ts_obj_coll_t0y",
+            "ts_obj_coll_t1x",
+            "ts_obj_coll_t1y",
+            "ts_obj_coll_t2x",
+            "ts_obj_coll_t2y",
+            "ts_obj_coll_h0x",
+            "ts_obj_coll_h0y",
+            "ts_obj_coll_h1x",
+            "ts_obj_coll_h1y",
+            "ts_obj_coll_h2x",
+            "ts_obj_coll_h2y",
+            "ts_obj_coll_h3x",
+            "ts_obj_coll_h3y",
+            "ts_obj_coll_h4x",
+            "ts_obj_coll_h4y",
+            "ts_obj_coll_h5x",
+            "ts_obj_coll_h5y",
+            "ts_btn_obj_coll_from_sprite",
+            "ts_obj_anim_name",
+            "ts_obj_anim_sprite_combo",
+            "ts_btn_obj_anim_add",
+            "ts_btn_obj_anim_remove",
+            "ts_obj_anim_list",
             "ts_btn_obj_create",
             "ts_btn_obj_save",
             "ts_btn_obj_refresh",
@@ -1693,17 +2095,87 @@ def run_gui() -> int:
         if not isinstance(root, Path):
             dpg.configure_item("ts_obj_sprite_combo", items=["(abre un proyecto)"])
             dpg.set_value("ts_obj_sprite_combo", "(abre un proyecto)")
+            _refresh_obj_anim_sprite_combo()
             return
         stems = list_sprite_json_stems(root)
         if not stems:
             items = ["(sin sprites — crea uno en Sprites)"]
             dpg.configure_item("ts_obj_sprite_combo", items=items)
             dpg.set_value("ts_obj_sprite_combo", items[0])
+            _refresh_obj_anim_sprite_combo()
             return
         dpg.configure_item("ts_obj_sprite_combo", items=stems)
         cur = dpg.get_value("ts_obj_sprite_combo")
         if cur not in stems:
             dpg.set_value("ts_obj_sprite_combo", stems[0])
+        _refresh_obj_anim_sprite_combo()
+
+    def _refresh_obj_anim_sprite_combo() -> None:
+        if not dpg.does_item_exist("ts_obj_anim_sprite_combo"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item("ts_obj_anim_sprite_combo", items=["(abre un proyecto)"])
+            dpg.set_value("ts_obj_anim_sprite_combo", "(abre un proyecto)")
+            return
+        stems = list_sprite_json_stems(root)
+        if not stems:
+            items = ["(sin sprites — crea uno en Sprites)"]
+            dpg.configure_item("ts_obj_anim_sprite_combo", items=items)
+            dpg.set_value("ts_obj_anim_sprite_combo", items[0])
+            return
+        dpg.configure_item("ts_obj_anim_sprite_combo", items=stems)
+        cur = dpg.get_value("ts_obj_anim_sprite_combo")
+        if cur not in stems:
+            dpg.set_value("ts_obj_anim_sprite_combo", stems[0])
+
+    def _obj_animation_list_label(entry: dict[str, str]) -> str:
+        return f"{entry['name']} → {entry['sprite_id']}"
+
+    def _rebuild_obj_anim_listbox(*, select_name: str | None = None) -> None:
+        if not dpg.does_item_exist("ts_obj_anim_list"):
+            return
+        anims = state.get("obj_animations")
+        if not isinstance(anims, list):
+            anims = []
+            state["obj_animations"] = anims
+        labels = [_obj_animation_list_label(a) for a in anims if isinstance(a, dict)]
+        if not labels:
+            labels = ["(sin animaciones)"]
+        dpg.configure_item("ts_obj_anim_list", items=labels)
+        pick = labels[0]
+        if select_name:
+            for a in anims:
+                if isinstance(a, dict) and a.get("name") == select_name:
+                    pick = _obj_animation_list_label(a)
+                    break
+        dpg.set_value("ts_obj_anim_list", pick)
+
+    def _obj_anim_list_selected_name() -> str | None:
+        if not dpg.does_item_exist("ts_obj_anim_list"):
+            return None
+        raw = dpg.get_value("ts_obj_anim_list")
+        s = str(raw).strip() if raw is not None else ""
+        if not s or s.startswith("("):
+            return None
+        if " → " in s:
+            return s.split(" → ", 1)[0].strip()
+        return None
+
+    def _read_obj_animations_from_state() -> list[dict[str, str]]:
+        raw = state.get("obj_animations")
+        if not isinstance(raw, list):
+            return []
+        out: list[dict[str, str]] = []
+        for item in raw:
+            if isinstance(item, dict) and item.get("name") and item.get("sprite_id"):
+                out.append(
+                    {
+                        "name": str(item["name"]),
+                        "sprite_id": str(item["sprite_id"]),
+                    }
+                )
+        return out
 
     def _refresh_object_file_list() -> None:
         root = state.get("project_root")
@@ -1800,6 +2272,8 @@ def run_gui() -> int:
                 dpg.set_value("ts_sprite_ref_path_label", "(sin referencia)")
             dpg.set_value("ts_obj_id", "")
             dpg.set_value("ts_obj_name", "")
+            state["obj_animations"] = []
+            _rebuild_obj_anim_listbox()
             if dpg.does_item_exist("ts_export_initial_scene"):
                 dpg.set_value("ts_export_initial_scene", DEFAULT_INITIAL_SCENE_ID)
             state["lua_sources"] = {}
@@ -2256,6 +2730,18 @@ def run_gui() -> int:
                 0.15,
             ),
             tag=_SPRITE_EDITOR_TEX_TAG,
+        )
+        dpg.add_dynamic_texture(
+            width=_OBJ_COLL_PREVIEW_TEX_MAX,
+            height=_OBJ_COLL_PREVIEW_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_PAD_RGBA[0],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[1],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[2],
+            ),
+            tag=_OBJ_COLL_PREVIEW_TEX_TAG,
         )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
@@ -2829,6 +3315,39 @@ def run_gui() -> int:
                     )
         finally:
             state["sprite_ui_silent"] = False
+        _sync_sprite_onion_controls()
+
+    def _sync_sprite_onion_controls() -> None:
+        """Habilita calcos de fotograma vecino solo si existen anterior/siguiente."""
+        idx = _sprite_active_frame_index()
+        n = _sprite_frame_count_from_state()
+        has_prev = idx > 0
+        has_next = idx < n - 1
+        for tag, ok in (
+            ("ts_sprite_onion_prev_show", has_prev),
+            ("ts_sprite_onion_prev_opacity", has_prev),
+            ("ts_sprite_onion_next_show", has_next),
+            ("ts_sprite_onion_next_opacity", has_next),
+        ):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=ok)
+
+    def _sprite_neighbor_frame_rows(offset: int) -> list[list[int]] | None:
+        """Fotograma adyacente: offset -1 = anterior, +1 = siguiente."""
+        _sprite_flush_current_frame()
+        frames = _ensure_sprite_frame_buffers()
+        if not frames:
+            return None
+        idx = _sprite_active_frame_index()
+        j = idx + int(offset)
+        if j < 0 or j >= len(frames):
+            return None
+        pw, ph = _expected_sprite_matrix_pixel_size()
+        fi = _sprite_matrix_fill_index()
+        old = frames[j]
+        if not isinstance(old, list):
+            return None
+        return trim_palette_rows(old, pw, ph, fill_index=fi)
 
     def on_sprite_frame_tab_select(_sender: object, app_data: object) -> None:
         if state.get("sprite_ui_silent"):
@@ -2847,6 +3366,7 @@ def run_gui() -> int:
                 idx = _sprite_active_frame_index()
         state["sprite_active_frame"] = max(0, idx)
         _sprite_load_active_frame_into_editor()
+        _sync_sprite_onion_controls()
         _refresh_sprite_edit_texture()
 
     def on_sprite_frame_count_change(_sender: object, _app_data: object) -> None:
@@ -2861,6 +3381,7 @@ def run_gui() -> int:
             state["sprite_ui_silent"] = False
         _apply_sprite_frame_count(target)
         _rebuild_sprite_frame_tabs()
+        _sync_sprite_onion_controls()
         _refresh_sprite_edit_texture()
 
     def _clamp_sprite_origin_widgets(pw: int, ph: int) -> tuple[int, int]:
@@ -3052,6 +3573,18 @@ def run_gui() -> int:
         if norm is not rows:
             state["sprite_pixel_rows"] = norm
         ref_layer = _sprite_ref_rgba_for_canvas(pw, ph)
+        behind_rows: list[list[int]] | None = None
+        over_rows: list[list[int]] | None = None
+        if (
+            dpg.does_item_exist("ts_sprite_onion_prev_show")
+            and bool(dpg.get_value("ts_sprite_onion_prev_show"))
+        ):
+            behind_rows = _sprite_neighbor_frame_rows(-1)
+        if (
+            dpg.does_item_exist("ts_sprite_onion_next_show")
+            and bool(dpg.get_value("ts_sprite_onion_next_show"))
+        ):
+            over_rows = _sprite_neighbor_frame_rows(1)
         base = composite_sprite_editor_preview(
             norm,
             rgbs,
@@ -3059,6 +3592,10 @@ def run_gui() -> int:
             canvas_fill_rgb=_sprite_canvas_fill_rgb01(),
             ref_alpha=_sprite_ref_opacity(),
             paint_alpha=_sprite_paint_opacity(),
+            behind_rows=behind_rows,
+            behind_alpha=_sprite_onion_prev_opacity(),
+            over_rows=over_rows,
+            over_alpha=_sprite_onion_next_opacity(),
         )
         cp = int(state.get("sprite_edit_cell_px") or DEFAULT_CELL_PX)
         cp = max(1, min(256, cp))
@@ -3121,6 +3658,24 @@ def run_gui() -> int:
             v = float(dpg.get_value("ts_sprite_paint_opacity"))
         except (TypeError, ValueError):
             v = 1.0
+        return max(0.05, min(1.0, v))
+
+    def _sprite_onion_prev_opacity() -> float:
+        if not dpg.does_item_exist("ts_sprite_onion_prev_opacity"):
+            return 0.35
+        try:
+            v = float(dpg.get_value("ts_sprite_onion_prev_opacity"))
+        except (TypeError, ValueError):
+            v = 0.35
+        return max(0.05, min(1.0, v))
+
+    def _sprite_onion_next_opacity() -> float:
+        if not dpg.does_item_exist("ts_sprite_onion_next_opacity"):
+            return 0.35
+        try:
+            v = float(dpg.get_value("ts_sprite_onion_next_opacity"))
+        except (TypeError, ValueError):
+            v = 0.35
         return max(0.05, min(1.0, v))
 
     def _sprite_canvas_fill_rgb01() -> tuple[float, float, float]:
@@ -3515,6 +4070,7 @@ def run_gui() -> int:
         finally:
             state["sprite_ui_silent"] = False
         _rebuild_sprite_frame_tabs(select_index=0)
+        _sync_sprite_onion_controls()
         _set_sprite_brush_index(pi)
         _sprite_palette_reload_core(append_log=False, preferred_palette_index=pi)
         _refresh_sprite_edit_texture()
@@ -3624,9 +4180,381 @@ def run_gui() -> int:
             dpg.set_value("ts_obj_sprite_combo", sp)
         elif items and not str(items[0]).startswith("("):
             dpg.set_value("ts_obj_sprite_combo", items[0])
+        state["obj_animations"] = parse_object_animations(data)
+        _rebuild_obj_anim_listbox()
+        if dpg.does_item_exist("ts_obj_anim_name"):
+            dpg.set_value("ts_obj_anim_name", "")
+        _set_object_collision_widgets_from_data(root, data, sprite_id=sp)
+        _refresh_object_collision_preview()
         dpg.set_value(
             "ts_log",
             (dpg.get_value("ts_log") or "") + f"Objetos: cargado {stem}.json\n",
+        )
+
+    def _object_collision_mode_from_combo() -> str:
+        if not dpg.does_item_exist("ts_obj_coll_shape"):
+            return OBJECT_COLLISION_MODE_AABB
+        label = str(dpg.get_value("ts_obj_coll_shape"))
+        for i, lab in enumerate(_OBJ_COLL_SHAPE_LABELS):
+            if label == lab:
+                return _OBJ_COLL_SHAPE_MODES[i]
+        return OBJECT_COLLISION_MODE_AABB
+
+    def _sync_object_collision_shape_ui() -> None:
+        mode = _object_collision_mode_from_combo()
+        show_square = mode == OBJECT_COLLISION_MODE_AABB
+        show_tri = mode == OBJECT_COLLISION_MODE_TRIANGLE
+        show_hex = mode == OBJECT_COLLISION_MODE_HEXAGON
+        for tag, vis in (
+            ("ts_obj_coll_square_grp", show_square),
+            ("ts_obj_coll_triangle_grp", show_tri),
+            ("ts_obj_coll_hexagon_grp", show_hex),
+        ):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, show=vis)
+
+    def _set_object_collision_widgets(coll: dict[str, Any]) -> None:
+        mode = str(coll.get("mode", OBJECT_COLLISION_MODE_AABB))
+        label = _OBJ_COLL_SHAPE_LABELS[0]
+        for i, m in enumerate(_OBJ_COLL_SHAPE_MODES):
+            if m == mode:
+                label = _OBJ_COLL_SHAPE_LABELS[i]
+                break
+        if dpg.does_item_exist("ts_obj_coll_shape"):
+            dpg.set_value("ts_obj_coll_shape", label)
+        if mode == OBJECT_COLLISION_MODE_AABB:
+            for tag, key in (
+                ("ts_obj_coll_x0", "x0"),
+                ("ts_obj_coll_y0", "y0"),
+                ("ts_obj_coll_x1", "x1"),
+                ("ts_obj_coll_y1", "y1"),
+            ):
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, int(coll[key]))
+        else:
+            pts = coll.get("points")
+            if not isinstance(pts, list):
+                return
+            if mode == OBJECT_COLLISION_MODE_TRIANGLE:
+                tags = (
+                    "ts_obj_coll_t0x",
+                    "ts_obj_coll_t0y",
+                    "ts_obj_coll_t1x",
+                    "ts_obj_coll_t1y",
+                    "ts_obj_coll_t2x",
+                    "ts_obj_coll_t2y",
+                )
+            else:
+                tags = (
+                    "ts_obj_coll_h0x",
+                    "ts_obj_coll_h0y",
+                    "ts_obj_coll_h1x",
+                    "ts_obj_coll_h1y",
+                    "ts_obj_coll_h2x",
+                    "ts_obj_coll_h2y",
+                    "ts_obj_coll_h3x",
+                    "ts_obj_coll_h3y",
+                    "ts_obj_coll_h4x",
+                    "ts_obj_coll_h4y",
+                    "ts_obj_coll_h5x",
+                    "ts_obj_coll_h5y",
+                )
+            flat: list[int] = []
+            for p in pts:
+                if isinstance(p, (list, tuple)) and len(p) >= 2:
+                    flat.extend((int(p[0]), int(p[1])))
+            for tag, val in zip(tags, flat, strict=False):
+                if dpg.does_item_exist(tag):
+                    dpg.set_value(tag, val)
+        _sync_object_collision_shape_ui()
+
+    def _set_object_collision_widgets_from_data(
+        root: Path,
+        data: dict[str, Any],
+        *,
+        sprite_id: str,
+    ) -> None:
+        coll = parse_object_collision(data)
+        if coll is None and sprite_id:
+            try:
+                coll = default_collision_for_sprite_ref(
+                    root, sprite_id, mode=OBJECT_COLLISION_MODE_AABB
+                )
+            except ValueError:
+                coll = {
+                    "mode": OBJECT_COLLISION_MODE_AABB,
+                    "x0": 0,
+                    "y0": 0,
+                    "x1": 0,
+                    "y1": 0,
+                }
+        if coll is not None:
+            _set_object_collision_widgets(coll)
+        else:
+            _sync_object_collision_shape_ui()
+
+    def _read_object_collision_from_widgets() -> dict[str, Any]:
+        def _iv(tag: str) -> int:
+            try:
+                return int(dpg.get_value(tag))
+            except (TypeError, ValueError):
+                return 0
+
+        mode = _object_collision_mode_from_combo()
+        if mode == OBJECT_COLLISION_MODE_AABB:
+            return {
+                "mode": mode,
+                "x0": _iv("ts_obj_coll_x0"),
+                "y0": _iv("ts_obj_coll_y0"),
+                "x1": _iv("ts_obj_coll_x1"),
+                "y1": _iv("ts_obj_coll_y1"),
+            }
+        if mode == OBJECT_COLLISION_MODE_TRIANGLE:
+            return {
+                "mode": mode,
+                "points": [
+                    [_iv("ts_obj_coll_t0x"), _iv("ts_obj_coll_t0y")],
+                    [_iv("ts_obj_coll_t1x"), _iv("ts_obj_coll_t1y")],
+                    [_iv("ts_obj_coll_t2x"), _iv("ts_obj_coll_t2y")],
+                ],
+            }
+        return {
+            "mode": OBJECT_COLLISION_MODE_HEXAGON,
+            "points": [
+                [_iv("ts_obj_coll_h0x"), _iv("ts_obj_coll_h0y")],
+                [_iv("ts_obj_coll_h1x"), _iv("ts_obj_coll_h1y")],
+                [_iv("ts_obj_coll_h2x"), _iv("ts_obj_coll_h2y")],
+                [_iv("ts_obj_coll_h3x"), _iv("ts_obj_coll_h3y")],
+                [_iv("ts_obj_coll_h4x"), _iv("ts_obj_coll_h4y")],
+                [_iv("ts_obj_coll_h5x"), _iv("ts_obj_coll_h5y")],
+            ],
+        }
+
+    def on_object_collision_shape_change(_sender: object, _app_data: object) -> None:
+        _sync_object_collision_shape_ui()
+        _refresh_object_collision_preview()
+
+    def _sync_obj_coll_preview_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_OBJ_COLL_PREVIEW_IMG_TAG):
+            return
+        uv = _obj_coll_preview_uv_max(dw, dh)
+        dpg.configure_item(
+            _OBJ_COLL_PREVIEW_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_OBJ_COLL_PREVIEW_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _refresh_object_collision_preview() -> None:
+        if not dpg.does_item_exist(_OBJ_COLL_PREVIEW_TEX_TAG):
+            return
+        root = state.get("project_root")
+        label = "(carga un objeto y sprite)"
+        if not isinstance(root, Path):
+            if dpg.does_item_exist("ts_obj_coll_preview_label"):
+                dpg.set_value("ts_obj_coll_preview_label", label)
+            return
+        sp = ""
+        if dpg.does_item_exist("ts_obj_sprite_combo"):
+            sp = str(dpg.get_value("ts_obj_sprite_combo")).strip()
+        if sp.startswith("(") or not sp:
+            tex = _solid_rgba_float(
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_PAD_RGBA[0],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[1],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[2],
+            )
+            dpg.set_value(_OBJ_COLL_PREVIEW_TEX_TAG, tex)
+            _sync_obj_coll_preview_image_widget(64, 64)
+            if dpg.does_item_exist("ts_obj_coll_preview_label"):
+                dpg.set_value("ts_obj_coll_preview_label", label)
+            return
+        try:
+            raw_coll = _read_object_collision_from_widgets()
+            collision = normalize_object_collision(raw_coll)
+        except ValueError:
+            collision = None
+        if collision is None:
+            try:
+                collision = default_collision_for_sprite_ref(
+                    root,
+                    sp,
+                    mode=_object_collision_mode_from_combo(),
+                )
+            except ValueError:
+                collision = None
+        built = (
+            _build_object_collision_preview_rgba(root, sp, collision)
+            if collision is not None
+            else None
+        )
+        if built is None:
+            tex = _solid_rgba_float(
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_TEX_MAX,
+                _OBJ_COLL_PREVIEW_PAD_RGBA[0],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[1],
+                _OBJ_COLL_PREVIEW_PAD_RGBA[2],
+            )
+            dpg.set_value(_OBJ_COLL_PREVIEW_TEX_TAG, tex)
+            _sync_obj_coll_preview_image_widget(64, 64)
+            if dpg.does_item_exist("ts_obj_coll_preview_label"):
+                dpg.set_value(
+                    "ts_obj_coll_preview_label",
+                    f"Vista collision: (sin sprite {sp!r})",
+                )
+            return
+        logical, lw, lh = built
+        sc = max(
+            1,
+            min(
+                _OBJ_COLL_PREVIEW_SCALE_MAX,
+                _OBJ_COLL_PREVIEW_TEX_MAX // max(lw, lh, 1),
+            ),
+        )
+        disp, dw, dh = _scale_rgba_nearest(logical, lw, lh, sc)
+        tex = _pack_sprite_rgba_into_tex_buffer(
+            disp,
+            dw,
+            dh,
+            tex_w=_OBJ_COLL_PREVIEW_TEX_MAX,
+            tex_h=_OBJ_COLL_PREVIEW_TEX_MAX,
+        )
+        dpg.set_value(_OBJ_COLL_PREVIEW_TEX_TAG, tex)
+        _sync_obj_coll_preview_image_widget(dw, dh)
+        if dpg.does_item_exist("ts_obj_coll_preview_label"):
+            mode_lbl = _object_collision_mode_from_combo()
+            for i, m in enumerate(_OBJ_COLL_SHAPE_MODES):
+                if m == mode_lbl:
+                    mode_lbl = _OBJ_COLL_SHAPE_LABELS[i]
+                    break
+            dpg.set_value(
+                "ts_obj_coll_preview_label",
+                f"Vista collision: {sp!r} · {mode_lbl} · magenta=ancla",
+            )
+
+    def on_object_collision_preview_change(
+        _sender: object, _app_data: object
+    ) -> None:
+        _refresh_object_collision_preview()
+
+    def on_object_sprite_combo_change(_sender: object, _app_data: object) -> None:
+        _refresh_object_collision_preview()
+
+    def on_object_collision_from_sprite(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        sp = str(dpg.get_value("ts_obj_sprite_combo")).strip()
+        if sp.startswith("("):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Objetos collision: elige un sprite por defecto.\n",
+            )
+            return
+        mode = _object_collision_mode_from_combo()
+        try:
+            coll = default_collision_for_sprite_ref(root, sp, mode=mode)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Objetos collision: {e}\n",
+            )
+            return
+        _set_object_collision_widgets(coll)
+        shape_lbl = (
+            str(dpg.get_value("ts_obj_coll_shape"))
+            if dpg.does_item_exist("ts_obj_coll_shape")
+            else mode
+        )
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Objetos: collision ({shape_lbl}) desde sprite {sp!r}. Guarda el objeto.\n",
+        )
+        _refresh_object_collision_preview()
+
+    def on_object_anim_list_pick(_sender: object, _app_data: object) -> None:
+        name = _obj_anim_list_selected_name()
+        if not name:
+            return
+        anims = _read_obj_animations_from_state()
+        for a in anims:
+            if a["name"] == name:
+                if dpg.does_item_exist("ts_obj_anim_name"):
+                    dpg.set_value("ts_obj_anim_name", a["name"])
+                _refresh_obj_anim_sprite_combo()
+                items = (
+                    dpg.get_item_configuration("ts_obj_anim_sprite_combo").get("items")
+                    or []
+                )
+                if a["sprite_id"] in items:
+                    dpg.set_value("ts_obj_anim_sprite_combo", a["sprite_id"])
+                break
+
+    def on_object_anim_add(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        try:
+            name = validate_animation_name(str(dpg.get_value("ts_obj_anim_name")))
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Objetos animacion: {e}\n",
+            )
+            return
+        sp = str(dpg.get_value("ts_obj_anim_sprite_combo")).strip()
+        if sp.startswith("("):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Objetos animacion: elige un sprite en el desplegable.\n",
+            )
+            return
+        try:
+            normalize_object_animations(
+                root, [{"name": name, "sprite_id": sp}]
+            )
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Objetos animacion: {e}\n",
+            )
+            return
+        anims = _read_obj_animations_from_state()
+        anims = [a for a in anims if a["name"] != name]
+        anims.append({"name": name, "sprite_id": sp})
+        state["obj_animations"] = anims
+        _rebuild_obj_anim_listbox(select_name=name)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Objetos: animacion {name!r} → {sp} (guarda el objeto para escribir JSON).\n",
+        )
+
+    def on_object_anim_remove(_sender: object, _app_data: object) -> None:
+        name = _obj_anim_list_selected_name()
+        if not name:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Objetos animacion: elige una entrada de la lista.\n",
+            )
+            return
+        anims = [a for a in _read_obj_animations_from_state() if a["name"] != name]
+        state["obj_animations"] = anims
+        _rebuild_obj_anim_listbox()
+        if dpg.does_item_exist("ts_obj_anim_name"):
+            dpg.set_value("ts_obj_anim_name", "")
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Objetos: quitada animacion {name!r} (guarda el objeto para escribir JSON).\n",
         )
 
     def on_object_list_pick(_sender: object, _app_data: object) -> None:
@@ -3663,8 +4591,21 @@ def run_gui() -> int:
                 (dpg.get_value("ts_log") or "") + "Objetos: elige un sprite valido en el desplegable.\n",
             )
             return
+        anims = _read_obj_animations_from_state()
         try:
-            path = write_object_json(root, oid, name=name, sprite_id=sp)
+            coll = normalize_object_collision(_read_object_collision_from_widgets())
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
+            return
+        try:
+            path = write_object_json(
+                root,
+                oid,
+                name=name,
+                sprite_id=sp,
+                animations=anims,
+                collision=coll,
+            )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
             return
@@ -3679,6 +4620,7 @@ def run_gui() -> int:
         if dpg.does_item_exist("ts_obj_list"):
             dpg.set_value("ts_obj_list", oid)
         dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: creado {rel}\n")
+        _load_object_into_form(oid)
         _refresh_scene_object_lists()
         refresh_canvas_texture()
 
@@ -3700,8 +4642,21 @@ def run_gui() -> int:
                 (dpg.get_value("ts_log") or "") + "Objetos: elige un sprite valido en el desplegable.\n",
             )
             return
+        anims = _read_obj_animations_from_state()
         try:
-            path = save_object_json(root, oid, name=name, sprite_id=sp)
+            coll = normalize_object_collision(_read_object_collision_from_widgets())
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
+            return
+        try:
+            path = save_object_json(
+                root,
+                oid,
+                name=name,
+                sprite_id=sp,
+                animations=anims,
+                collision=coll,
+            )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
             return
@@ -3725,6 +4680,7 @@ def run_gui() -> int:
         dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + log_line)
         _refresh_scene_object_lists()
         refresh_canvas_texture()
+        _load_object_into_form(oid)
 
     def on_startup_create(_sender: object, _app_data: object) -> None:
         root_s = str(dpg.get_value("ts_new_project_path")).strip()
@@ -4591,6 +5547,44 @@ def run_gui() -> int:
                     wrap=520,
                 )
                 dpg.add_group(tag="ts_sprite_frame_tabs_group", horizontal=True)
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag="ts_sprite_onion_prev_show",
+                        label="Mostrar fotograma anterior detrás",
+                        default_value=False,
+                        callback=on_sprite_editor_preview_change,
+                        enabled=False,
+                    )
+                    dpg.add_slider_float(
+                        tag="ts_sprite_onion_prev_opacity",
+                        label="Opacidad anterior",
+                        min_value=0.05,
+                        max_value=1.0,
+                        default_value=0.35,
+                        clamped=True,
+                        width=180,
+                        callback=on_sprite_editor_preview_change,
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag="ts_sprite_onion_next_show",
+                        label="Mostrar fotograma siguiente encima",
+                        default_value=False,
+                        callback=on_sprite_editor_preview_change,
+                        enabled=False,
+                    )
+                    dpg.add_slider_float(
+                        tag="ts_sprite_onion_next_opacity",
+                        label="Opacidad siguiente",
+                        min_value=0.05,
+                        max_value=1.0,
+                        default_value=0.35,
+                        clamped=True,
+                        width=180,
+                        callback=on_sprite_editor_preview_change,
+                        enabled=False,
+                    )
                 with dpg.item_handler_registry(tag="ts_sprite_edit_click_reg"):
                     dpg.add_item_clicked_handler(
                         button=dpg.mvMouseButton_Left,
@@ -4729,11 +5723,232 @@ def run_gui() -> int:
                 )
                 dpg.add_combo(
                     tag="ts_obj_sprite_combo",
-                    label="Sprite asociado (objects/Sprites/)",
+                    label="Sprite por defecto (objects/Sprites/)",
                     width=400,
                     items=["(abre un proyecto)"],
                     default_value="(abre un proyecto)",
                     enabled=False,
+                    callback=on_object_sprite_combo_change,
+                )
+                dpg.add_separator()
+                dpg.add_text(
+                    "Collision (v0): forma respecto al ancla (0,0)=origen del sprite; Y hacia arriba. "
+                    "Contorno amarillo en vista escena.",
+                    wrap=520,
+                    color=(200, 220, 255, 255),
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        tag="ts_obj_coll_shape",
+                        label="Forma",
+                        width=140,
+                        items=list(_OBJ_COLL_SHAPE_LABELS),
+                        default_value=_OBJ_COLL_SHAPE_LABELS[0],
+                        callback=on_object_collision_shape_change,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_obj_coll_from_sprite",
+                        label="Desde sprite",
+                        width=100,
+                        callback=on_object_collision_from_sprite,
+                        enabled=False,
+                    )
+                with dpg.group(tag="ts_obj_coll_square_grp", horizontal=True):
+                    dpg.add_input_int(
+                        tag="ts_obj_coll_x0",
+                        label="X0 (izq)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_object_collision_preview_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_obj_coll_y0",
+                        label="Y0 (abajo)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_object_collision_preview_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_obj_coll_x1",
+                        label="X1 (der)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_object_collision_preview_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_obj_coll_y1",
+                        label="Y1 (arriba)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_object_collision_preview_change,
+                    )
+                with dpg.group(tag="ts_obj_coll_triangle_grp", horizontal=True, show=False):
+                    for i, lbl in enumerate(("V0", "V1", "V2")):
+                        dpg.add_input_int(
+                            tag=f"ts_obj_coll_t{i}x",
+                            label=f"{lbl} X",
+                            width=72,
+                            default_value=0,
+                            min_value=-256,
+                            max_value=256,
+                            min_clamped=True,
+                            max_clamped=True,
+                            enabled=False,
+                            callback=on_object_collision_preview_change,
+                        )
+                        dpg.add_input_int(
+                            tag=f"ts_obj_coll_t{i}y",
+                            label=f"{lbl} Y",
+                            width=72,
+                            default_value=0,
+                            min_value=-256,
+                            max_value=256,
+                            min_clamped=True,
+                            max_clamped=True,
+                            enabled=False,
+                            callback=on_object_collision_preview_change,
+                        )
+                with dpg.group(tag="ts_obj_coll_hexagon_grp", show=False):
+                    with dpg.group(horizontal=True):
+                        for i in range(3):
+                            dpg.add_input_int(
+                                tag=f"ts_obj_coll_h{i}x",
+                                label=f"P{i} X",
+                                width=72,
+                                default_value=0,
+                                min_value=-256,
+                                max_value=256,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_object_collision_preview_change,
+                            )
+                            dpg.add_input_int(
+                                tag=f"ts_obj_coll_h{i}y",
+                                label=f"P{i} Y",
+                                width=72,
+                                default_value=0,
+                                min_value=-256,
+                                max_value=256,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_object_collision_preview_change,
+                            )
+                    with dpg.group(horizontal=True):
+                        for i in range(3, 6):
+                            dpg.add_input_int(
+                                tag=f"ts_obj_coll_h{i}x",
+                                label=f"P{i} X",
+                                width=72,
+                                default_value=0,
+                                min_value=-256,
+                                max_value=256,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_object_collision_preview_change,
+                            )
+                            dpg.add_input_int(
+                                tag=f"ts_obj_coll_h{i}y",
+                                label=f"P{i} Y",
+                                width=72,
+                                default_value=0,
+                                min_value=-256,
+                                max_value=256,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_object_collision_preview_change,
+                            )
+                dpg.add_text(
+                    tag="ts_obj_coll_preview_label",
+                    default_value="Vista collision: (carga un objeto)",
+                    wrap=520,
+                    color=(200, 220, 255, 255),
+                )
+                with dpg.child_window(
+                    tag="ts_obj_coll_preview_viewport",
+                    border=True,
+                    width=280,
+                    height=200,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_image(
+                        _OBJ_COLL_PREVIEW_TEX_TAG,
+                        tag=_OBJ_COLL_PREVIEW_IMG_TAG,
+                        width=64,
+                        height=64,
+                        uv_min=(0.0, 0.0),
+                        uv_max=(0.5, 0.5),
+                    )
+                dpg.add_separator()
+                dpg.add_text(
+                    "Animaciones: nombre logico → otro sprite (p. ej. walk, jump). "
+                    "Se guardan en el JSON del objeto; «Guardar objeto» para persistir.",
+                    wrap=520,
+                    color=(200, 220, 255, 255),
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(
+                        tag="ts_obj_anim_name",
+                        label="Nombre animacion",
+                        width=180,
+                        hint="walk",
+                        default_value="",
+                        enabled=False,
+                    )
+                    dpg.add_combo(
+                        tag="ts_obj_anim_sprite_combo",
+                        label="Sprite",
+                        width=220,
+                        items=["(abre un proyecto)"],
+                        default_value="(abre un proyecto)",
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_obj_anim_add",
+                        label="Añadir animacion",
+                        width=140,
+                        callback=on_object_anim_add,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_obj_anim_remove",
+                        label="Quitar animacion",
+                        width=140,
+                        callback=on_object_anim_remove,
+                        enabled=False,
+                    )
+                dpg.add_listbox(
+                    tag="ts_obj_anim_list",
+                    label="Animaciones del objeto",
+                    width=420,
+                    num_items=6,
+                    items=["(sin animaciones)"],
+                    callback=on_object_anim_list_pick,
                 )
                 with dpg.group(horizontal=True):
                     dpg.add_button(

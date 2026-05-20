@@ -203,7 +203,7 @@ def collect_studio_bundle_files(
     El Lua de arranque va en el bloque ENTRY (p. ej. contenido de `scripts/global.lua`);
     los Lua de escena **no** se duplican aqui: pueden distribuirse en otros archivos / cartuchos.
     """
-    from turtlestudio.objects import read_object_file
+    from turtlestudio.objects import object_sprite_ids_for_bundle, read_object_file
     from turtlestudio.sprites import read_sprite_file
 
     root = project_root.expanduser().resolve()
@@ -244,8 +244,7 @@ def collect_studio_bundle_files(
     sids: set[str] = set()
     for od in objects_map.values():
         if isinstance(od, dict) and "error" not in od:
-            sp = str(od.get("sprite_id", "")).strip()
-            if sp:
+            for sp in object_sprite_ids_for_bundle(od):
                 sids.add(sp)
 
     sprites_map: dict[str, Any] = {}
