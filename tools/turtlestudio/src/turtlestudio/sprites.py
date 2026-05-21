@@ -179,29 +179,21 @@ def sprite_blit_bottom_left(
 
 def parse_palette_rows_image(data: dict[str, Any]) -> list[list[int]] | None:
     """Matriz fila x columna (alto x ancho) de indices de paleta, o None."""
+    _, pw, ph = sprite_pixel_dimensions(data)
+    return parse_palette_rows_for_dimensions(data, pw=pw, ph=ph)
+
+
+def parse_palette_rows_for_dimensions(
+    data: dict[str, Any],
+    *,
+    pw: int,
+    ph: int,
+) -> list[list[int]] | None:
+    """Como parse_palette_rows_image pero con tamano explicito (p. ej. fondos > 128 px)."""
     im = data.get("image")
     if not isinstance(im, dict):
         return None
-    if im.get("format") != SPRITE_IMAGE_FORMAT_ROWS:
-        return None
-    raw_rows = im.get("rows")
-    if not isinstance(raw_rows, list) or not raw_rows:
-        return None
-    _, pw, ph = sprite_pixel_dimensions(data)
-    out: list[list[int]] = []
-    for y in range(ph):
-        row: list[int] = []
-        src = raw_rows[y] if y < len(raw_rows) else []
-        if not isinstance(src, list):
-            src = []
-        for x in range(pw):
-            try:
-                v = int(src[x]) if x < len(src) else 0
-            except (TypeError, ValueError):
-                v = 0
-            row.append(clamp_pixel_storage_index(v))
-        out.append(row)
-    return out
+    return _parse_palette_rows_from_image_dict(im, pw=max(1, int(pw)), ph=max(1, int(ph)))
 
 
 def parse_sprite_frame_count(data: dict[str, Any]) -> int:

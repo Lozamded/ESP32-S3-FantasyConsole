@@ -120,7 +120,10 @@ def parse_background_palette_rows(data: dict[str, Any]) -> list[list[int]] | Non
     """Matriz de indices (fila 0 arriba), o None si no es indexed_pixels."""
     if not background_is_indexed_pixels(data):
         return None
-    return parse_palette_rows_image(data)
+    from turtlestudio.sprites import parse_palette_rows_for_dimensions
+
+    pw, ph = background_pixel_dimensions(data)
+    return parse_palette_rows_for_dimensions(data, pw=pw, ph=ph)
 
 
 def parse_background_solid_palette_index(data: dict[str, Any]) -> int:
