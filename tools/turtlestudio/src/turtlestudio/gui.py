@@ -7,8 +7,20 @@ from pathlib import Path
 from typing import Any
 
 from turtlestudio.backgrounds import (
+    DEFAULT_BACKGROUND_PIXEL_H,
+    DEFAULT_BACKGROUND_PIXEL_W,
+    MAX_BACKGROUND_PIXEL_H,
+    MAX_BACKGROUND_PIXEL_W,
+    background_is_indexed_pixels,
+    background_pixel_dimensions,
+    background_scene_preview_data,
     list_background_stems_for_palette,
-    save_solid_background_json,
+    list_palette_relpaths,
+    parse_background_palette_rows,
+    parse_background_solid_palette_index,
+    read_background_file,
+    save_background_json,
+    write_solid_background_json,
 )
 from turtlestudio.build import (
     collect_studio_bundle_files,
@@ -73,9 +85,11 @@ _OBJ_COLL_SHAPE_MODES = (
 from turtlestudio.sprite_png_export import export_sprite_frames_to_png_dir
 from turtlestudio.sprite_ref_image import (
     aspect_ratio_note,
+    composite_ref_for_sprite_editor,
     composite_sprite_editor_preview,
     convert_ref_source_to_palette_rows,
     load_image_rgba_float01,
+    resample_rgba_nearest,
     resample_rgba_stretch,
 )
 from turtlestudio.sprites import (
@@ -140,6 +154,13 @@ _SCENE_PREVIEW_TEX_PAD_RGBA = (0.08, 0.08, 0.1, 1.0)
 _SCENE_CANVAS_TEX_TAG = "preview_texture"
 _SCENE_CANVAS_IMG_TAG = "ts_canvas_image"
 _CANVAS_VIEWPORT_H = _FB_H * _DEFAULT_CANVAS_SCALE + 48
+_EDITOR_LEFT_PANEL_TAG = "ts_editor_left_panel"
+_EDITOR_RIGHT_PANEL_TAG = "ts_editor_right_panel"
+_EDITOR_CANVAS_BLOCK_TAG = "ts_editor_canvas_block"
+_EDITOR_LUA_BLOCK_TAG = "ts_editor_lua_block"
+_SCENE_CANVAS_VIEWPORT_TAG = "ts_canvas_viewport"
+# Bloque fijo arriba a la derecha (canvas); el Lua va debajo con scroll propio.
+_EDITOR_CANVAS_BLOCK_H = _CANVAS_VIEWPORT_H + 112
 _GRID_STEP = 8
 # Panel izquierdo: ancho del child modesto; los controles usan ancho FIJO para que no
 # estiren con el panel y no roben espacio al canvas (Dear PyGui: width=-1 = 100% del padre).
@@ -206,28 +227,104 @@ def _scene_background_asset_underlay(
     fh: int,
     project_root: Path,
 ) -> list[float] | None:
-    """Relleno solido pantalla completa desde `backgrounds/<stem>.json` (v0), o None."""
-    from turtlestudio.backgrounds import scene_background_solid_palette_index
-
+    """Fondo desde `backgrounds/<stem>.json` (solido o indexed) en origen escena."""
     stem = str(row.get("background", "")).strip()
     if not stem:
         return None
     pal = str(row.get("palette", "")).strip()
-    idx = scene_background_solid_palette_index(
-        project_root,
-        stem,
-        scene_palette_rel=pal,
+    got = background_scene_preview_data(
+        project_root, stem, scene_palette_rel=pal
     )
-    if idx is None:
+    if got is None:
         return None
-    n = len(rgbs)
-    if n <= 0:
-        return None
+    bpw, bph, data = got
+    out = _solid_rgba_float(fw, fh, 0.06, 0.06, 0.08)
+    if background_is_indexed_pixels(data):
+        rows = parse_background_palette_rows(data)
+        if not rows:
+            return out
+        _paint_indexed_rows_bottom_left(out, fw, fh, rows, bpw, bph, rgbs)
+        return out
+    idx = parse_background_solid_palette_index(data)
     col = resolve_palette_color(idx, rgbs)
     if col is None:
-        return None
+        return out
     r, g, b = col
-    return _solid_rgba_float(fw, fh, r, g, b)
+    for scene_y in range(min(bph, fh)):
+        ly_top = (fh - 1) - scene_y
+        row_base = ly_top * fw * 4
+        for sx in range(min(bpw, fw)):
+            i = row_base + sx * 4
+            out[i] = r
+            out[i + 1] = g
+            out[i + 2] = b
+            out[i + 3] = 1.0
+    return out
+
+
+def _paint_indexed_rows_bottom_left(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    rows: list[list[int]],
+    pw: int,
+    ph: int,
+    rgbs: list[tuple[float, float, float]],
+) -> None:
+    """
+    Matriz con fila 0 = arriba del arte; anclada abajo-izquierda en escena (scene_y=0 abajo).
+    Si hay menos filas que ph, el bloque de pixeles se apoya en y=0.
+    """
+    if not rows:
+        return
+    rh = len(rows)
+    for py_top in range(rh):
+        row = rows[py_top] if py_top < len(rows) else []
+        if not isinstance(row, list):
+            row = []
+        scene_y = (rh - 1) - py_top
+        if scene_y < 0 or scene_y >= fh:
+            continue
+        ly_top = (fh - 1) - scene_y
+        row_base = ly_top * fw * 4
+        rw = min(pw, len(row), fw)
+        for sx in range(rw):
+            try:
+                idx = int(row[sx])
+            except (TypeError, ValueError):
+                idx = 0
+            col = resolve_palette_color(idx, rgbs)
+            if col is None:
+                continue
+            r, g, b = col
+            i = row_base + sx * 4
+            rgba[i] = r
+            rgba[i + 1] = g
+            rgba[i + 2] = b
+            rgba[i + 3] = 1.0
+
+
+def _child_window_y_scroll(tag: str) -> float | None:
+    import dearpygui.dearpygui as dpg
+
+    if not dpg.does_item_exist(tag):
+        return None
+    try:
+        return float(dpg.get_y_scroll(tag))
+    except Exception:
+        return None
+
+
+def _set_child_window_y_scroll(tag: str, y: float | None) -> None:
+    import dearpygui.dearpygui as dpg
+
+    if y is None or not dpg.does_item_exist(tag):
+        return
+    try:
+        y_max = float(dpg.get_y_scroll_max(tag))
+    except Exception:
+        y_max = y
+    dpg.set_y_scroll(tag, max(0.0, min(y_max, float(y))))
 
 
 def _compose_preview_texture(
@@ -653,6 +750,11 @@ _OBJ_COLL_PREVIEW_IMG_TAG = "ts_obj_coll_preview_img"
 _OBJ_COLL_PREVIEW_TEX_MAX = 128
 _OBJ_COLL_PREVIEW_SCALE_MAX = 6
 _OBJ_COLL_PREVIEW_PAD_RGBA = (0.38, 0.4, 0.46, 1.0)
+_BG_EDITOR_TEX_TAG = "ts_bg_editor_tex"
+_BG_EDITOR_IMG_TAG = "ts_bg_editor_img"
+_BG_EDITOR_TEX_MAX = 640
+_BG_EDITOR_SCALE_MAX = 8
+_BG_EDITOR_PAD_RGBA = (0.32, 0.34, 0.4, 1.0)
 
 
 def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
@@ -663,6 +765,118 @@ def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
 def _obj_coll_preview_uv_max(dw: int, dh: int) -> tuple[float, float]:
     mx = float(_OBJ_COLL_PREVIEW_TEX_MAX)
     return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / mx)))
+
+
+def _bg_editor_uv_max(dw: int, dh: int) -> tuple[float, float]:
+    mx = float(_BG_EDITOR_TEX_MAX)
+    return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / mx)))
+
+
+def _bg_canvas_fill_rgb(
+    fill_index: int,
+    rgbs: list[tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    col = resolve_palette_color(fill_index, rgbs)
+    if col is None:
+        return (0.25, 0.25, 0.28)
+    return col
+
+
+def _build_bg_pixel_layer_rgba(
+    pw: int,
+    ph: int,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    rows: list[list[int]] | None,
+    fill_index: int,
+    ref_rgba: list[float] | None,
+    ref_alpha: float,
+) -> list[float]:
+    """Capa pw×ph (fila 0 arriba) antes del marco del lienzo."""
+    fill = _bg_canvas_fill_rgb(fill_index, rgbs)
+    if rows is not None:
+        return composite_sprite_editor_preview(
+            rows,
+            rgbs,
+            ref_rgba,
+            canvas_fill_rgb=fill,
+            ref_alpha=ref_alpha,
+        )
+    layer = _solid_rgba_float(pw, ph, fill[0], fill[1], fill[2])
+    if ref_rgba is not None and len(ref_rgba) == len(layer):
+        layer = composite_ref_for_sprite_editor(
+            layer,
+            ref_rgba,
+            ref_alpha=ref_alpha,
+            canvas_fill_rgb=fill,
+        )
+    return layer
+
+
+def _embed_bg_pixels_in_pad_preview(
+    pixel_rgba: list[float],
+    pw: int,
+    ph: int,
+) -> tuple[list[float], int, int]:
+    pad = 4
+    lw = pw + 2 * pad
+    lh = ph + 2 * pad
+    bg = _BG_EDITOR_PAD_RGBA
+    rgba = [0.0] * (lw * lh * 4)
+    for y in range(lh):
+        for x in range(lw):
+            i = (y * lw + x) * 4
+            rgba[i] = bg[0]
+            rgba[i + 1] = bg[1]
+            rgba[i + 2] = bg[2]
+            rgba[i + 3] = 1.0
+    for py in range(ph):
+        for px in range(pw):
+            si = (py * pw + px) * 4
+            tx = pad + px
+            ty = pad + py
+            di = (ty * lw + tx) * 4
+            rgba[di] = pixel_rgba[si]
+            rgba[di + 1] = pixel_rgba[si + 1]
+            rgba[di + 2] = pixel_rgba[si + 2]
+            rgba[di + 3] = pixel_rgba[si + 3]
+    br, bg_g, bb = 0.92, 0.94, 1.0
+    x0, x1 = pad, pad + pw - 1
+    y0, y1 = pad, pad + ph - 1
+    for tx in range(x0, x1 + 1):
+        _plot_raster_pixel_rgba(rgba, lw, lh, tx, y0, br, bg_g, bb)
+        _plot_raster_pixel_rgba(rgba, lw, lh, tx, y1, br, bg_g, bb)
+    for ty in range(y0, y1 + 1):
+        _plot_raster_pixel_rgba(rgba, lw, lh, x0, ty, br, bg_g, bb)
+        _plot_raster_pixel_rgba(rgba, lw, lh, x1, ty, br, bg_g, bb)
+    ax, ay = pad, pad + ph - 1
+    for dx, dy in ((0, 0), (-1, 0), (1, 0), (0, -1), (0, 1)):
+        _plot_raster_pixel_rgba(rgba, lw, lh, ax + dx * 3, ay + dy * 3, 1.0, 0.15, 0.95)
+    return rgba, lw, lh
+
+
+def _build_bg_editor_preview_rgba(
+    pw: int,
+    ph: int,
+    fill_index: int,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    rows: list[list[int]] | None = None,
+    ref_rgba: list[float] | None = None,
+    ref_alpha: float = 0.45,
+) -> tuple[list[float], int, int]:
+    pw = max(1, min(MAX_BACKGROUND_PIXEL_W, int(pw)))
+    ph = max(1, min(MAX_BACKGROUND_PIXEL_H, int(ph)))
+    layer = _build_bg_pixel_layer_rgba(
+        pw,
+        ph,
+        rgbs,
+        rows=rows,
+        fill_index=fill_index,
+        ref_rgba=ref_rgba,
+        ref_alpha=ref_alpha,
+    )
+    return _embed_bg_pixels_in_pad_preview(layer, pw, ph)
 
 
 def _collision_outline_local_points(collision: dict[str, Any]) -> list[list[int]]:
@@ -1225,6 +1439,13 @@ def run_gui() -> int:
         "sprite_ref_source": None,
         "sprite_ref_path": "",
         "obj_animations": [],
+        "bg_palette_rgb": [],
+        "bg_palette_hexes": [],
+        "bg_pixel_rows": None,
+        "bg_ref_source": None,
+        "bg_ref_path": "",
+        "bg_pending_ref_path": "",
+        "bg_pending_ref_size": (0, 0),
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -1757,6 +1978,406 @@ def run_gui() -> int:
         pick = cur if cur in stems else "(ninguno)"
         dpg.set_value("ts_scene_background", pick)
 
+    def _bg_tab_palette_rel() -> str:
+        if dpg.does_item_exist("ts_bg_palette_combo"):
+            raw = str(dpg.get_value("ts_bg_palette_combo")).strip()
+            if raw and not raw.startswith("("):
+                return normalize_palette_rel(raw)
+        return DEFAULT_EXAMPLE_PALETTE_REL
+
+    def _refresh_bg_palette_combo(*, select_rel: str | None = None) -> None:
+        if not dpg.does_item_exist("ts_bg_palette_combo"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item(
+                "ts_bg_palette_combo",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            return
+        paths = list_palette_relpaths(root)
+        if not paths:
+            items = ["(sin palettes/*.txt)"]
+            dpg.configure_item("ts_bg_palette_combo", items=items, enabled=False)
+            dpg.set_value("ts_bg_palette_combo", items[0])
+            return
+        dpg.configure_item("ts_bg_palette_combo", items=paths, enabled=True)
+        pick = select_rel if select_rel and select_rel in paths else None
+        if not pick:
+            cur = str(dpg.get_value("ts_bg_palette_combo")).strip()
+            pick = cur if cur in paths else paths[0]
+        dpg.set_value("ts_bg_palette_combo", pick)
+
+    def _rebuild_bg_palette_swatches() -> None:
+        gid = "ts_bg_palette_swatches_group"
+        if not dpg.does_item_exist(gid):
+            return
+        dpg.delete_item(gid, children_only=True)
+        rgbs = state.get("bg_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.add_text(
+                "(elige una paleta y pulsa Cargar paleta)",
+                parent=gid,
+                wrap=480,
+            )
+            return
+        _add_palette_swatch_buttons(
+            gid,
+            rgbs,
+            _on_bg_palette_swatch_click,
+            wrap=480,
+        )
+
+    def _bg_palette_reload_core(*, append_log: bool = True) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            state["bg_palette_rgb"] = []
+            state["bg_palette_hexes"] = []
+            _rebuild_bg_palette_swatches()
+            return
+        rel = _bg_tab_palette_rel()
+        abs_p = (root / rel).resolve()
+        if not abs_p.is_file():
+            state["bg_palette_rgb"] = []
+            state["bg_palette_hexes"] = []
+            _rebuild_bg_palette_swatches()
+            if append_log:
+                dpg.set_value(
+                    "ts_log",
+                    (dpg.get_value("ts_log") or "")
+                    + f"Fondos: no existe la paleta {rel}\n",
+                )
+            return
+        rgbs, hexes = load_palette_rgb01_for_preview(abs_p)
+        state["bg_palette_rgb"] = rgbs
+        state["bg_palette_hexes"] = hexes
+        _rebuild_bg_palette_swatches()
+        _refresh_bg_editor_canvas()
+        if append_log:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + f"Fondos: paleta cargada ({len(hexes)} colores) — {rel}\n",
+            )
+
+    def _bg_editor_fill_index() -> int:
+        if not dpg.does_item_exist("ts_bg_fill_index"):
+            return 0
+        try:
+            return clamp_paint_palette_index(
+                int(dpg.get_value("ts_bg_fill_index")),
+                palette_len=len(state.get("bg_palette_rgb") or []),
+            )
+        except (TypeError, ValueError):
+            return 0
+
+    def _bg_editor_pixel_size() -> tuple[int, int]:
+        try:
+            pw = int(dpg.get_value("ts_bg_pixel_w"))
+            ph = int(dpg.get_value("ts_bg_pixel_h"))
+        except (TypeError, ValueError):
+            pw, ph = DEFAULT_BACKGROUND_PIXEL_W, DEFAULT_BACKGROUND_PIXEL_H
+        pw = max(1, min(MAX_BACKGROUND_PIXEL_W, pw))
+        ph = max(1, min(MAX_BACKGROUND_PIXEL_H, ph))
+        return pw, ph
+
+    def _sync_bg_editor_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_BG_EDITOR_IMG_TAG):
+            return
+        uv = _bg_editor_uv_max(dw, dh)
+        dpg.configure_item(
+            _BG_EDITOR_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_BG_EDITOR_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _refresh_bg_editor_canvas() -> None:
+        if not dpg.does_item_exist(_BG_EDITOR_TEX_TAG):
+            return
+        rgbs = state.get("bg_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            tex = _solid_rgba_float(
+                _BG_EDITOR_TEX_MAX,
+                _BG_EDITOR_TEX_MAX,
+                _BG_EDITOR_PAD_RGBA[0],
+                _BG_EDITOR_PAD_RGBA[1],
+                _BG_EDITOR_PAD_RGBA[2],
+            )
+            dpg.set_value(_BG_EDITOR_TEX_TAG, tex)
+            _sync_bg_editor_image_widget(64, 64)
+            if dpg.does_item_exist("ts_bg_editor_label"):
+                dpg.set_value(
+                    "ts_bg_editor_label",
+                    "(carga una paleta para ver el lienzo)",
+                )
+            return
+        pw, ph = _bg_editor_pixel_size()
+        idx = _bg_editor_fill_index()
+        rows = state.get("bg_pixel_rows")
+        if not isinstance(rows, list):
+            rows = None
+        ref_rgba = _bg_ref_rgba_for_canvas(pw, ph)
+        ref_alpha = _bg_ref_opacity()
+        logical, lw, lh = _build_bg_editor_preview_rgba(
+            pw,
+            ph,
+            idx,
+            rgbs,
+            rows=rows,
+            ref_rgba=ref_rgba,
+            ref_alpha=ref_alpha,
+        )
+        sc = min(
+            _BG_EDITOR_SCALE_MAX,
+            max(1, _BG_EDITOR_TEX_MAX // max(lw, lh, 1)),
+        )
+        disp, dw, dh = _scale_rgba_nearest(logical, lw, lh, sc)
+        tex = _pack_sprite_rgba_into_tex_buffer(
+            disp,
+            dw,
+            dh,
+            tex_w=_BG_EDITOR_TEX_MAX,
+            tex_h=_BG_EDITOR_TEX_MAX,
+        )
+        dpg.set_value(_BG_EDITOR_TEX_TAG, tex)
+        _sync_bg_editor_image_widget(dw, dh)
+        if dpg.does_item_exist("ts_bg_editor_label"):
+            hexes = state.get("bg_palette_hexes")
+            hx = ""
+            if isinstance(hexes, list) and 0 <= idx < len(hexes):
+                hx = f" · {hexes[idx]}"
+            mode = "pixeles" if isinstance(state.get("bg_pixel_rows"), list) else "solido"
+            ref = " · ref" if state.get("bg_ref_source") else ""
+            dpg.set_value(
+                "ts_bg_editor_label",
+                f"Lienzo {pw}×{ph} px · {mode}{ref} · indice {idx}{hx} · magenta=origen",
+            )
+
+    def _bg_ref_opacity() -> float:
+        if not dpg.does_item_exist("ts_bg_ref_opacity"):
+            return 0.45
+        try:
+            return max(0.0, min(1.0, float(dpg.get_value("ts_bg_ref_opacity")) / 100.0))
+        except (TypeError, ValueError):
+            return 0.45
+
+    def _bg_ref_visible() -> bool:
+        if not dpg.does_item_exist("ts_bg_ref_show"):
+            return True
+        return bool(dpg.get_value("ts_bg_ref_show"))
+
+    def _bg_ref_rgba_for_canvas(pw: int, ph: int) -> list[float] | None:
+        if not _bg_ref_visible():
+            return None
+        src = state.get("bg_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return None
+        sw, sh, rgba = src
+        if sw <= 0 or sh <= 0 or pw <= 0 or ph <= 0:
+            return None
+        return resample_rgba_nearest(rgba, sw, sh, pw, ph)
+
+    def _update_bg_ref_path_label() -> None:
+        if not dpg.does_item_exist("ts_bg_ref_path_label"):
+            return
+        p = str(state.get("bg_ref_path") or "").strip()
+        if not p:
+            dpg.set_value("ts_bg_ref_path_label", "(sin referencia)")
+            return
+        dpg.set_value("ts_bg_ref_path_label", f"Referencia: {p}")
+
+    def _clamp_bg_image_size(sw: int, sh: int) -> tuple[int, int]:
+        return (
+            max(1, min(MAX_BACKGROUND_PIXEL_W, int(sw))),
+            max(1, min(MAX_BACKGROUND_PIXEL_H, int(sh))),
+        )
+
+    def _bg_resize_on_ref_import() -> bool:
+        if not dpg.does_item_exist("ts_bg_ref_resize_on_import"):
+            return False
+        return bool(dpg.get_value("ts_bg_ref_resize_on_import"))
+
+    def _set_bg_editor_pixel_size(pw: int, ph: int, *, log_clamp: bool = False) -> tuple[int, int]:
+        cw, ch = _clamp_bg_image_size(pw, ph)
+        if log_clamp and (cw, ch) != (int(pw), int(ph)):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + f"Fondos: tamano {pw}×{ph} acotado a {cw}×{ch} "
+                f"(max {MAX_BACKGROUND_PIXEL_W}×{MAX_BACKGROUND_PIXEL_H}).\n",
+            )
+        if dpg.does_item_exist("ts_bg_pixel_w"):
+            dpg.set_value("ts_bg_pixel_w", cw)
+        if dpg.does_item_exist("ts_bg_pixel_h"):
+            dpg.set_value("ts_bg_pixel_h", ch)
+        rows = state.get("bg_pixel_rows")
+        if isinstance(rows, list):
+            fi = _bg_editor_fill_index()
+            state["bg_pixel_rows"] = normalize_palette_rows(rows, cw, ch, fill_index=fi)
+        _refresh_bg_editor_canvas()
+        return cw, ch
+
+    def _bg_reference_pixel_size() -> tuple[int, int] | None:
+        src = state.get("bg_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return None
+        sw, sh, _rgba = src
+        if sw <= 0 or sh <= 0:
+            return None
+        return _clamp_bg_image_size(int(sw), int(sh))
+
+    def _apply_bg_ref_import(path: str, *, resize_to_image: bool) -> None:
+        try:
+            sw, sh, rgba = load_image_rgba_float01(path)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Fondos referencia: {e}\n",
+            )
+            return
+        if resize_to_image:
+            cw, ch = _set_bg_editor_pixel_size(sw, sh, log_clamp=True)
+            pw, ph = cw, ch
+        else:
+            pw, ph = _bg_editor_pixel_size()
+        state["bg_ref_source"] = (sw, sh, rgba)
+        state["bg_ref_path"] = str(Path(path).expanduser())
+        _update_bg_ref_path_label()
+        note = aspect_ratio_note(sw, sh, pw, ph)
+        tail = f"Fondos: referencia cargada ({sw}×{sh} px)."
+        if note:
+            tail += f" {note}."
+        tail += " Usa «Convertir a pixeles» para grabar en el fondo.\n"
+        dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + tail)
+        _refresh_bg_editor_canvas()
+
+    def _bg_had_reference_before_import() -> bool:
+        return isinstance(state.get("bg_ref_source"), tuple)
+
+    def _finish_bg_ref_import(path: str, resize_to_image: bool) -> None:
+        if dpg.does_item_exist("ts_bg_ref_resize_modal"):
+            dpg.configure_item("ts_bg_ref_resize_modal", show=False)
+        state["bg_pending_ref_path"] = ""
+        state["bg_pending_ref_size"] = (0, 0)
+        _apply_bg_ref_import(path, resize_to_image=resize_to_image)
+
+    def _load_bg_tab_background(stem: str) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        try:
+            data = read_background_file(root, stem)
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fondos: {e}\n")
+            return
+        pw, ph = background_pixel_dimensions(data)
+        if background_is_indexed_pixels(data):
+            rows = parse_background_palette_rows(data)
+            state["bg_pixel_rows"] = (
+                trim_palette_rows(rows, pw, ph, fill_index=0) if rows else None
+            )
+            idx = 0
+        else:
+            state["bg_pixel_rows"] = None
+            idx = parse_background_solid_palette_index(data)
+        state["bg_ref_source"] = None
+        state["bg_ref_path"] = ""
+        _update_bg_ref_path_label()
+        if dpg.does_item_exist("ts_bg_id"):
+            dpg.set_value("ts_bg_id", stem)
+        if dpg.does_item_exist("ts_bg_pixel_w"):
+            dpg.set_value("ts_bg_pixel_w", pw)
+        if dpg.does_item_exist("ts_bg_pixel_h"):
+            dpg.set_value("ts_bg_pixel_h", ph)
+        if dpg.does_item_exist("ts_bg_fill_index"):
+            dpg.set_value(
+                "ts_bg_fill_index",
+                clamp_paint_palette_index(
+                    idx, palette_len=len(state.get("bg_palette_rgb") or [])
+                ),
+            )
+        _refresh_bg_editor_canvas()
+
+    def _on_bg_palette_swatch_click(
+        sender: object, app_data: object, user_data: object | None = None,
+    ) -> None:
+        try:
+            idx = int(user_data)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        hexes = state.get("bg_palette_hexes")
+        if isinstance(hexes, list) and 0 <= idx < len(hexes):
+            if dpg.does_item_exist("ts_bg_fill_index"):
+                dpg.set_value(
+                    "ts_bg_fill_index",
+                    clamp_paint_palette_index(idx, palette_len=len(hexes)),
+                )
+            _refresh_bg_editor_canvas()
+
+    def on_bg_palette_combo_change(_sender: object, _app_data: object) -> None:
+        _bg_palette_reload_core(append_log=False)
+        _refresh_bg_tab_list()
+        _refresh_bg_editor_canvas()
+
+    def on_bg_palette_reload_click(_sender: object, _app_data: object) -> None:
+        _bg_palette_reload_core(append_log=True)
+        _refresh_bg_editor_canvas()
+
+    def on_bg_pixel_size_change(_sender: object, _app_data: object) -> None:
+        pw, ph = _bg_editor_pixel_size()
+        rows = state.get("bg_pixel_rows")
+        if isinstance(rows, list):
+            fi = _bg_editor_fill_index()
+            state["bg_pixel_rows"] = normalize_palette_rows(rows, pw, ph, fill_index=fi)
+        _refresh_bg_editor_canvas()
+
+    def on_bg_match_ref_size_click(_sender: object, _app_data: object) -> None:
+        sz = _bg_reference_pixel_size()
+        if sz is None:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fondos: importa una referencia para ajustar el tamano.\n",
+            )
+            return
+        cw, ch = sz
+        src = state.get("bg_ref_source")
+        sw, sh = (src[0], src[1]) if isinstance(src, tuple) and len(src) == 3 else (cw, ch)
+        _set_bg_editor_pixel_size(cw, ch, log_clamp=(cw, ch) != (sw, sh))
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fondos: lienzo ajustado a la referencia ({cw}×{ch} px).\n",
+        )
+
+    def on_bg_fill_index_change(_sender: object, _app_data: object) -> None:
+        _refresh_bg_editor_canvas()
+
+    def on_bg_tab_scene_size_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_bg_pixel_w"):
+            dpg.set_value("ts_bg_pixel_w", SCENE_PIXEL_W)
+        if dpg.does_item_exist("ts_bg_pixel_h"):
+            dpg.set_value("ts_bg_pixel_h", SCENE_PIXEL_H)
+        _refresh_bg_editor_canvas()
+
+    def on_bg_tab_parallax_size_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_bg_pixel_w"):
+            dpg.set_value("ts_bg_pixel_w", MAX_BACKGROUND_PIXEL_W)
+        if dpg.does_item_exist("ts_bg_pixel_h"):
+            dpg.set_value("ts_bg_pixel_h", MAX_BACKGROUND_PIXEL_H)
+        on_bg_pixel_size_change(_sender, _app_data)
+
+    def on_bg_tab_list_change(_sender: object, app_data: object) -> None:
+        raw = app_data if app_data is not None else dpg.get_value("ts_bg_tab_list")
+        stem = str(raw).strip()
+        if not stem or stem.startswith("("):
+            return
+        _load_bg_tab_background(stem)
+
     def _refresh_bg_tab_list() -> None:
         if not dpg.does_item_exist("ts_bg_tab_list"):
             return
@@ -1768,13 +2389,15 @@ def run_gui() -> int:
                 enabled=False,
             )
             return
-        pal = str(dpg.get_value("ts_bg_tab_pal")).strip() or DEFAULT_EXAMPLE_PALETTE_REL
+        pal = _bg_tab_palette_rel()
         stems = list_background_stems_for_palette(root, pal)
-        dpg.configure_item(
-            "ts_bg_tab_list",
-            items=stems if stems else ["(ningun fondo con esta paleta)"],
-            enabled=True,
-        )
+        items = stems if stems else ["(ningun fondo con esta paleta)"]
+        dpg.configure_item("ts_bg_tab_list", items=items, enabled=True)
+        if stems and dpg.does_item_exist("ts_bg_id"):
+            cur = str(dpg.get_value("ts_bg_id")).strip()
+            if not cur or cur not in stems:
+                dpg.set_value("ts_bg_tab_list", stems[0])
+                _load_bg_tab_background(stems[0])
 
     def _flush_lua_buffer_to_state() -> None:
         rel = str(state.get("lua_edit_rel") or "").strip()
@@ -1909,9 +2532,28 @@ def run_gui() -> int:
         root = state.get("project_root")
         if row is not None and isinstance(root, Path):
             under = _scene_background_asset_underlay(row, rgbs, _FB_W, _FB_H, root)
-        base = _composite_background_layers_rgba(
-            tpl, rgbs, _FB_W, _FB_H, underlay_rgba=under
-        )
+        if under is not None:
+            # Recurso backgrounds/*.json: base visible; capas legacy solo como tinte semitransparente.
+            base = list(under)
+            for ly in tpl:
+                if not ly.enabled or ly.opacity <= 0:
+                    continue
+                if ly.opacity >= 255:
+                    continue
+                a = ly.opacity / 255.0
+                col = resolve_palette_color(ly.color_index, rgbs)
+                if col is None:
+                    continue
+                r, g, b = col
+                for i in range(0, _FB_W * _FB_H * 4, 4):
+                    base[i] = base[i] * (1.0 - a) + r * a
+                    base[i + 1] = base[i + 1] * (1.0 - a) + g * a
+                    base[i + 2] = base[i + 2] * (1.0 - a) + b * a
+                    base[i + 3] = 1.0
+        else:
+            base = _composite_background_layers_rgba(
+                tpl, rgbs, _FB_W, _FB_H, underlay_rgba=None
+            )
         slot = int(state.get("edit_bg_layer_slot", 0))
         slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
         ly = tpl[slot]
@@ -1960,15 +2602,18 @@ def run_gui() -> int:
             dw = min(dw, _SCENE_PREVIEW_TEX_W)
             dh = min(dh, _SCENE_PREVIEW_TEX_H)
             disp_rgba = disp_rgba[: dw * dh * 4]
+        vp_scroll = _child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG)
         tex_rgba = _pack_scene_preview_rgba_into_tex_buffer(disp_rgba, dw, dh)
         dpg.set_value(_SCENE_CANVAS_TEX_TAG, tex_rgba)
         _sync_scene_canvas_image_widget(dw, dh)
+        _set_child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG, vp_scroll)
 
     def _sync_scene_canvas_image_widget(dw: int, dh: int) -> None:
         """dw×dh = pixeles en textura y en pantalla (1:1, sin estirado borroso)."""
         if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
             return
         uv = _scene_preview_uv_max(dw, dh)
+        vp_scroll = _child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG)
         dpg.configure_item(
             _SCENE_CANVAS_IMG_TAG,
             width=max(1, dw),
@@ -1977,6 +2622,7 @@ def run_gui() -> int:
             uv_min=(0.0, 0.0),
             uv_max=uv,
         )
+        _set_child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG, vp_scroll)
 
     def _set_project_save_enabled(enabled: bool) -> None:
         dpg.configure_item("ts_menu_save_project", enabled=enabled)
@@ -2062,13 +2708,26 @@ def run_gui() -> int:
             "ts_btn_obj_create",
             "ts_btn_obj_save",
             "ts_btn_obj_refresh",
-            "ts_bg_tab_pal",
+            "ts_bg_palette_combo",
+            "ts_btn_bg_palette_reload",
             "ts_btn_bg_tab_copy_scene_pal",
-            "ts_btn_bg_tab_refresh",
+            "ts_bg_id",
+            "ts_bg_pixel_w",
+            "ts_bg_pixel_h",
+            "ts_btn_bg_scene_size",
+            "ts_btn_bg_parallax_size",
+            "ts_bg_fill_index",
             "ts_bg_tab_list",
-            "ts_bg_new_id",
-            "ts_bg_new_idx",
-            "ts_btn_bg_tab_save",
+            "ts_btn_bg_save",
+            "ts_btn_bg_create",
+            "ts_btn_bg_ref_import",
+            "ts_btn_bg_ref_clear",
+            "ts_btn_bg_ref_convert",
+            "ts_bg_ref_show",
+            "ts_bg_ref_opacity",
+            "ts_bg_ref_resize_on_import",
+            "ts_btn_bg_match_ref_size",
+            "ts_btn_bg_clear_pixels",
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=enabled)
@@ -2292,6 +2951,22 @@ def run_gui() -> int:
                 sp if sp else DEFAULT_EXAMPLE_PALETTE_REL,
             )
             _sprite_palette_reload_core(append_log=False)
+            _refresh_bg_palette_combo(
+                select_rel=sp if sp else DEFAULT_EXAMPLE_PALETTE_REL
+            )
+            _bg_palette_reload_core(append_log=False)
+            _refresh_bg_tab_list()
+            _refresh_bg_editor_canvas()
+        else:
+            state["bg_palette_rgb"] = []
+            state["bg_palette_hexes"] = []
+            state["bg_pixel_rows"] = None
+            state["bg_ref_source"] = None
+            state["bg_ref_path"] = ""
+            _update_bg_ref_path_label()
+            _rebuild_bg_palette_swatches()
+            _refresh_bg_tab_list()
+            _refresh_bg_editor_canvas()
         log = palette_reload_from_path()
         refresh_canvas_texture()
         if isinstance(state.get("project_root"), Path):
@@ -2374,10 +3049,11 @@ def run_gui() -> int:
                 "ts_scene_script",
                 enabled=isinstance(state.get("project_root"), Path),
             )
-        if dpg.does_item_exist("ts_bg_tab_pal"):
-            dpg.set_value("ts_bg_tab_pal", pal)
+        _refresh_bg_palette_combo(select_rel=pal)
+        _bg_palette_reload_core(append_log=False)
         _refresh_scene_background_combo()
         _refresh_bg_tab_list()
+        _refresh_bg_editor_canvas()
         refresh_canvas_texture()
         _refresh_scene_object_lists()
         _clear_pending_scene_placement()
@@ -2645,46 +3321,211 @@ def run_gui() -> int:
         _refresh_scene_background_combo()
 
     def on_bg_tab_copy_scene_pal(_sender: object, _app_data: object) -> None:
+        pal = ""
         if dpg.does_item_exist("ts_scene_pal"):
-            dpg.set_value("ts_bg_tab_pal", str(dpg.get_value("ts_scene_pal")).strip())
-        _refresh_bg_tab_list()
+            pal = str(dpg.get_value("ts_scene_pal")).strip()
+        if pal:
+            _refresh_bg_palette_combo(select_rel=pal)
+            _bg_palette_reload_core(append_log=False)
+            _refresh_bg_tab_list()
+            _refresh_bg_editor_canvas()
         prev = dpg.get_value("ts_log") or ""
-        dpg.set_value("ts_log", prev + "Backgrounds: paleta copiada desde la escena activa.\n")
-
-    def on_bg_tab_refresh_list(_sender: object, _app_data: object) -> None:
-        _refresh_bg_tab_list()
-        prev = dpg.get_value("ts_log") or ""
-        dpg.set_value("ts_log", prev + "Backgrounds: lista actualizada.\n")
+        dpg.set_value(
+            "ts_log",
+            prev + "Fondos: paleta sincronizada con la escena activa.\n",
+        )
 
     def on_bg_tab_save_background(_sender: object, _app_data: object) -> None:
         root = state.get("project_root")
         if not isinstance(root, Path):
             return
-        raw_id = str(dpg.get_value("ts_bg_new_id")).strip()
+        raw_id = str(dpg.get_value("ts_bg_id")).strip()
         if not raw_id:
             prev = dpg.get_value("ts_log") or ""
-            dpg.set_value("ts_log", prev + "Backgrounds: indica un id (nombre del .json).\n")
+            dpg.set_value("ts_log", prev + "Fondos: indica un id (nombre del .json).\n")
             return
         try:
-            pal = str(dpg.get_value("ts_bg_tab_pal")).strip() or DEFAULT_EXAMPLE_PALETTE_REL
+            pal = _bg_tab_palette_rel()
             pal = normalize_palette_rel(pal)
-            idx = int(dpg.get_value("ts_bg_new_idx"))
+            idx = _bg_editor_fill_index()
+            pw, ph = _bg_editor_pixel_size()
         except (TypeError, ValueError) as e:
             dpg.set_value(
                 "ts_log",
-                (dpg.get_value("ts_log") or "") + f"Backgrounds: datos invalidos: {e}\n",
+                (dpg.get_value("ts_log") or "") + f"Fondos: datos invalidos: {e}\n",
             )
             return
+        rows = state.get("bg_pixel_rows")
+        rows_out = rows if isinstance(rows, list) else None
         try:
-            save_solid_background_json(root, raw_id, palette_rel=pal, palette_index=idx)
+            save_background_json(
+                root,
+                raw_id,
+                palette_rel=pal,
+                palette_index=idx,
+                pixel_w=pw,
+                pixel_h=ph,
+                rows=rows_out,
+            )
         except ValueError as e:
-            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Backgrounds: {e}\n")
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fondos: {e}\n")
             return
         _refresh_bg_tab_list()
         _refresh_scene_background_combo()
         refresh_canvas_texture()
         prev = dpg.get_value("ts_log") or ""
-        dpg.set_value("ts_log", prev + f"Backgrounds: guardado backgrounds/{raw_id}.json\n")
+        kind = "indexed_pixels" if rows_out is not None else "solido"
+        dpg.set_value(
+            "ts_log",
+            prev + f"Fondos: guardado backgrounds/{raw_id}.json ({kind}).\n",
+        )
+
+    def on_bg_tab_create_background(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        raw_id = str(dpg.get_value("ts_bg_id")).strip()
+        if not raw_id:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Fondos: indica un id para crear.\n",
+            )
+            return
+        try:
+            pal = normalize_palette_rel(_bg_tab_palette_rel())
+            idx = _bg_editor_fill_index()
+            pw, ph = _bg_editor_pixel_size()
+            write_solid_background_json(
+                root,
+                raw_id,
+                palette_rel=pal,
+                palette_index=idx,
+                pixel_w=pw,
+                pixel_h=ph,
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fondos: {e}\n")
+            return
+        _refresh_bg_tab_list()
+        if dpg.does_item_exist("ts_bg_tab_list"):
+            dpg.set_value("ts_bg_tab_list", raw_id)
+        _refresh_scene_background_combo()
+        refresh_canvas_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + f"Fondos: creado backgrounds/{raw_id}.json\n",
+        )
+
+    def on_bg_ref_import_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_bg_ref_file_dialog"):
+            dpg.show_item("ts_bg_ref_file_dialog")
+
+    def on_bg_ref_file_picked(_sender: object, app_data: object) -> None:
+        if not isinstance(app_data, dict):
+            return
+        path = ""
+        fp = app_data.get("file_path_name")
+        if isinstance(fp, str) and fp.strip():
+            path = fp.strip()
+        else:
+            selections = app_data.get("selections")
+            if isinstance(selections, dict) and selections:
+                path = str(next(iter(selections.values()))).strip()
+        if not path:
+            return
+        try:
+            sw, sh, _ = load_image_rgba_float01(path)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Fondos referencia: {e}\n",
+            )
+            return
+        if _bg_resize_on_ref_import():
+            _finish_bg_ref_import(path, resize_to_image=True)
+            return
+        if _bg_had_reference_before_import():
+            state["bg_pending_ref_path"] = path
+            state["bg_pending_ref_size"] = (sw, sh)
+            cw, ch = _clamp_bg_image_size(sw, sh)
+            if dpg.does_item_exist("ts_bg_ref_resize_prompt"):
+                dpg.set_value(
+                    "ts_bg_ref_resize_prompt",
+                    f"Ya habia una imagen de referencia.\n"
+                    f"¿Ajustar el tamano del fondo a {cw}×{ch} px "
+                    f"(imagen {sw}×{sh})?",
+                )
+            if dpg.does_item_exist("ts_bg_ref_resize_modal"):
+                dpg.configure_item("ts_bg_ref_resize_modal", show=True)
+            return
+        _finish_bg_ref_import(path, resize_to_image=False)
+
+    def on_bg_ref_resize_yes(_sender: object, _app_data: object) -> None:
+        path = str(state.get("bg_pending_ref_path") or "").strip()
+        if path:
+            _finish_bg_ref_import(path, resize_to_image=True)
+
+    def on_bg_ref_resize_no(_sender: object, _app_data: object) -> None:
+        path = str(state.get("bg_pending_ref_path") or "").strip()
+        if path:
+            _finish_bg_ref_import(path, resize_to_image=False)
+
+    def on_bg_ref_clear_click(_sender: object, _app_data: object) -> None:
+        state["bg_ref_source"] = None
+        state["bg_ref_path"] = ""
+        _update_bg_ref_path_label()
+        _refresh_bg_editor_canvas()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + "Fondos: referencia quitada.\n",
+        )
+
+    def on_bg_ref_convert_click(_sender: object, _app_data: object) -> None:
+        rgbs = state.get("bg_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fondos: carga la paleta antes de convertir.\n",
+            )
+            return
+        src = state.get("bg_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fondos: importa una imagen de referencia antes de convertir.\n",
+            )
+            return
+        pw, ph = _bg_editor_pixel_size()
+        if pw <= 0 or ph <= 0:
+            return
+        try:
+            rows = convert_ref_source_to_palette_rows(src, pw, ph, rgbs)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Fondos convertir: {e}\n",
+            )
+            return
+        state["bg_pixel_rows"] = rows
+        _refresh_bg_editor_canvas()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fondos: imagen convertida a {pw}×{ph} pixeles (guarda el fondo).\n",
+        )
+
+    def on_bg_ref_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_bg_editor_canvas()
+
+    def on_bg_clear_pixels_click(_sender: object, _app_data: object) -> None:
+        state["bg_pixel_rows"] = None
+        _refresh_bg_editor_canvas()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + "Fondos: modo solido (sin matriz de pixeles).\n",
+        )
 
     initial_black = _solid_rgba_float(
         _SCENE_PREVIEW_TEX_W, _SCENE_PREVIEW_TEX_H, 0.08, 0.08, 0.1
@@ -2742,6 +3583,18 @@ def run_gui() -> int:
                 _OBJ_COLL_PREVIEW_PAD_RGBA[2],
             ),
             tag=_OBJ_COLL_PREVIEW_TEX_TAG,
+        )
+        dpg.add_dynamic_texture(
+            width=_BG_EDITOR_TEX_MAX,
+            height=_BG_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _BG_EDITOR_TEX_MAX,
+                _BG_EDITOR_TEX_MAX,
+                _BG_EDITOR_PAD_RGBA[0],
+                _BG_EDITOR_PAD_RGBA[1],
+                _BG_EDITOR_PAD_RGBA[2],
+            ),
+            tag=_BG_EDITOR_TEX_TAG,
         )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
@@ -4828,7 +5681,12 @@ def run_gui() -> int:
         with dpg.tab_bar():
             with dpg.tab(label="Editor"):
                 with dpg.group(horizontal=True):
-                    with dpg.child_window(width=_LEFT_PANEL_WIDTH, border=True):
+                    with dpg.child_window(
+                        tag=_EDITOR_LEFT_PANEL_TAG,
+                        width=_LEFT_PANEL_WIDTH,
+                        border=True,
+                        height=-1,
+                    ):
                         dpg.add_text("Cartucho / paleta")
                         dpg.add_text(
                             "El ENTRY (global) se define en Exportar; al exportar main.turtlecart va en el "
@@ -4909,6 +5767,13 @@ def run_gui() -> int:
                             callback=on_scene_background_change,
                             enabled=False,
                             use_internal_label=False,
+                        )
+                        dpg.add_text(
+                            "Si eliges un fondo guardado, se muestra en el canvas de escena "
+                            "(sustituye la capa 0 opaca del color plano). Parallax: se ve el "
+                            f"recorte {_FB_W}×{_FB_H} desde el origen abajo-izquierda.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(160, 180, 210, 255),
                         )
                         dpg.add_text(
                             "Objetos en escena (misma paleta que la escena). "
@@ -5062,163 +5927,330 @@ def run_gui() -> int:
                             default_value="",
                             use_internal_label=False,
                         )
-        
-                    with dpg.child_window(border=True):
-                        with dpg.group(horizontal=True):
-                            dpg.add_text(
-                                f"Canvas · {_FB_W}×{_FB_H} (vista previa · rejilla cada {_GRID_STEP}px)"
-                            )
-                            dpg.add_checkbox(
-                                tag="ts_show_grid",
-                                label="Mostrar rejilla",
-                                default_value=False,
-                                callback=on_grid_toggle,
-                            )
-                            dpg.add_slider_int(
-                                tag="ts_canvas_scale",
-                                label="Escala",
-                                min_value=1,
-                                max_value=8,
-                                default_value=_DEFAULT_CANVAS_SCALE,
-                                format="x%d",
-                                clamped=True,
-                                width=160,
-                                callback=on_canvas_scale_change,
-                            )
-                        dpg.add_text(
-                            "Escala entera en CPU (pixeles nitidos). Con zoom alto o rejilla, "
-                            "desplazate dentro del marco (barras horizontal y vertical).",
-                            wrap=400,
-                        )
-                        with dpg.child_window(
-                            tag="ts_canvas_viewport",
-                            width=-1,
-                            border=True,
-                            horizontal_scrollbar=True,
-                            height=_CANVAS_VIEWPORT_H,
-                            autosize_x=False,
-                            autosize_y=False,
-                        ):
-                            dpg.add_image(
-                                _SCENE_CANVAS_TEX_TAG,
-                                tag=_SCENE_CANVAS_IMG_TAG,
-                                width=_scene_canvas_dw0,
-                                height=_scene_canvas_dh0,
-                                uv_min=(0.0, 0.0),
-                                uv_max=_scene_preview_uv_max(
-                                    _scene_canvas_dw0, _scene_canvas_dh0
-                                ),
-                            )
-                            with dpg.item_handler_registry(tag="ts_canvas_click_reg"):
-                                dpg.add_item_clicked_handler(callback=on_canvas_preview_click)
-                            dpg.bind_item_handler_registry(
-                                _SCENE_CANVAS_IMG_TAG, "ts_canvas_click_reg"
-                            )
-                        dpg.add_separator()
-                        dpg.add_text(
-                            "Scripts Lua: global = ENTRY en main.turtlecart; cada escena tiene su stem "
-                            "(arriba). Los Lua de escena no se meten en main.turtlecart al exportar. "
-                            "El desplegable elige que archivo editas.",
-                            wrap=400,
-                        )
-                        dpg.add_combo(
-                            tag="ts_lua_file_combo",
-                            label="Archivo Lua",
-                            width=400,
-                            items=["(sin proyecto)"],
-                            default_value="(sin proyecto)",
-                            callback=on_lua_file_combo,
-                            enabled=False,
-                            use_internal_label=False,
-                        )
-                        dpg.add_input_text(
-                            tag="ts_lua_source",
-                            label="",
-                            multiline=True,
-                            width=-1,
-                            height=220,
-                            default_value=_DEFAULT_LUA,
-                            tracked=True,
-                        )
 
-            with dpg.tab(label="Backgrounds"):
+                    with dpg.child_window(
+                        tag=_EDITOR_RIGHT_PANEL_TAG,
+                        border=True,
+                        width=-1,
+                        height=-1,
+                        no_scrollbar=True,
+                    ):
+                        with dpg.child_window(
+                            tag=_EDITOR_CANVAS_BLOCK_TAG,
+                            border=False,
+                            height=_EDITOR_CANVAS_BLOCK_H,
+                            no_scrollbar=True,
+                        ):
+                            with dpg.group(horizontal=True):
+                                dpg.add_text(
+                                    f"Canvas · {_FB_W}×{_FB_H} (vista previa · rejilla cada {_GRID_STEP}px)"
+                                )
+                                dpg.add_checkbox(
+                                    tag="ts_show_grid",
+                                    label="Mostrar rejilla",
+                                    default_value=False,
+                                    callback=on_grid_toggle,
+                                )
+                                dpg.add_slider_int(
+                                    tag="ts_canvas_scale",
+                                    label="Escala",
+                                    min_value=1,
+                                    max_value=8,
+                                    default_value=_DEFAULT_CANVAS_SCALE,
+                                    format="x%d",
+                                    clamped=True,
+                                    width=160,
+                                    callback=on_canvas_scale_change,
+                                )
+                            dpg.add_text(
+                                "Escala entera en CPU (pixeles nitidos). Con zoom alto o rejilla, "
+                                "desplazate dentro del marco (barras horizontal y vertical).",
+                                wrap=400,
+                            )
+                            with dpg.child_window(
+                                tag=_SCENE_CANVAS_VIEWPORT_TAG,
+                                width=-1,
+                                border=True,
+                                horizontal_scrollbar=True,
+                                height=_CANVAS_VIEWPORT_H,
+                                autosize_x=False,
+                                autosize_y=False,
+                            ):
+                                dpg.add_image(
+                                    _SCENE_CANVAS_TEX_TAG,
+                                    tag=_SCENE_CANVAS_IMG_TAG,
+                                    width=_scene_canvas_dw0,
+                                    height=_scene_canvas_dh0,
+                                    uv_min=(0.0, 0.0),
+                                    uv_max=_scene_preview_uv_max(
+                                        _scene_canvas_dw0, _scene_canvas_dh0
+                                    ),
+                                )
+                                with dpg.item_handler_registry(tag="ts_canvas_click_reg"):
+                                    dpg.add_item_clicked_handler(
+                                        callback=on_canvas_preview_click
+                                    )
+                                dpg.bind_item_handler_registry(
+                                    _SCENE_CANVAS_IMG_TAG, "ts_canvas_click_reg"
+                                )
+                        with dpg.child_window(
+                            tag=_EDITOR_LUA_BLOCK_TAG,
+                            border=False,
+                            height=-1,
+                        ):
+                            dpg.add_separator()
+                            dpg.add_text(
+                                "Scripts Lua: global = ENTRY en main.turtlecart; cada escena tiene su stem "
+                                "(arriba). Los Lua de escena no se meten en main.turtlecart al exportar. "
+                                "El desplegable elige que archivo editas.",
+                                wrap=400,
+                            )
+                            dpg.add_combo(
+                                tag="ts_lua_file_combo",
+                                label="Archivo Lua",
+                                width=400,
+                                items=["(sin proyecto)"],
+                                default_value="(sin proyecto)",
+                                callback=on_lua_file_combo,
+                                enabled=False,
+                                use_internal_label=False,
+                            )
+                            dpg.add_input_text(
+                                tag="ts_lua_source",
+                                label="",
+                                multiline=True,
+                                width=-1,
+                                height=-1,
+                                default_value=_DEFAULT_LUA,
+                                tracked=True,
+                            )
+
+            with dpg.tab(label="Fondos"):
                 dpg.add_text(
-                    "Crea fondos en `backgrounds/<id>.json`. Cada fondo declara una paleta; en la pestaña "
-                    "Editor solo podras asignar a la escena fondos cuya paleta coincida con la de esa escena.",
+                    "Fondos en `backgrounds/*.json` (v0: solido o imagen convertida a pixeles). "
+                    f"Tamano hasta {MAX_BACKGROUND_PIXEL_W}×{MAX_BACKGROUND_PIXEL_H} px "
+                    f"(vista escena {SCENE_PIXEL_W}×{SCENE_PIXEL_H}; mas grande para parallax). "
+                    "Origen abajo-izquierda; la escena solo admite fondos con la misma paleta.",
                     wrap=520,
                 )
                 dpg.add_spacer(height=6)
-                dpg.add_input_text(
-                    tag="ts_bg_tab_pal",
-                    label="Paleta (ruta relativa al proyecto)",
-                    width=480,
-                    hint=DEFAULT_EXAMPLE_PALETTE_REL,
-                    default_value=DEFAULT_EXAMPLE_PALETTE_REL,
-                    enabled=False,
-                    use_internal_label=False,
-                )
                 with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        tag="ts_bg_palette_combo",
+                        label="Paleta del proyecto",
+                        width=360,
+                        items=["(abre un proyecto)"],
+                        default_value="(abre un proyecto)",
+                        callback=on_bg_palette_combo_change,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_palette_reload",
+                        label="Cargar paleta",
+                        width=120,
+                        callback=on_bg_palette_reload_click,
+                        enabled=False,
+                    )
                     dpg.add_button(
                         tag="ts_btn_bg_tab_copy_scene_pal",
-                        label="Copiar paleta de la escena activa",
-                        width=240,
+                        label="Usar paleta de escena",
+                        width=160,
                         callback=on_bg_tab_copy_scene_pal,
                         enabled=False,
                     )
+                dpg.add_text(
+                    "Muestrario (clic = indice de relleno; el indice 31 es transparente en juego):",
+                    color=(200, 220, 255, 255),
+                    wrap=520,
+                )
+                with dpg.child_window(
+                    width=500,
+                    height=72,
+                    border=True,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_group(
+                        tag="ts_bg_palette_swatches_group",
+                        horizontal=True,
+                        horizontal_spacing=3,
+                    )
+                dpg.add_separator()
+                dpg.add_text("Fondo", color=(200, 220, 255, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(
+                        tag="ts_bg_id",
+                        label="Id",
+                        width=160,
+                        default_value="",
+                        enabled=False,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_bg_fill_index",
+                        label="Indice relleno",
+                        width=80,
+                        default_value=1,
+                        min_value=0,
+                        max_value=31,
+                        min_clamped=True,
+                        max_clamped=True,
+                        callback=on_bg_fill_index_change,
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_input_int(
+                        tag="ts_bg_pixel_w",
+                        label="Ancho px",
+                        width=80,
+                        default_value=SCENE_PIXEL_W,
+                        min_value=1,
+                        max_value=MAX_BACKGROUND_PIXEL_W,
+                        min_clamped=True,
+                        max_clamped=True,
+                        callback=on_bg_pixel_size_change,
+                        enabled=False,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_bg_pixel_h",
+                        label="Alto px",
+                        width=80,
+                        default_value=SCENE_PIXEL_H,
+                        min_value=1,
+                        max_value=MAX_BACKGROUND_PIXEL_H,
+                        min_clamped=True,
+                        max_clamped=True,
+                        callback=on_bg_pixel_size_change,
+                        enabled=False,
+                    )
                     dpg.add_button(
-                        tag="ts_btn_bg_tab_refresh",
-                        label="Actualizar lista",
-                        width=200,
-                        callback=on_bg_tab_refresh_list,
+                        tag="ts_btn_bg_scene_size",
+                        label=f"Escena {SCENE_PIXEL_W}×{SCENE_PIXEL_H}",
+                        width=130,
+                        callback=on_bg_tab_scene_size_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_parallax_size",
+                        label=f"Parallax {MAX_BACKGROUND_PIXEL_W}×{MAX_BACKGROUND_PIXEL_H}",
+                        width=150,
+                        callback=on_bg_tab_parallax_size_click,
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_bg_ref_import",
+                        label="Importar imagen…",
+                        width=130,
+                        callback=on_bg_ref_import_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_ref_convert",
+                        label="Convertir a pixeles",
+                        width=130,
+                        callback=on_bg_ref_convert_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_ref_clear",
+                        label="Quitar ref.",
+                        width=90,
+                        callback=on_bg_ref_clear_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_match_ref_size",
+                        label="Tamano = referencia",
+                        width=130,
+                        callback=on_bg_match_ref_size_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_bg_clear_pixels",
+                        label="Modo solido",
+                        width=100,
+                        callback=on_bg_clear_pixels_click,
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag="ts_bg_ref_resize_on_import",
+                        label="Ajustar tamano al importar imagen",
+                        default_value=False,
+                        enabled=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag="ts_bg_ref_show",
+                        label="Mostrar referencia",
+                        default_value=True,
+                        callback=on_bg_ref_preview_change,
+                        enabled=False,
+                    )
+                    dpg.add_slider_int(
+                        tag="ts_bg_ref_opacity",
+                        label="Opacidad ref. %",
+                        width=180,
+                        default_value=45,
+                        min_value=0,
+                        max_value=100,
+                        callback=on_bg_ref_preview_change,
                         enabled=False,
                     )
                 dpg.add_text(
-                    "Fondos con esta paleta (archivos en backgrounds/):",
-                    wrap=520,
+                    tag="ts_bg_ref_path_label",
+                    default_value="(sin referencia)",
+                    color=(160, 180, 210, 255),
+                    wrap=480,
                 )
-                dpg.add_listbox(
-                    tag="ts_bg_tab_list",
-                    width=480,
-                    num_items=8,
-                    items=["(abre un proyecto)"],
-                    enabled=False,
-                )
-                dpg.add_separator()
-                dpg.add_text("Nuevo fondo (v0: relleno solido por indice de paleta)", wrap=520)
-                dpg.add_input_text(
-                    tag="ts_bg_new_id",
-                    label="Id (nombre del .json)",
-                    width=480,
-                    hint="cielo_noche",
-                    enabled=False,
-                    use_internal_label=False,
-                )
-                dpg.add_input_int(
-                    tag="ts_bg_new_idx",
-                    label="Indice de color en la paleta",
-                    width=200,
-                    default_value=1,
-                    min_value=0,
-                    max_value=255,
-                    min_clamped=True,
-                    max_clamped=True,
-                    enabled=False,
-                    use_internal_label=False,
-                )
-                dpg.add_button(
-                    tag="ts_btn_bg_tab_save",
-                    label="Guardar fondo",
-                    width=280,
-                    callback=on_bg_tab_save_background,
-                    enabled=False,
-                )
-                dpg.add_spacer(height=6)
+                with dpg.group(horizontal=True):
+                    dpg.add_listbox(
+                        tag="ts_bg_tab_list",
+                        label="Fondos (paleta)",
+                        width=220,
+                        num_items=6,
+                        items=["(abre un proyecto)"],
+                        callback=on_bg_tab_list_change,
+                        enabled=False,
+                    )
+                    with dpg.group():
+                        dpg.add_button(
+                            tag="ts_btn_bg_save",
+                            label="Guardar fondo",
+                            width=140,
+                            callback=on_bg_tab_save_background,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_bg_create",
+                            label="Crear fondo",
+                            width=140,
+                            callback=on_bg_tab_create_background,
+                            enabled=False,
+                        )
+                dpg.add_spacer(height=4)
                 dpg.add_text(
-                    f"Las cuatro capas de tinte y opacidad siguen en Editor; el recurso se dibuja debajo "
-                    f"como base a pantalla completa ({_FB_W}×{_FB_H}). Mas adelante: editor de pixeles.",
-                    wrap=520,
-                    color=(180, 190, 210, 255),
+                    tag="ts_bg_editor_label",
+                    default_value="Lienzo de vista previa",
+                    color=(180, 200, 230, 255),
+                    wrap=480,
                 )
+                with dpg.child_window(
+                    tag="ts_bg_edit_viewport",
+                    width=480,
+                    height=240,
+                    border=True,
+                    horizontal_scrollbar=True,
+                    autosize_x=False,
+                    autosize_y=False,
+                ):
+                    dpg.add_image(
+                        _BG_EDITOR_TEX_TAG,
+                        tag=_BG_EDITOR_IMG_TAG,
+                        width=64,
+                        height=64,
+                        uv_min=(0.0, 0.0),
+                        uv_max=(0.25, 0.25),
+                    )
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
@@ -6008,6 +7040,44 @@ def run_gui() -> int:
         modal=True,
     ):
         pass
+
+    with dpg.file_dialog(
+        directory_selector=False,
+        show=False,
+        callback=on_bg_ref_file_picked,
+        tag="ts_bg_ref_file_dialog",
+        width=700,
+        height=400,
+        modal=True,
+    ):
+        dpg.add_file_extension(".png", color=(150, 255, 150, 255))
+        dpg.add_file_extension(".jpg")
+        dpg.add_file_extension(".jpeg")
+        dpg.add_file_extension(".webp")
+        dpg.add_file_extension(".bmp")
+
+    with dpg.window(
+        tag="ts_bg_ref_resize_modal",
+        label="Tamano del fondo",
+        modal=True,
+        no_resize=True,
+        autosize=True,
+        show=False,
+    ):
+        dpg.add_text(
+            tag="ts_bg_ref_resize_prompt",
+            default_value="¿Ajustar tamano?",
+            wrap=400,
+        )
+        with dpg.group(horizontal=True):
+            dpg.add_button(
+                label="Si, usar tamano de la imagen",
+                callback=on_bg_ref_resize_yes,
+            )
+            dpg.add_button(
+                label="No, mantener tamano actual",
+                callback=on_bg_ref_resize_no,
+            )
 
     _rebuild_sprite_frame_tabs(select_index=0)
 

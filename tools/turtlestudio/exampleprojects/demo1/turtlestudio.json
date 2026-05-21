@@ -7,11 +7,11 @@
     {
       "id": "intro",
       "palette": "palettes/palette.txt",
-      "background_index": 29,
+      "background_index": 14,
       "background_layers": [
         {
           "enabled": true,
-          "color_index": 29,
+          "color_index": 14,
           "opacity": 255
         },
         {

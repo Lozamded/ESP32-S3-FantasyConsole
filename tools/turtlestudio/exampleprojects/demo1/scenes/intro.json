@@ -4,11 +4,11 @@
   "id": "intro",
   "palette": "palettes/palette.txt",
   "script": "intro",
-  "bg_color_index": 29,
+  "bg_color_index": 14,
   "background_layers": [
     {
       "enabled": true,
-      "color_index": 29,
+      "color_index": 14,
       "opacity": 255
     },
     {
