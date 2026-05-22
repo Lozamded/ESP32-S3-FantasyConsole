@@ -5,7 +5,8 @@
 
 /**
  * Dibuja en el framebuffer la escena `scene_id` del bundle TurtleStudio embebido
- * (`studio/project_bundle.json`): fondo `background_index` y objetos con sprites
+ * (`studio/project_bundle.json`): fondo `background_index`, asset `background` (inline o
+ * `"file"` en SD bajo `backgrounds/`) y objetos con sprites (inline o `sprites/` en SD)
  * Sprites por `pixel_w` x `pixel_h` (independiente de `cell_px`, default 4 en herramientas):
  * `solid_palette_index` (rectangulo) o `indexed_pixels` + `image.rows` (indice 31 = transparente).
  *

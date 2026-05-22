@@ -57,7 +57,8 @@ El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scen
 - Cargar el cartucho desde SD.
 - Aplicar paleta opcional antes de ejecutar el script.
 - Extraer el archivo indicado en `ENTRY` (p. ej. `scripts/global.lua`).
-- Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (fondo `background_index`, objetos con sprites `solid_palette_index` o `indexed_pixels`; ver **`spec/sprite-v0.md`**) antes de ejecutar el `ENTRY`.
+- Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (fondo `background_index`, asset opcional `background`, objetos con sprites; ver **`spec/sprite-v0.md`**) antes de ejecutar el `ENTRY`.
+- **Paquete en SD (recomendado):** TurtleStudio exporta una **carpeta** (p. ej. `build/`) con `main.turtlecart`, `backgrounds/*.tbg`, `sprites/*.tsp`, `objects/*.json` y `COPIAR_A_SD.txt`. El proyecto en PC sigue en JSON; solo la SD usa binario (ver **`spec/asset-bin-v0.md`**). Copia **toda la carpeta** a la raiz de la microSD.
 - Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
   - `print` → Serial
   - `cls(color)`, `pix(x,y,color)` (framebuffer), **`spix(sx,sy,color)`** (escena: abajo-izquierda, Y arriba), `flip()` → framebuffer 264×198 (**32 indices** de color)

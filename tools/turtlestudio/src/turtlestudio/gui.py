@@ -24,9 +24,10 @@ from turtlestudio.backgrounds import (
 )
 from turtlestudio.build import (
     collect_studio_bundle_files,
+    format_cart_package_log,
     load_palette_rgb01_for_preview,
     normalize_export_initial_scene,
-    write_turtlecart_content,
+    write_cart_package,
 )
 from turtlestudio.palette_policy import (
     MAX_OPAQUE_PALETTE_INDEX,
@@ -3636,7 +3637,7 @@ def run_gui() -> int:
         write_lua = bool(dpg.get_value("ts_write_lua_file"))
 
         if not out_s:
-            dpg.set_value("ts_log", "Indica la ruta de salida del .turtlecart.\n")
+            dpg.set_value("ts_log", "Indica la carpeta del paquete SD (p. ej. build).\n")
             return
 
         out = Path(out_s).expanduser()
@@ -3684,18 +3685,21 @@ def run_gui() -> int:
             return
 
         embedded: list[tuple[str, str]] | None = None
+        sidecar: list[tuple[str, str]] | None = None
         if isinstance(root, Path):
             scenes = state.get("scenes")
             if not isinstance(scenes, list):
                 scenes = []
             try:
-                embedded = collect_studio_bundle_files(
+                pkg = collect_studio_bundle_files(
                     root,
                     scenes=scenes,
                     active_scene=initial_scene_s,
                     transparent_index=DEFAULT_TRANSPARENT_INDEX,
                     entry_relpath=entry,
                 )
+                embedded = list(pkg.embedded)
+                sidecar = list(pkg.sidecar) if pkg.sidecar else None
             except ValueError as e:
                 dpg.set_value(
                     "ts_log",
@@ -3705,33 +3709,21 @@ def run_gui() -> int:
                 return
 
         try:
-            cart_path, lua_path = write_turtlecart_content(
+            result = write_cart_package(
                 out,
                 entry_relpath=entry,
                 main_lua_body=body,
                 palette_path=pal,
                 write_lua_file=write_lua,
                 embedded_files=embedded,
+                sidecar_files=sidecar,
                 initial_scene=initial_scene_s,
             )
-            n = cart_path.stat().st_size
-            extra = f"  INITIAL_SCENE:{initial_scene_s}\n"
-            if embedded:
-                extra += (
-                    "  Embebido: studio/project_bundle.json (Lua de escenas no van aqui; solo ENTRY + bundle).\n"
-                )
-            if lua_path is not None:
-                m = lua_path.stat().st_size
-                dpg.set_value(
-                    "ts_log",
-                    f"Exportado OK:\n  {cart_path} ({n} bytes)\n  {lua_path} ({m} bytes)\n"
-                    + extra,
-                )
-            else:
-                dpg.set_value(
-                    "ts_log",
-                    f"Exportado OK: {cart_path} ({n} bytes)\n" + extra,
-                )
+            dpg.set_value(
+                "ts_log",
+                format_cart_package_log(result, initial_scene=initial_scene_s),
+            )
+            dpg.set_value("ts_out_path", str(result.package_dir))
         except ValueError as e:
             dpg.set_value("ts_log", f"Error: {e}\n")
         except OSError as e:
@@ -5565,8 +5557,7 @@ def run_gui() -> int:
             dpg.set_value("ts_pal_path", str((pr / pinfo.default_palette).resolve()))
         else:
             dpg.set_value("ts_pal_path", "")
-        out_default = pr / "build" / "main.turtlecart"
-        dpg.set_value("ts_out_path", str(out_default))
+        dpg.set_value("ts_out_path", str(pr / "build"))
         enter_main_editor(log_append=f"Proyecto creado.\n  {mp}\n")
 
     def on_startup_open(_sender: object, _app_data: object) -> None:
@@ -5584,8 +5575,7 @@ def run_gui() -> int:
         _apply_project_scenes_from_info(info)
         _load_project_lua_buffers(info.root)
         dpg.set_value("ts_entry", info.entry)
-        out_default = info.root / "build" / "main.turtlecart"
-        dpg.set_value("ts_out_path", str(out_default))
+        dpg.set_value("ts_out_path", str(info.root / "build"))
         enter_main_editor(
             log_append=(
                 f"Proyecto abierto: {info.name}\n"
@@ -5604,7 +5594,7 @@ def run_gui() -> int:
         dpg.set_value("ts_lua_source", _DEFAULT_LUA)
         dpg.set_value("ts_entry", DEFAULT_ENTRY)
         dpg.set_value("ts_pal_path", "")
-        dpg.set_value("ts_out_path", "main.turtlecart")
+        dpg.set_value("ts_out_path", "build")
         enter_main_editor(log_append="Modo sin proyecto (solo editor y export manual).\n")
 
     with dpg.window(
@@ -5689,7 +5679,7 @@ def run_gui() -> int:
                     ):
                         dpg.add_text("Cartucho / paleta")
                         dpg.add_text(
-                            "El ENTRY (global) se define en Exportar; al exportar main.turtlecart va en el "
+                            "El ENTRY (global) se define en Exportar; el paquete SD incluye main.turtlecart en "
                             "bloque principal. El bundle solo incluye datos de estudio; los Lua de escena "
                             "se editan aqui y pueden ir en otros archivos al empaquetar.",
                             wrap=_LEFT_TEXT_WRAP,
@@ -5915,17 +5905,6 @@ def run_gui() -> int:
                             label="Recargar paleta en canvas",
                             width=_LEFT_FORM_WIDTH,
                             callback=on_reload_palette_click,
-                        )
-                        dpg.add_separator()
-                        dpg.add_input_text(
-                            tag="ts_log",
-                            label="Registro",
-                            multiline=True,
-                            readonly=True,
-                            width=_LEFT_FORM_WIDTH,
-                            height=100,
-                            default_value="",
-                            use_internal_label=False,
                         )
 
                     with dpg.child_window(
@@ -6254,16 +6233,18 @@ def run_gui() -> int:
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
-                    "El cuerpo del ENTRY es el del archivo indicado (memoria del editor si el proyecto "
-                    "esta abierto). La paleta embebida usa la ruta Paleta (opc.) del Editor.",
+                    "Exporta un paquete SD: main.turtlecart + backgrounds/*.tbg, sprites/*.tsp, "
+                    "objects/*.json (binario en SD; el proyecto sigue en JSON). "
+                    "Copia la carpeta entera a la raiz de la microSD.",
                     wrap=520,
                 )
                 dpg.add_spacer(height=6)
                 dpg.add_input_text(
                     tag="ts_out_path",
-                    label="Salida .turtlecart",
+                    label="Carpeta paquete SD",
                     width=480,
-                    default_value="main.turtlecart",
+                    default_value="build",
+                    hint="p. ej. build o ruta absoluta; se crea main.turtlecart dentro",
                     use_internal_label=False,
                 )
                 dpg.add_input_text(
@@ -6276,7 +6257,7 @@ def run_gui() -> int:
                 )
                 dpg.add_checkbox(
                     tag="ts_write_lua_file",
-                    label="Volcar ENTRY como .lua junto al cartucho (opcional, depuracion)",
+                    label="Incluir ENTRY en scripts/ del paquete (opcional, depuracion)",
                     default_value=False,
                     use_internal_label=False,
                 )
@@ -6289,16 +6270,27 @@ def run_gui() -> int:
                     use_internal_label=False,
                 )
                 dpg.add_text(
-                    "Con proyecto abierto: solo se embebe studio/project_bundle.json. "
-                    "El ENTRY (global) va en el bloque principal; los Lua de escena siguen en el proyecto "
-                    "y pueden empaquetarse aparte (otros .turtlecart o archivos).",
+                    "Con proyecto abierto: bundle delgado en el cart + JSON en carpetas. "
+                    "Los Lua de escena no van en el paquete (siguen en el proyecto). "
+                    "Se genera COPIAR_A_SD.txt con la lista de archivos.",
                     wrap=520,
                 )
                 dpg.add_separator()
                 dpg.add_button(
-                    label="Exportar .turtlecart",
+                    label="Exportar paquete SD",
                     width=280,
                     callback=on_export,
+                )
+                dpg.add_separator()
+                dpg.add_text("Registro (exportacion y mensajes del estudio)", color=(200, 220, 255, 255))
+                dpg.add_input_text(
+                    tag="ts_log",
+                    label="",
+                    multiline=True,
+                    readonly=True,
+                    width=-1,
+                    height=220,
+                    default_value="",
                 )
 
             with dpg.tab(label="Sprites"):

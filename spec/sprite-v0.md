@@ -160,8 +160,9 @@ Al exportar `main.turtlecart`, TurtleStudio puede embeber un JSON con:
 | `kind` | `"turtlestudio.cart_bundle"` |
 | `transparent_index` | Siempre **31** (reservado; no copiar al blitear `indexed_pixels`) |
 | `active_scene` / escenas en `scenes` | Lista de escenas con `id`, `palette`, `background_index`, `objects[]` con `{ "id", "x", "y" }` |
-| `objects` | Mapa `id` → definicion de objeto |
-| `sprites` | Mapa `id` → JSON completo del sprite (copia de disco) |
+| `objects` | Mapa `id` → definicion de objeto **o** referencia `{ "kind": "turtlestudio.object_ref", "file": "objects/<id>.json" }` |
+| `sprites` | Mapa `id` → JSON del sprite **o** referencia `{ "kind": "turtlestudio.sprite_ref", "file": "sprites/<id>.json" }` |
+| `backgrounds` | Mapa `id` → JSON del fondo **o** referencia `{ "kind": "turtlestudio.background_ref", "file": "backgrounds/<id>.json" }` |
 
 El cartucho referencia la escena inicial con `INITIAL_SCENE:<id>` en el header (ver `spec/turtlecart-v0.md`).
 
@@ -170,7 +171,8 @@ El cartucho referencia la escena inicial con `INITIAL_SCENE:<id>` en el header (
 Si existe `studio/project_bundle.json` y `INITIAL_SCENE` coincide con una escena del bundle, **antes del `ENTRY` Lua** el firmware:
 
 1. Rellena el framebuffer con `background_index` de esa escena (`cls`).
-2. Para cada objeto en la lista de la escena, resuelve `sprite_id` y dibuja con ancla en `(x, y)` del objeto = **`origin_x` / `origin_y`** del sprite (esquina inferior izquierda del bbox en `(x - origin_x, y - origin_y)`).
+2. Si la escena declara `"background": "<id>"` y el bundle incluye ese id en `backgrounds`, dibuja el asset en el origen de escena `(0, 0)`: datos **inline** en el bundle o JSON cargado desde SD segun `"file"` (p. ej. `/backgrounds/cielo.json`). Modos: `solid_palette_index` o `indexed_pixels` + `image.rows` (omite `transparent_index`).
+3. Para cada objeto en la lista de la escena, resuelve `sprite_id` y dibuja con ancla en `(x, y)` del objeto = **`origin_x` / `origin_y`** del sprite (esquina inferior izquierda del bbox en `(x - origin_x, y - origin_y)`).
 
 ### Resolucion de tamano
 
@@ -184,7 +186,9 @@ Si existe `studio/project_bundle.json` y `INITIAL_SCENE` coincide con una escena
 | `solid_palette_index` | `fill_rect` con `render.palette_index` |
 | `indexed_pixels` | Blit de `image.rows`; omite pixeles con indice `transparent_index` del bundle |
 
-Limites actuales en firmware: sprite hasta **128×128** px en RAM estatica; indices acotados a **0..31** (paleta del cartucho).
+Limites actuales en firmware: sprite hasta **128×128** px en RAM estatica; fondo indexado hasta **264×198** px (escena completa); indices acotados a **0..31** (paleta del cartucho). Assets con `"file"` se leen de la SD al dibujar (PSRAM recomendado para JSON grandes).
+
+**Export TurtleStudio (paquete SD):** el cartucho va en `main.turtlecart`; assets en carpetas `backgrounds/`, `sprites/`, `objects/` (referencias en el bundle). Al exportar, fondos de **un solo color** pasan a `solid_palette_index`; el resto puede usar `image.format: "palette_rows_rle"` (filas en `[indice, cuenta]`). El firmware entiende `palette_rows` y `palette_rows_rle`. Copiar la carpeta de exportacion entera a la SD.
 
 ### Transparencia
 
@@ -203,7 +207,7 @@ Ver `spec/scene-v0.md`: indice **31** fijo en todas las paletas. En el editor, l
 - Reproduccion de animacion en escena / firmware (solo edicion y almacenamiento multi-frame en v0).
 - Rotacion / flip en hardware.
 - Compresion de matrices.
-- Tilemaps y capas de fondo multiples en firmware (parcial en manifest; dibujo simple de fondo + objetos).
+- Tilemaps y composicion de `background_layers` en firmware (parcial en manifest; v0 dibuja `background_index` + asset `background` + objetos).
 
 ## Referencias en codigo
 

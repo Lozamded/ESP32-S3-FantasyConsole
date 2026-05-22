@@ -79,6 +79,46 @@ def list_background_stems_for_palette(project_root: Path, scene_palette_rel: str
     return sorted(out)
 
 
+def shrink_background_json_for_export(data: dict[str, Any]) -> dict[str, Any]:
+    """
+    Reduce tamano en disco/SD: color uniforme -> solido; si no, filas RLE cuando conviene.
+    """
+    if not background_is_indexed_pixels(data):
+        return data
+    rows = parse_background_palette_rows(data)
+    if rows is None:
+        return data
+    pw, ph = background_pixel_dimensions(data)
+    pal = str(data.get("palette", "")).strip()
+    bid = str(data.get("id", "bg")).strip() or "bg"
+    from turtlestudio.pixel_rows_codec import detect_solid_palette_index
+
+    solid = detect_solid_palette_index(rows, pw, ph)
+    if solid is not None:
+        return solid_background_payload(
+            bid,
+            palette_rel=pal or "palettes/palette.txt",
+            palette_index=solid,
+            pixel_w=pw,
+            pixel_h=ph,
+        )
+    fi = 0
+    render = data.get("render")
+    if isinstance(render, dict):
+        try:
+            fi = int(render.get("palette_index", 0))
+        except (TypeError, ValueError):
+            fi = 0
+    return indexed_background_payload(
+        bid,
+        palette_rel=pal or "palettes/palette.txt",
+        rows=rows,
+        pixel_w=pw,
+        pixel_h=ph,
+        fill_index=fi,
+    )
+
+
 def read_background_file(project_root: Path, stem: str) -> dict[str, Any]:
     p = background_json_path(project_root, stem)
     if not p.is_file():
@@ -195,6 +235,17 @@ def indexed_background_payload(
 
     fi = clamp_pixel_storage_index(fill_index)
     norm = trim_palette_rows(rows, pw, ph, fill_index=fi)
+    from turtlestudio.pixel_rows_codec import detect_solid_palette_index
+
+    solid = detect_solid_palette_index(norm, pw, ph)
+    if solid is not None:
+        return solid_background_payload(
+            bid,
+            palette_rel=pal,
+            palette_index=solid,
+            pixel_w=pw,
+            pixel_h=ph,
+        )
     image0, _, _ = serialize_sprite_frames([norm], pw=pw, ph=ph, fill_index=fi)
     return {
         "format_version": BACKGROUND_JSON_VERSION,

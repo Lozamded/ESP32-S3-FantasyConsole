@@ -19,6 +19,7 @@ SPRITE_JSON_KIND = "turtlestudio.sprite"
 SPRITE_RENDER_SOLID = "solid_palette_index"
 SPRITE_RENDER_INDEXED_PIXELS = "indexed_pixels"
 SPRITE_IMAGE_FORMAT_ROWS = "palette_rows"
+SPRITE_IMAGE_FORMAT_ROWS_RLE = "palette_rows_rle"
 # Tamano logico en celdas (evita sprites enormes en disco por error).
 MAX_BLOCKS_PER_AXIS = 32
 MAX_SPRITE_FRAMES = 32
@@ -215,25 +216,14 @@ def _parse_palette_rows_from_image_dict(
     pw: int,
     ph: int,
 ) -> list[list[int]] | None:
-    if im.get("format") != SPRITE_IMAGE_FORMAT_ROWS:
+    from turtlestudio.pixel_rows_codec import decode_palette_rows_image
+
+    if im.get("format") not in (SPRITE_IMAGE_FORMAT_ROWS, SPRITE_IMAGE_FORMAT_ROWS_RLE):
         return None
     raw_rows = im.get("rows")
     if not isinstance(raw_rows, list) or not raw_rows:
         return None
-    out: list[list[int]] = []
-    for y in range(ph):
-        row: list[int] = []
-        src = raw_rows[y] if y < len(raw_rows) else []
-        if not isinstance(src, list):
-            src = []
-        for x in range(pw):
-            try:
-                v = int(src[x]) if x < len(src) else 0
-            except (TypeError, ValueError):
-                v = 0
-            row.append(clamp_pixel_storage_index(v))
-        out.append(row)
-    return out
+    return decode_palette_rows_image(im, pw=max(1, int(pw)), ph=max(1, int(ph)))
 
 
 def parse_sprite_frame_rows_entry(
@@ -296,8 +286,10 @@ def serialize_sprite_frames(
     fc = max(1, min(MAX_SPRITE_FRAMES, len(frame_rows)))
 
     def pack(rows: list[list[int]]) -> dict[str, Any]:
+        from turtlestudio.pixel_rows_codec import pack_palette_rows_image
+
         norm = trim_palette_rows(rows, pw, ph, fill_index=fi)
-        return {"format": SPRITE_IMAGE_FORMAT_ROWS, "rows": norm}
+        return pack_palette_rows_image(norm, pw=pw, ph=ph)
 
     trimmed = [pack(fr) for fr in frame_rows[:fc]]
     while len(trimmed) < fc:

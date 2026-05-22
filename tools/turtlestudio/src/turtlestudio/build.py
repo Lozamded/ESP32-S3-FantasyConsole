@@ -6,8 +6,18 @@ import json
 import re
 import warnings
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+# Assets mas grandes se escriben junto al .turtlecart en la SD (mismas rutas que el proyecto).
+DEFAULT_ASSET_INLINE_MAX_BYTES = 32 * 1024
+BACKGROUND_REF_KIND = "turtlestudio.background_ref"
+SPRITE_REF_KIND = "turtlestudio.sprite_ref"
+OBJECT_REF_KIND = "turtlestudio.object_ref"
+DEFAULT_PACKAGE_DIR_NAME = "build"
+DEFAULT_CART_FILENAME = "main.turtlecart"
+SD_DEPLOY_README_NAME = "COPIAR_A_SD.txt"
 
 _CART_VERSION = "0"
 _END_MARKER = "---END---"
@@ -188,6 +198,50 @@ def assemble_turtlecart_v0(
     return "\n".join(parts) + "\n"
 
 
+@dataclass(frozen=True)
+class CartExportPackage:
+    """Archivos del cartucho: embebidos en `.turtlecart` y sidecar en la misma carpeta de salida."""
+
+    embedded: tuple[tuple[str, str], ...]
+    # str = JSON texto (objects); bytes = binario .tbg / .tsp para ESP32
+    sidecar: tuple[tuple[str, str | bytes], ...]
+
+
+def _asset_json_utf8_size(data: dict[str, Any]) -> int:
+    return len(json.dumps(data, ensure_ascii=False).encode("utf-8"))
+
+
+def _render_mode(data: dict[str, Any]) -> str | None:
+    render = data.get("render")
+    if isinstance(render, dict):
+        m = render.get("mode")
+        if isinstance(m, str):
+            return m
+    return None
+
+
+def should_externalize_background(data: dict[str, Any]) -> bool:
+    """Fondos indexados siempre fuera del bundle (suelen ser ~escena completa)."""
+    if _render_mode(data) == "indexed_pixels":
+        return True
+    return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
+
+
+def should_externalize_sprite(data: dict[str, Any]) -> bool:
+    if _render_mode(data) == "indexed_pixels":
+        return True
+    return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
+
+
+def _asset_ref_entry(asset_id: str, sd_relpath: str, ref_kind: str) -> dict[str, Any]:
+    return {
+        "format_version": 1,
+        "id": asset_id,
+        "kind": ref_kind,
+        "file": sd_relpath.replace("\\", "/"),
+    }
+
+
 def collect_studio_bundle_files(
     project_root: Path,
     *,
@@ -195,14 +249,15 @@ def collect_studio_bundle_files(
     active_scene: str,
     transparent_index: int,
     entry_relpath: str,
-) -> list[tuple[str, str]]:
+) -> CartExportPackage:
     """
-    Datos del proyecto para el cartucho inicial `main.turtlecart`.
+    Paquete para `main.turtlecart`: bundle delgado embebido + JSON pesados como sidecar.
 
-    Solo embebe `studio/project_bundle.json` (escenas, objetos, sprites, fondos).
-    El Lua de arranque va en el bloque ENTRY (p. ej. contenido de `scripts/global.lua`);
-    los Lua de escena **no** se duplican aqui: pueden distribuirse en otros archivos / cartuchos.
+    Rutas sidecar (p. ej. `backgrounds/cielo.json`) coinciden con el proyecto; copiar la
+    carpeta de exportacion entera a la raiz de la microSD.
     """
+    from turtlestudio.asset_bin import background_json_to_tbg, sprite_json_to_tsp
+    from turtlestudio.backgrounds import read_background_file, shrink_background_json_for_export
     from turtlestudio.objects import object_sprite_ids_for_bundle, read_object_file
     from turtlestudio.sprites import read_sprite_file
 
@@ -232,34 +287,51 @@ def collect_studio_bundle_files(
         if b:
             bg_stems.add(b)
 
-    from turtlestudio.backgrounds import read_background_file
+    sidecar: list[tuple[str, str | bytes]] = []
+    sids: set[str] = set()
 
     objects_map: dict[str, Any] = {}
     for oid in sorted(oids):
         try:
-            objects_map[oid] = read_object_file(root, oid)
+            odata = read_object_file(root, oid)
         except ValueError:
             objects_map[oid] = {"error": "missing_object_json", "id": oid}
-
-    sids: set[str] = set()
-    for od in objects_map.values():
-        if isinstance(od, dict) and "error" not in od:
-            for sp in object_sprite_ids_for_bundle(od):
-                sids.add(sp)
+            continue
+        for sp in object_sprite_ids_for_bundle(odata):
+            sids.add(sp)
+        orel = f"objects/{oid}.json"
+        objects_map[oid] = _asset_ref_entry(oid, orel, OBJECT_REF_KIND)
+        sidecar.append(
+            (orel, json.dumps(odata, ensure_ascii=False, separators=(",", ":")) + "\n")
+        )
 
     sprites_map: dict[str, Any] = {}
     for sid in sorted(sids):
         try:
-            sprites_map[sid] = read_sprite_file(root, sid)
+            data = read_sprite_file(root, sid)
         except ValueError:
             sprites_map[sid] = {"error": "missing_sprite_json", "id": sid}
+            continue
+        rel = f"sprites/{sid}.tsp"
+        if should_externalize_sprite(data):
+            sprites_map[sid] = _asset_ref_entry(sid, rel, SPRITE_REF_KIND)
+            sidecar.append((rel, sprite_json_to_tsp(data)))
+        else:
+            sprites_map[sid] = data
 
     backgrounds_map: dict[str, Any] = {}
     for bid in sorted(bg_stems):
         try:
-            backgrounds_map[bid] = read_background_file(root, bid)
+            data = shrink_background_json_for_export(read_background_file(root, bid))
         except ValueError:
             backgrounds_map[bid] = {"error": "missing_background_json", "id": bid}
+            continue
+        rel = f"backgrounds/{bid}.tbg"
+        if should_externalize_background(data):
+            backgrounds_map[bid] = _asset_ref_entry(bid, rel, BACKGROUND_REF_KIND)
+            sidecar.append((rel, background_json_to_tbg(data)))
+        else:
+            backgrounds_map[bid] = data
 
     bundle: dict[str, Any] = {
         "format_version": 1,
@@ -272,8 +344,171 @@ def collect_studio_bundle_files(
         "sprites": sprites_map,
         "backgrounds": backgrounds_map,
     }
-    text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
-    return [("studio/project_bundle.json", text)]
+    bundle_text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
+    embedded = [("studio/project_bundle.json", bundle_text)]
+    return CartExportPackage(embedded=tuple(embedded), sidecar=tuple(sidecar))
+
+
+def resolve_package_cart_path(
+    user_path: Path | str,
+    *,
+    cart_name: str = DEFAULT_CART_FILENAME,
+) -> Path:
+    """
+    Ruta del .turtlecart dentro del paquete SD.
+
+    Si `user_path` es carpeta (sin extension .turtlecart), usa `<carpeta>/main.turtlecart`.
+    """
+    p = Path(user_path).expanduser()
+    if p.suffix.lower() == ".turtlecart":
+        return p
+    return p / cart_name
+
+
+def package_dir_from_cart_path(cart_path: Path) -> Path:
+    return cart_path.parent
+
+
+def _sd_deploy_readme_text(*, cart_name: str, sidecar_rels: Sequence[str]) -> str:
+    lines = [
+        "Paquete TurtleCart para microSD (FantasyConsole / TurtleReader)",
+        "",
+        "Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:",
+        "",
+        f"  {cart_name}",
+    ]
+    for rel in sorted(sidecar_rels):
+        lines.append(f"  {rel.replace(chr(92), '/')}")
+    lines.extend(
+        [
+            "",
+            "No copies solo el .turtlecart: los fondos/sprites/objetos referenciados",
+            "estan en las subcarpetas backgrounds/, sprites/, objects/.",
+            "",
+            "Generado por TurtleStudio.",
+        ]
+    )
+    return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class CartPackageWriteResult:
+    package_dir: Path
+    cart_path: Path
+    sidecar_paths: tuple[Path, ...]
+    deploy_readme_path: Path | None
+    lua_path: Path | None
+
+
+def format_cart_package_log(result: CartPackageWriteResult, *, initial_scene: str) -> str:
+    cart_n = result.cart_path.stat().st_size
+    lines = [
+        "Paquete SD exportado OK:",
+        f"  Carpeta: {result.package_dir}",
+        f"  Cartucho: {result.cart_path.name} ({cart_n} bytes)",
+        f"  INITIAL_SCENE: {initial_scene}",
+        "  Embebido en cart: studio/project_bundle.json (bundle delgado + ENTRY Lua)",
+    ]
+    if result.sidecar_paths:
+        by_dir: dict[str, list[Path]] = {}
+        for p in result.sidecar_paths:
+            key = p.parent.name if p.parent != result.package_dir else "."
+            by_dir.setdefault(key, []).append(p)
+        lines.append(f"  Assets en carpetas ({len(result.sidecar_paths)} archivos):")
+        for folder in sorted(by_dir.keys()):
+            files = by_dir[folder]
+            lines.append(f"    {folder}/ ({len(files)})")
+            for p in sorted(files)[:8]:
+                lines.append(f"      {p.name} ({p.stat().st_size} bytes)")
+            if len(files) > 8:
+                lines.append(f"      ... +{len(files) - 8} mas")
+    if result.deploy_readme_path is not None:
+        lines.append(f"  Instrucciones: {result.deploy_readme_path.name}")
+    lines.append("  -> Copia la carpeta entera a la raiz de la microSD.")
+    if result.lua_path is not None:
+        lines.append(f"  Lua volcado: {result.lua_path.relative_to(result.package_dir)}")
+    return "\n".join(lines) + "\n"
+
+
+def write_cart_package(
+    output: Path | str,
+    *,
+    entry_relpath: str,
+    main_lua_body: str,
+    palette_path: Path | None = None,
+    write_lua_file: bool = False,
+    embedded_files: Sequence[tuple[str, str]] | None = None,
+    sidecar_files: Sequence[tuple[str, str | bytes]] | None = None,
+    initial_scene: str | None = None,
+    write_deploy_readme: bool = True,
+) -> CartPackageWriteResult:
+    """Escribe paquete SD: main.turtlecart + subcarpetas backgrounds/, sprites/, objects/."""
+    cart_path = resolve_package_cart_path(output)
+    cart_path, _lua_skip, sidecar_written = write_turtlecart_content(
+        cart_path,
+        entry_relpath=entry_relpath,
+        main_lua_body=main_lua_body,
+        palette_path=palette_path,
+        write_lua_file=False,
+        embedded_files=embedded_files,
+        sidecar_files=sidecar_files,
+        initial_scene=initial_scene,
+    )
+    package_dir = package_dir_from_cart_path(cart_path)
+
+    lua_written: Path | None = None
+    if write_lua_file:
+        entry = _normalize_entry_path(entry_relpath)
+        lua_written = package_dir / entry
+        lua_written.parent.mkdir(parents=True, exist_ok=True)
+        lua_written.write_text(
+            main_lua_body.replace("\r\n", "\n").replace("\r", "\n"),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    deploy_path: Path | None = None
+    sidecar_rels = [rel for rel, _ in (sidecar_files or ())]
+    if write_deploy_readme and (sidecar_rels or True):
+        deploy_path = package_dir / SD_DEPLOY_README_NAME
+        deploy_path.write_text(
+            _sd_deploy_readme_text(cart_name=cart_path.name, sidecar_rels=sidecar_rels),
+            encoding="utf-8",
+            newline="\n",
+        )
+
+    return CartPackageWriteResult(
+        package_dir=package_dir,
+        cart_path=cart_path,
+        sidecar_paths=sidecar_written,
+        deploy_readme_path=deploy_path,
+        lua_path=lua_written,
+    )
+
+
+def write_cart_sidecar_files(
+    output_cart: Path,
+    sidecar_files: Sequence[tuple[str, str | bytes]] | None,
+) -> list[Path]:
+    """Escribe sidecars junto al `.turtlecart` (JSON o binario .tbg/.tsp)."""
+    written: list[Path] = []
+    if not sidecar_files:
+        return written
+    base = output_cart.parent
+    for rel, payload in sidecar_files:
+        sub = _normalize_entry_path(rel)
+        dest = base / sub
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(payload, bytes):
+            dest.write_bytes(payload)
+        else:
+            dest.write_text(
+                payload.replace("\r\n", "\n").replace("\r", "\n"),
+                encoding="utf-8",
+                newline="\n",
+            )
+        written.append(dest)
+    return written
 
 
 def write_turtlecart_content(
@@ -284,15 +519,17 @@ def write_turtlecart_content(
     palette_path: Path | None = None,
     write_lua_file: bool = False,
     embedded_files: Sequence[tuple[str, str]] | None = None,
+    sidecar_files: Sequence[tuple[str, str | bytes]] | None = None,
     initial_scene: str | None = None,
-) -> tuple[Path, Path | None]:
+) -> tuple[Path, Path | None, tuple[Path, ...]]:
     """
     Escribe el .turtlecart desde el cuerpo Lua en memoria.
     Si write_lua_file es True, tambien escribe el .lua junto al cartucho (mismo directorio),
     con el nombre base de entry_relpath (p. ej. global.lua); por defecto False (el ENTRY solo va embebido).
-    embedded_files: archivos extra embebidos antes del Lua ENTRY (p. ej. datos TurtleStudio).
+    embedded_files: archivos extra embebidos antes del Lua ENTRY (p. ej. bundle delgado).
+    sidecar_files: JSON externos (p. ej. backgrounds/, sprites/) en la carpeta del cartucho.
     initial_scene: id para la linea INITIAL_SCENE: (por defecto intro).
-    Devuelve (ruta_cartucho, ruta_lua_escrita o None).
+    Devuelve (ruta_cartucho, ruta_lua_escrita o None, rutas sidecar escritas).
     """
     entry = _normalize_entry_path(entry_relpath)
     palette_lines: list[str] | None = None
@@ -308,20 +545,19 @@ def write_turtlecart_content(
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(content, encoding="utf-8", newline="\n")
+    sidecar_written = tuple(write_cart_sidecar_files(output, sidecar_files))
 
     lua_written: Path | None = None
     if write_lua_file:
-        lua_name = Path(entry).name
-        if not lua_name.lower().endswith(".lua"):
-            lua_name = lua_name + ".lua" if lua_name else "main.lua"
-        lua_written = output.parent / lua_name
+        lua_written = output.parent / entry
+        lua_written.parent.mkdir(parents=True, exist_ok=True)
         lua_written.write_text(
             main_lua_body.replace("\r\n", "\n").replace("\r", "\n"),
             encoding="utf-8",
             newline="\n",
         )
 
-    return output, lua_written
+    return output, lua_written, sidecar_written
 
 
 def write_turtlecart(

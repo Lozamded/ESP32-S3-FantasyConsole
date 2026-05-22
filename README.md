@@ -43,10 +43,32 @@ Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rell
 ## Prueba rapida
 
 1. Instala la libreria **Lua54** como arriba.
-2. Copia a la **raiz** de la microSD un cartucho llamado **`main.turtlecart`** (p. ej. el que exporta TurtleStudio en `build/main.turtlecart`). Si no lo tienes, puedes copiar `cart/demo.turtlecart` como **`demo.turtlecart`** y el firmware lo cargara como respaldo.
-3. Ajusta pines SPI/SD en el sketch segun tu cableado (alimenta el lector SD a **3V3**).
-4. Flashea el sketch en tu ESP32-S3.
-5. Abre monitor serial a `115200`.
+2. Copia a la **raiz** de la microSD la **carpeta de exportacion** de TurtleStudio (p. ej. todo `build/`: `main.turtlecart`, `backgrounds/`, `sprites/`). El bundle del cartucho es delgado; los fondos y sprites pintados van en JSON aparte con las mismas rutas que en el proyecto. Si no tienes export, puedes copiar `cart/demo.turtlecart` como **`demo.turtlecart`** (todo embebido, pequeno) y el firmware lo cargara como respaldo.
+3. Cartuchos grandes (fondos `indexed_pixels` embebidos, ~1 MB): en Arduino IDE activa **PSRAM** en la placa ESP32-S3 (`OPI PSRAM` / `Enabled`). Sin PSRAM el firmware puede reiniciarse al leer `main.turtlecart` y la pantalla queda negra; el monitor serial se corta justo despues de `microSD montada`.
+4. Ajusta pines SPI/SD en el sketch segun tu cableado (alimenta el lector SD a **3V3**).
+5. Flashea el sketch en tu ESP32-S3 (incluye `turtle_cart.cpp` junto al sketch).
+6. Abre monitor serial a `115200`.
+
+Comprueba el paquete en PC (sin placa):
+
+```bash
+cd tools/turtlestudio
+PYTHONPATH=src python3 src/turtlestudio/verify_package.py /ruta/a/build
+PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /ruta/al/proyecto
+```
+
+Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp`).
+
+Con **paquete SD** (carpeta `build/` copiada entera), el monitor serial deberia mostrar algo como:
+- `SD: leyendo /main.turtlecart` (~5–50 KB, no ~1 MB)
+- `Bundle embebido: … bytes`
+- `turtle_scene: bin SD /backgrounds/cielo.tbg 264x198 mode 2 (... bytes)`
+- `turtle_scene: fondo "cielo" indexed 264x198`
+- `turtle_scene: asset SD /objects/bloque.json` (por objeto)
+- `turtle_scene: sprite "bloque_rojo" desde SD` o `asset SD /sprites/….json`
+- `Escena inicial (C++ desde bundle) aplicada tras Lua.`
+
+Si falta un sidecar veras `no pudo cargar asset SD /backgrounds/...`.
 
 Si todo sale bien, veras la carga del cartucho y una linea en **Salida Lua** con el `print` real desde la VM, por ejemplo:
 - `hola mundo desde turtlecart v0`

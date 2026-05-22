@@ -1,0 +1,20 @@
+Paquete TurtleCart para microSD (FantasyConsole / TurtleReader)
+
+Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
+
+  main.turtlecart
+  backgrounds/cielo.tbg
+  objects/bloque.json
+  objects/box.json
+  objects/character.json
+  sprites/bloque_rojo.tsp
+  sprites/character_damage.tsp
+  sprites/character_fall.tsp
+  sprites/character_idle.tsp
+  sprites/character_jump.tsp
+  sprites/character_walk.tsp
+
+No copies solo el .turtlecart: los fondos/sprites/objetos referenciados
+estan en las subcarpetas backgrounds/, sprites/, objects/.
+
+Generado por TurtleStudio.
