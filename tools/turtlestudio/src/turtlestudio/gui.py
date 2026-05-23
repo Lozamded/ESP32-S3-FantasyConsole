@@ -5040,6 +5040,13 @@ def run_gui() -> int:
 
     def on_export(_sender: object, _app_data: object) -> None:
         _flush_lua_buffer_to_state()
+        if isinstance(state.get("project_root"), Path):
+            active = str(state.get("active_scene_id") or "")
+            _commit_script_stem_from_widget(active)
+            _commit_palette_for_scene_id(active)
+            _commit_background_for_scene_id(active)
+            _commit_scene_background_for_scene_id(active)
+            _commit_tile_layers_for_scene_id(active)
         out_s = dpg.get_value("ts_out_path").strip()
         pal_s = dpg.get_value("ts_pal_path").strip()
         entry_s = str(dpg.get_value("ts_entry")).strip().replace("\\", "/")
@@ -8079,7 +8086,7 @@ def run_gui() -> int:
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
                     "Exporta un paquete SD: main.turtlecart + backgrounds/*.tbg, sprites/*.tsp, "
-                    "objects/*.json (binario en SD; el proyecto sigue en JSON). "
+                    "tiles/*.tts, objects/*.json (binario en SD; el proyecto sigue en JSON). "
                     "Copia la carpeta entera a la raiz de la microSD.",
                     wrap=520,
                 )

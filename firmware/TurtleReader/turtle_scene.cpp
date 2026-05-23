@@ -3,6 +3,7 @@
 #include "turtle_asset_bin.h"
 #include "turtle_cart.h"
 #include "turtle_gpu.h"
+#include "turtle_tileset.h"
 
 #include <Arduino.h>
 #include <ctype.h>
@@ -20,15 +21,30 @@ constexpr int kMaxSpriteH = 128;
 /** Escena canonica (spec/scene-v0.md); fondos indexed_pixels a pantalla completa. */
 constexpr int kSceneW = 264;
 constexpr int kSceneH = 198;
+constexpr int kMaxTileLayers = 4;
+constexpr int kMaxTileCols = 17;
+constexpr int kMaxTileRows = 13;
 
-static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
-static uint8_t s_scene_pixels[kSceneW * kSceneH];
+struct TileLayer {
+  bool enabled;
+  char tileset[48];
+  int cols;
+  int rows;
+  uint8_t cells[kMaxTileRows][kMaxTileCols];
+};
 
 struct Placement {
   char obj_id[32];
   int x;
   int y;
 };
+
+static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
+static uint8_t s_scene_pixels[kSceneW * kSceneH];
+/** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
+static Placement s_placements[kMaxPlacements];
+static TileLayer s_tile_layers[kMaxTileLayers];
+static TurtleTileset s_tileset_draw;
 
 static const char* strstr_bounded(const char* s, const char* e, const char* needle) {
   const size_t nl = strlen(needle);
@@ -262,6 +278,15 @@ static bool find_sprite_inner(const char* json, const char* json_end, const char
 static bool find_background_inner(const char* json, const char* json_end, const char* bg_id,
                                   const char** inner, const char** inner_end) {
   return find_asset_inner(json, json_end, "backgrounds", bg_id, inner, inner_end);
+}
+
+static bool find_tileset_inner(const char* json, const char* json_end, const char* tileset_id,
+                               const char** inner, const char** inner_end) {
+  return find_asset_inner(json, json_end, "tilesets", tileset_id, inner, inner_end);
+}
+
+static bool buffer_is_turtle_tileset_bin(const char* data, size_t len) {
+  return len >= 10 && data && data[0] == 'T' && data[1] == 'T' && data[2] == 'S' && data[3] == 0;
 }
 
 static bool buffer_is_turtle_asset_bin(const char* data, size_t len) {
@@ -808,6 +833,295 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
   return true;
 }
 
+static bool json_extract_bool_for_key(const char* s, const char* e, const char* key_name, bool* out) {
+  char pattern[40];
+  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
+  const char* p = strstr_bounded(s, e, pattern);
+  if (!p) {
+    return false;
+  }
+  p += strlen(pattern);
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= e || *p != ':') {
+    return false;
+  }
+  ++p;
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p + 4 <= e && memcmp(p, "true", 4) == 0) {
+    *out = true;
+    return true;
+  }
+  if (p + 5 <= e && memcmp(p, "false", 5) == 0) {
+    *out = false;
+    return true;
+  }
+  int v = 0;
+  if (parse_int_bounded(p, e, &v)) {
+    *out = v != 0;
+    return true;
+  }
+  return false;
+}
+
+static void tile_grid_dims(int tile_px, int* cols, int* rows) {
+  int px = tile_px;
+  if (px < 1) {
+    px = 16;
+  }
+  int c = kSceneW / px;
+  int r = kSceneH / px;
+  if (c < 1) {
+    c = 1;
+  }
+  if (r < 1) {
+    r = 1;
+  }
+  if (c > kMaxTileCols) {
+    c = kMaxTileCols;
+  }
+  if (r > kMaxTileRows) {
+    r = kMaxTileRows;
+  }
+  *cols = c;
+  *rows = r;
+}
+
+static bool parse_tile_cells(const char* layer_start, const char* layer_end, int cols, int rows,
+                             uint8_t fill, uint8_t cells[kMaxTileRows][kMaxTileCols]) {
+  for (int gy = 0; gy < rows; ++gy) {
+    for (int gx = 0; gx < cols; ++gx) {
+      cells[gy][gx] = fill;
+    }
+  }
+  const char* ck = strstr_bounded(layer_start, layer_end, "\"cells\"");
+  if (!ck) {
+    return false;
+  }
+  const char* p = ck + 7;
+  while (p < layer_end && *p != '[') {
+    ++p;
+  }
+  if (p >= layer_end || *p != '[') {
+    return false;
+  }
+  ++p;
+
+  int gy = 0;
+  while (gy < rows && p < layer_end) {
+    while (p < layer_end &&
+           (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= layer_end || *p == ']') {
+      break;
+    }
+    if (*p != '[') {
+      return false;
+    }
+    ++p;
+
+    int gx = 0;
+    while (gx < cols && p < layer_end) {
+      while (p < layer_end &&
+             (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+        ++p;
+      }
+      if (p >= layer_end) {
+        break;
+      }
+      if (*p == ']') {
+        break;
+      }
+      int v = 0;
+      if (!parse_int_bounded(p, layer_end, &v)) {
+        break;
+      }
+      while (p < layer_end && (*p == '-' || isdigit(static_cast<unsigned char>(*p)))) {
+        ++p;
+      }
+      if (v < 0) {
+        v = 0;
+      }
+      if (v > 255) {
+        v = 255;
+      }
+      cells[gy][gx] = static_cast<uint8_t>(v);
+      ++gx;
+    }
+    while (p < layer_end && isspace(static_cast<unsigned char>(*p))) {
+      ++p;
+    }
+    if (p < layer_end && *p == ']') {
+      ++p;
+    }
+    ++gy;
+  }
+  return gy > 0;
+}
+
+static int parse_tile_layers(const char* sc_start, const char* sc_end, int tile_px, TileLayer* out,
+                             int max_out) {
+  int cols = 0;
+  int rows = 0;
+  tile_grid_dims(tile_px, &cols, &rows);
+
+  const char* tk = strstr_bounded(sc_start, sc_end, "\"tile_layers\"");
+  if (!tk) {
+    return 0;
+  }
+  const char* p = tk + 13;
+  while (p < sc_end && *p != '[') {
+    ++p;
+  }
+  if (p >= sc_end || *p != '[') {
+    return 0;
+  }
+  ++p;
+
+  int n = 0;
+  while (p < sc_end && *p != ']' && n < max_out) {
+    while (p < sc_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= sc_end || *p == ']') {
+      break;
+    }
+    if (*p != '{') {
+      break;
+    }
+    const char* ob = p;
+    const char* oe = json_object_end(ob);
+    if (!oe) {
+      break;
+    }
+
+    TileLayer* ly = &out[n];
+    ly->enabled = false;
+    ly->tileset[0] = '\0';
+    ly->cols = cols;
+    ly->rows = rows;
+    json_extract_bool_for_key(ob, oe, "enabled", &ly->enabled);
+    json_extract_string_for_key(ob, oe, "tileset", ly->tileset, sizeof ly->tileset);
+    if (!ly->tileset[0]) {
+      json_extract_string_for_key(ob, oe, "tileset_id", ly->tileset, sizeof ly->tileset);
+    }
+    parse_tile_cells(ob, oe, cols, rows, static_cast<uint8_t>(kDefaultTransparentIndex),
+                     ly->cells);
+    ++n;
+    p = oe;
+  }
+  return n;
+}
+
+static bool resolve_tileset_tts(const char* json, const char* json_end, const char* tileset_id,
+                                AssetSdLoad* sd, TurtleTileset* ts) {
+  turtle_tileset_free(ts);
+
+  const char* inner = nullptr;
+  const char* inner_end = nullptr;
+  if (find_tileset_inner(json, json_end, tileset_id, &inner, &inner_end)) {
+    const char* asset_inner = inner;
+    const char* asset_inner_end = inner_end;
+    if (!sd->resolve(inner, inner_end, &asset_inner, &asset_inner_end)) {
+      return false;
+    }
+    const size_t blob_len = (asset_inner_end > asset_inner)
+                                ? static_cast<size_t>(asset_inner_end - asset_inner)
+                                : 0;
+    if (!buffer_is_turtle_tileset_bin(asset_inner, blob_len)) {
+      Serial.printf("turtle_scene: tileset \"%s\" en bundle no es .tts binario\n", tileset_id);
+      return false;
+    }
+    return turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(asset_inner), blob_len, ts);
+  }
+
+  char path[80];
+  snprintf(path, sizeof path, "/tiles/%s.tts", tileset_id);
+  if (!sd->load_path(path)) {
+    Serial.printf("turtle_scene: tileset \"%s\" no en bundle ni %s en SD\n", tileset_id, path);
+    return false;
+  }
+  if (!buffer_is_turtle_tileset_bin(sd->buf.data, sd->buf.len)) {
+    Serial.printf("turtle_scene: %s no es .tts valido\n", path);
+    return false;
+  }
+  return turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(sd->buf.data), sd->buf.len, ts);
+}
+
+static void draw_tile_layers_for_scene(const char* json, const char* json_end,
+                                       const char* scene_start, const char* scene_end,
+                                       uint8_t transparent_index) {
+  int tile_px = 16;
+  if (!json_extract_int_for_key(json, json_end, "tile_px", &tile_px) || tile_px < 4 ||
+      tile_px > 64) {
+    tile_px = 16;
+  }
+
+  const int nl =
+      parse_tile_layers(scene_start, scene_end, tile_px, s_tile_layers, kMaxTileLayers);
+  if (nl <= 0) {
+    return;
+  }
+
+  int painted = 0;
+  char last_id[48] = "";
+  turtle_tileset_free(&s_tileset_draw);
+  AssetSdLoad sd;
+
+  for (int li = 0; li < nl; ++li) {
+    const TileLayer* ly = &s_tile_layers[li];
+    if (!ly->enabled || !ly->tileset[0]) {
+      continue;
+    }
+    if (strcmp(last_id, ly->tileset) != 0) {
+      turtle_tileset_free(&s_tileset_draw);
+      if (!resolve_tileset_tts(json, json_end, ly->tileset, &sd, &s_tileset_draw)) {
+        last_id[0] = '\0';
+        continue;
+      }
+      snprintf(last_id, sizeof last_id, "%s", ly->tileset);
+      Serial.printf("turtle_scene: tileset \"%s\" listo (%u tiles, %u px)\n", ly->tileset,
+                    static_cast<unsigned>(s_tileset_draw.tile_count),
+                    static_cast<unsigned>(s_tileset_draw.tile_px));
+    }
+    if (s_tileset_draw.tile_px != static_cast<uint8_t>(tile_px)) {
+      Serial.printf("turtle_scene: tileset \"%s\" tile_px=%u != bundle %d; capa omitida\n",
+                    ly->tileset, static_cast<unsigned>(s_tileset_draw.tile_px), tile_px);
+      continue;
+    }
+
+    const int cols = ly->cols;
+    const int rows = ly->rows;
+    const int px = tile_px;
+    for (int gy = 0; gy < rows; ++gy) {
+      const int sy0 = (rows - 1 - gy) * px;
+      for (int gx = 0; gx < cols; ++gx) {
+        const int ti = ly->cells[gy][gx];
+        if (ti == static_cast<int>(transparent_index) || ti < 0) {
+          continue;
+        }
+        const uint8_t* tile = turtle_tileset_tile(&s_tileset_draw, ti);
+        if (!tile) {
+          continue;
+        }
+        turtle_gpu_blit_indexed_scene(gx * px, sy0, px, px, tile, px, transparent_index);
+        ++painted;
+        if ((painted & 7) == 0) {
+          yield();
+        }
+      }
+    }
+  }
+  turtle_tileset_free(&s_tileset_draw);
+  if (painted > 0) {
+    Serial.printf("turtle_scene: %d celdas tile pintadas (%d capas)\n", painted, nl);
+  }
+}
+
 static bool parse_placements(const char* scene_start, const char* scene_end, Placement* out,
                              int* out_count) {
   *out_count = 0;
@@ -944,9 +1258,8 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     transp = 31;
   }
 
-  Placement placements[kMaxPlacements];
   int npl = 0;
-  if (!parse_placements(sc_start, sc_end, placements, &npl)) {
+  if (!parse_placements(sc_start, sc_end, s_placements, &npl)) {
     Serial.println("turtle_scene: sin lista objects valida; solo fondo");
   }
 
@@ -957,10 +1270,15 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
   }
 
+  draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, static_cast<uint8_t>(transp));
+
   for (int i = 0; i < npl; ++i) {
-    if (!draw_sprite_for_object(json, json_end, placements[i].obj_id, placements[i].x,
-                                placements[i].y, static_cast<uint8_t>(transp))) {
-      Serial.printf("turtle_scene: no sprite para objeto \"%s\"\n", placements[i].obj_id);
+    if (!draw_sprite_for_object(json, json_end, s_placements[i].obj_id, s_placements[i].x,
+                                s_placements[i].y, static_cast<uint8_t>(transp))) {
+      Serial.printf("turtle_scene: no sprite para objeto \"%s\"\n", s_placements[i].obj_id);
+    }
+    if ((i & 3) == 3) {
+      yield();
     }
   }
 

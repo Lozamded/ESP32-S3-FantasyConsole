@@ -8,6 +8,9 @@ MODE_SOLID = 0
 MODE_RAW = 1
 MODE_ROW_RLE = 2
 
+TTS_MAGIC = b"TTS\0"
+TTS_HEADER_SIZE = 10
+
 
 def decode_indexed_blob(
     data: bytes, *, expect_w: int, expect_h: int
@@ -63,3 +66,33 @@ def decode_indexed_blob(
         return pw, ph, out
 
     return None
+
+
+def decode_tileset_blob(data: bytes) -> tuple[int, list[list[list[int]]]] | None:
+    """
+    Devuelve (tile_px, lista de matrices [tile][y][x]) desde un .tts exportado.
+    """
+    if len(data) < TTS_HEADER_SIZE or data[:4] != TTS_MAGIC:
+        return None
+    if data[4] != 0:
+        return None
+    px, count = struct.unpack_from("<HH", data, 6)
+    if px < 1 or count < 0:
+        return None
+    off = TTS_HEADER_SIZE
+    tiles: list[list[list[int]]] = []
+    for _ in range(count):
+        if off + 4 > len(data):
+            return None
+        (chunk_len,) = struct.unpack_from("<I", data, off)
+        off += 4
+        if chunk_len < 11 or off + chunk_len > len(data):
+            return None
+        chunk = data[off : off + chunk_len]
+        off += chunk_len
+        got = decode_indexed_blob(chunk, expect_w=px, expect_h=px)
+        if got is None:
+            return None
+        _, _, rows = got
+        tiles.append(rows)
+    return px, tiles

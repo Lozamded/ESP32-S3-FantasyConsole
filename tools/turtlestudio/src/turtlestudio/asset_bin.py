@@ -14,7 +14,9 @@ from turtlestudio.palette_policy import clamp_pixel_storage_index
 
 TBG_MAGIC = b"TBG\0"
 TSP_MAGIC = b"TSP\0"
+TTS_MAGIC = b"TTS\0"
 BIN_VERSION = 0
+TTS_HEADER_SIZE = 10
 
 MODE_SOLID = 0
 MODE_RAW = 1
@@ -106,3 +108,21 @@ def sprite_json_to_tsp(data: dict[str, Any]) -> bytes:
         return _header(TSP_MAGIC, pw, ph, MODE_SOLID) + bytes([0])
     body = encode_indexed_rows(pw, ph, rows)
     return TSP_MAGIC + body[4:]  # mismo layout, distinto magic
+
+
+def tileset_json_to_tts(data: dict[str, Any]) -> bytes:
+    """
+    Tileset completo: cabecera TTS + N bloques (u32 tamano + mini-blob TSP por tile).
+    Cada tile es tile_px×tile_px indexado (misma codificacion que .tsp).
+    """
+    from turtlestudio.tiles import parse_tileset_all_tiles, tileset_file_pixel_dimensions
+
+    px = tileset_file_pixel_dimensions(data)
+    tiles = parse_tileset_all_tiles(data, fill_index=1)
+    out = bytearray(TTS_MAGIC + bytes([BIN_VERSION, 0]) + _u16_le(px) + _u16_le(len(tiles)))
+    for rows in tiles:
+        inner = encode_indexed_rows(px, px, rows)
+        chunk = TSP_MAGIC + inner[4:]
+        out.extend(struct.pack("<I", len(chunk)))
+        out.extend(chunk)
+    return bytes(out)

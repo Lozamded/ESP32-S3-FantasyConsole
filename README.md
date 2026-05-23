@@ -57,13 +57,14 @@ PYTHONPATH=src python3 src/turtlestudio/verify_package.py /ruta/a/build
 PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /ruta/al/proyecto
 ```
 
-Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp`).
+Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp` y `turtle_tileset.cpp`).
 
 Con **paquete SD** (carpeta `build/` copiada entera), el monitor serial deberia mostrar algo como:
 - `SD: leyendo /main.turtlecart` (~5–50 KB, no ~1 MB)
 - `Bundle embebido: … bytes`
 - `turtle_scene: bin SD /backgrounds/cielo.tbg 264x198 mode 2 (... bytes)`
 - `turtle_scene: fondo "cielo" indexed 264x198`
+- `turtle_tileset: 10 tiles 16x16 (... bytes)` y `turtle_scene: N celdas tile pintadas`
 - `turtle_scene: asset SD /objects/bloque.json` (por objeto)
 - `turtle_scene: sprite "bloque_rojo" desde SD` o `asset SD /sprites/….json`
 - `Escena inicial (C++ desde bundle) aplicada tras Lua.`

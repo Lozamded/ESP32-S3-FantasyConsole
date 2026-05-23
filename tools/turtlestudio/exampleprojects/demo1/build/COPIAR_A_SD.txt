@@ -13,8 +13,9 @@ Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
   sprites/character_idle.tsp
   sprites/character_jump.tsp
   sprites/character_walk.tsp
+  tiles/tileset1.tts
 
-No copies solo el .turtlecart: los fondos/sprites/objetos referenciados
-estan en las subcarpetas backgrounds/, sprites/, objects/.
+No copies solo el .turtlecart: los fondos/sprites/tilesets/objetos referenciados
+estan en las subcarpetas backgrounds/, sprites/, tiles/, objects/.
 
 Generado por TurtleStudio.

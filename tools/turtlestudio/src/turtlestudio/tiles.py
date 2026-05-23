@@ -241,6 +241,39 @@ def write_tileset_json(
     return path
 
 
+def collect_tileset_stems_from_scenes(scenes: list[Any]) -> set[str]:
+    """Stems de tileset referenciados en capas de tile de las escenas."""
+    stems: set[str] = set()
+    if not isinstance(scenes, list):
+        return stems
+    for row in scenes:
+        if not isinstance(row, dict):
+            continue
+        raw = row.get("tile_layers")
+        if not isinstance(raw, list):
+            continue
+        for ly in raw:
+            if not isinstance(ly, dict):
+                continue
+            ts = str(ly.get("tileset", ly.get("tileset_id", ""))).strip()
+            if ts:
+                stems.add(ts)
+    return stems
+
+
+def shrink_tileset_json_for_export(data: dict[str, Any]) -> dict[str, Any]:
+    """JSON minimo para sidecar / comparacion en pruebas."""
+    tid = str(data.get("id", "")).strip()
+    return {
+        "format_version": int(data.get("format_version", TILESET_JSON_VERSION)),
+        "kind": TILESET_JSON_KIND,
+        "id": tid,
+        "palette": str(data.get("palette", "")).strip(),
+        "tile_px": tileset_file_pixel_dimensions(data),
+        "tiles": data.get("tiles") if isinstance(data.get("tiles"), list) else [],
+    }
+
+
 def empty_tile_rows(tile_px: int, *, fill_index: int = 1) -> list[list[int]]:
     px = normalize_tile_px(tile_px)
     fi = max(0, int(fill_index))

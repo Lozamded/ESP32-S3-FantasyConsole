@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from turtlestudio.asset_bin_decode import decode_indexed_blob
+from turtlestudio.asset_bin_decode import decode_indexed_blob, decode_tileset_blob
 from turtlestudio.backgrounds import (
     parse_background_palette_rows,
     read_background_file,
@@ -13,6 +13,7 @@ from turtlestudio.backgrounds import (
 )
 from turtlestudio.build import collect_studio_bundle_files, write_cart_package
 from turtlestudio.sprites import parse_palette_rows_image, read_sprite_file
+from turtlestudio.tiles import parse_tileset_all_tiles, read_tileset_file, shrink_tileset_json_for_export
 from turtlestudio.verify_package import verify_package_dir
 
 
@@ -85,6 +86,27 @@ def test_demo1_build(project_root: Path) -> list[str]:
                 errors.append(f"{tsp.name}: pixels distintos al JSON")
         except ValueError as e:
             errors.append(f"{tsp.name}: {e}")
+
+    for tts in (build / "tiles").glob("*.tts"):
+        stem = tts.stem
+        try:
+            src = shrink_tileset_json_for_export(read_tileset_file(project_root, stem))
+            expect = parse_tileset_all_tiles(src, fill_index=1)
+            got_px, got_tiles = decode_tileset_blob(tts.read_bytes())
+            if got_px is None or got_tiles is None:
+                errors.append(f"{tts.name}: decode fallo")
+                continue
+            if got_px != int(src.get("tile_px", 16)):
+                errors.append(f"{tts.name}: tile_px distinto al JSON")
+            if len(got_tiles) != len(expect):
+                errors.append(f"{tts.name}: numero de tiles distinto al JSON")
+                continue
+            for i, (a, b) in enumerate(zip(got_tiles, expect)):
+                if not _rows_equal(a, b):
+                    errors.append(f"{tts.name}: tile T{i} distinto al JSON")
+                    break
+        except ValueError as e:
+            errors.append(f"{tts.name}: {e}")
 
     return errors
 

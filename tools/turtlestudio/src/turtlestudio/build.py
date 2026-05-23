@@ -15,6 +15,7 @@ DEFAULT_ASSET_INLINE_MAX_BYTES = 32 * 1024
 BACKGROUND_REF_KIND = "turtlestudio.background_ref"
 SPRITE_REF_KIND = "turtlestudio.sprite_ref"
 OBJECT_REF_KIND = "turtlestudio.object_ref"
+TILESET_REF_KIND = "turtlestudio.tileset_ref"
 DEFAULT_PACKAGE_DIR_NAME = "build"
 DEFAULT_CART_FILENAME = "main.turtlecart"
 SD_DEPLOY_README_NAME = "COPIAR_A_SD.txt"
@@ -203,7 +204,7 @@ class CartExportPackage:
     """Archivos del cartucho: embebidos en `.turtlecart` y sidecar en la misma carpeta de salida."""
 
     embedded: tuple[tuple[str, str], ...]
-    # str = JSON texto (objects); bytes = binario .tbg / .tsp para ESP32
+    # str = JSON texto (objects); bytes = binario .tbg / .tsp / .tts para ESP32
     sidecar: tuple[tuple[str, str | bytes], ...]
 
 
@@ -233,6 +234,31 @@ def should_externalize_sprite(data: dict[str, Any]) -> bool:
     return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
 
 
+def should_externalize_tileset(data: dict[str, Any]) -> bool:
+    """Tilesets con arte indexado van siempre a sidecar .tts (suelen ser varios tiles)."""
+    from turtlestudio.tiles import parse_tileset_all_tiles
+
+    if parse_tileset_all_tiles(data, fill_index=1):
+        return True
+    return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
+
+
+def _manifest_tile_px(project_root: Path) -> int:
+    from turtlestudio.project import MANIFEST_NAME
+    from turtlestudio.tiles import DEFAULT_TILE_PX, parse_tile_px_from_manifest
+
+    mp = project_root / MANIFEST_NAME
+    if not mp.is_file():
+        return DEFAULT_TILE_PX
+    try:
+        data = json.loads(mp.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return DEFAULT_TILE_PX
+    if not isinstance(data, dict):
+        return DEFAULT_TILE_PX
+    return parse_tile_px_from_manifest(data)
+
+
 def _asset_ref_entry(asset_id: str, sd_relpath: str, ref_kind: str) -> dict[str, Any]:
     return {
         "format_version": 1,
@@ -256,19 +282,30 @@ def collect_studio_bundle_files(
     Rutas sidecar (p. ej. `backgrounds/cielo.json`) coinciden con el proyecto; copiar la
     carpeta de exportacion entera a la raiz de la microSD.
     """
-    from turtlestudio.asset_bin import background_json_to_tbg, sprite_json_to_tsp
+    from turtlestudio.asset_bin import (
+        background_json_to_tbg,
+        sprite_json_to_tsp,
+        tileset_json_to_tts,
+    )
     from turtlestudio.backgrounds import read_background_file, shrink_background_json_for_export
     from turtlestudio.objects import object_sprite_ids_for_bundle, read_object_file
     from turtlestudio.sprites import read_sprite_file
+    from turtlestudio.tiles import (
+        collect_tileset_stems_from_scenes,
+        read_tileset_file,
+        shrink_tileset_json_for_export,
+    )
 
     root = project_root.expanduser().resolve()
     entry = _normalize_entry_path(entry_relpath)
     from turtlestudio.palette_policy import clamp_transparent_index
 
     ti = clamp_transparent_index(transparent_index)
+    tile_px = _manifest_tile_px(root)
 
     oids: set[str] = set()
     bg_stems: set[str] = set()
+    tile_stems: set[str] = collect_tileset_stems_from_scenes(scenes)
     for row in scenes:
         if not isinstance(row, dict):
             continue
@@ -333,16 +370,32 @@ def collect_studio_bundle_files(
         else:
             backgrounds_map[bid] = data
 
+    tilesets_map: dict[str, Any] = {}
+    for tid in sorted(tile_stems):
+        try:
+            data = shrink_tileset_json_for_export(read_tileset_file(root, tid))
+        except ValueError:
+            tilesets_map[tid] = {"error": "missing_tileset_json", "id": tid}
+            continue
+        rel = f"tiles/{tid}.tts"
+        if should_externalize_tileset(data):
+            tilesets_map[tid] = _asset_ref_entry(tid, rel, TILESET_REF_KIND)
+            sidecar.append((rel, tileset_json_to_tts(data)))
+        else:
+            tilesets_map[tid] = data
+
     bundle: dict[str, Any] = {
         "format_version": 1,
         "kind": "turtlestudio.cart_bundle",
         "entry": entry,
         "transparent_index": ti,
+        "tile_px": tile_px,
         "active_scene": (active_scene.strip() or DEFAULT_EXPORT_INITIAL_SCENE_ID),
         "scenes": scenes,
         "objects": objects_map,
         "sprites": sprites_map,
         "backgrounds": backgrounds_map,
+        "tilesets": tilesets_map,
     }
     bundle_text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
     embedded = [("studio/project_bundle.json", bundle_text)]
@@ -382,8 +435,8 @@ def _sd_deploy_readme_text(*, cart_name: str, sidecar_rels: Sequence[str]) -> st
     lines.extend(
         [
             "",
-            "No copies solo el .turtlecart: los fondos/sprites/objetos referenciados",
-            "estan en las subcarpetas backgrounds/, sprites/, objects/.",
+            "No copies solo el .turtlecart: los fondos/sprites/tilesets/objetos referenciados",
+            "estan en las subcarpetas backgrounds/, sprites/, tiles/, objects/.",
             "",
             "Generado por TurtleStudio.",
         ]
@@ -490,7 +543,7 @@ def write_cart_sidecar_files(
     output_cart: Path,
     sidecar_files: Sequence[tuple[str, str | bytes]] | None,
 ) -> list[Path]:
-    """Escribe sidecars junto al `.turtlecart` (JSON o binario .tbg/.tsp)."""
+    """Escribe sidecars junto al `.turtlecart` (JSON o binario .tbg/.tsp/.tts)."""
     written: list[Path] = []
     if not sidecar_files:
         return written
