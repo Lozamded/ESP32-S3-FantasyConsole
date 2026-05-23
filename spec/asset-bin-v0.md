@@ -19,7 +19,19 @@ Al **exportar el paquete SD**, los pixeles indexados se convierten a binario:
 | 5 | `flags` u8 (=0) |
 | 6 | `pixel_w` u16 |
 | 8 | `pixel_h` u16 |
-| 10 | `mode` u8 |
+| 10 | `mode` u8 (solo v0 mono-fotograma) |
+
+### Sprite multi-fotograma (`.tsp` version 1)
+
+| Offset | Campo |
+|--------|--------|
+| 4 | `version` u8 (=1) |
+| 6 | `pixel_w` u16 |
+| 8 | `pixel_h` u16 |
+| 10 | `frame_count` u16 |
+| 12+ | Por fotograma: `chunk_len` u32 + `[mode u8][payload…]` (mismo payload que v0 tras `mode`) |
+
+`version` 0 = un solo fotograma (layout anterior). El exportador usa v1 si `frame_count > 1` en el JSON del sprite.
 
 ## Modos (`mode`)
 

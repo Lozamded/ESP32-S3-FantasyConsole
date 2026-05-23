@@ -29,3 +29,10 @@ bool turtle_cart_header_value(const TurtleCartBuffer* cart, const char* key, cha
 /** Texto entre `PALETTE:` y el primer `---FILE:` (puede estar vacio). */
 bool turtle_cart_extract_palette(const TurtleCartBuffer* cart, const char** out_begin,
                                  size_t* out_len);
+
+/**
+ * Carga `studio/project_bundle.json` segun BUNDLE_FILE: del cartucho, o embebido (legacy).
+ * `cart` puede ser solo la cabecera + ENTRY (pequeno).
+ */
+bool turtle_cart_load_bundle_for_cart(const TurtleCartBuffer* cart, TurtleCartBuffer* out,
+                                      bool quiet = false);

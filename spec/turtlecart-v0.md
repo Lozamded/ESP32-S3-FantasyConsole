@@ -34,19 +34,20 @@ En TurtleStudio el arranque se edita como `scripts/global.lua` en el proyecto y 
 1. Primera linea exacta: `TURTLECART:0`
 2. Linea: `ENTRY:<ruta>` (archivo embebido que se ejecuta como Lua).
 3. Opcional: linea `INITIAL_SCENE:<id>` — escena de arranque para datos embebidos / runtime (misma convencion que ids de escena en `turtlestudio.json`). Si falta, herramientas y firmware pueden asumir **`intro`**. El id de escena **`main` esta reservado** (nombre convencional del cartucho principal `main.turtlecart` en TurtleStudio; no debe usarse como `id` de escena en el manifest).
-4. Opcional: bloque `PALETTE:` **en su propia linea**, seguido de **una linea por color**:
+4. Opcional: linea `BUNDLE_FILE:<ruta>` — JSON del bundle en la SD (p. ej. `studio/project_bundle.json`). **No** embeber el bundle en `main.turtlecart` (ahorra RAM en ESP32). Si falta, el firmware intenta el sidecar por defecto o bundle embebido legacy.
+5. Opcional: bloque `PALETTE:` **en su propia linea**, seguido de **una linea por color**:
    - Formato recomendado: `#RRGGBB` (hex, mayusculas o minusculas).
    - Tambien aceptado: `#RGB` (se expande a `#RRGGBB` duplicando cada nibble).
    - Lineas vacias se ignoran; lineas invalidas se saltan.
    - Puedes poner **mas de 32 lineas** en el archivo; el runtime actual solo aplica las **primeras 32 entradas validas** a los indices `0..31` de `pix`/`cls`. El resto se ignora (reserva para futuras versiones o herramientas).
    - Si hay **menos de 32** colores validos, los indices faltantes se rellenan con `#000000`.
    - El bloque de paleta termina donde empieza la primera linea `---FILE:` (debe haber al menos un archivo embebido despues en el cartucho normal).
-5. Contenido de archivos embebidos entre:
+6. Contenido de archivos embebidos (solo ENTRY Lua; el bundle va en sidecar) entre:
    - inicio: `---FILE:<ruta>---`
    - fin: `---END---`
-6. Debe existir el archivo indicado en `ENTRY`.
+7. Debe existir el archivo indicado en `ENTRY`.
 
-Orden recomendado: `TURTLECART:` → `ENTRY:` → `INITIAL_SCENE:` → `PALETTE:` (si hay) → `---FILE:...---` ...
+Orden recomendado: `TURTLECART:` → `ENTRY:` → `INITIAL_SCENE:` → `BUNDLE_FILE:` → `PALETTE:` (si hay) → `---FILE:ENTRY---` ...
 
 ## Escena y coordenadas
 

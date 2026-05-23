@@ -23,15 +23,22 @@ static size_t psram_free_bytes(void) {
 static char* alloc_cart_buffer(size_t sz, bool* used_psram) {
   *used_psram = false;
 #if defined(ESP32) || defined(ESP_PLATFORM)
-  if (psram_free_bytes() >= sz + 64) {
-    char* p = static_cast<char*>(heap_caps_malloc(sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (p) {
-      *used_psram = true;
-      return p;
-    }
+  char* p = static_cast<char*>(heap_caps_malloc(sz + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (p) {
+    *used_psram = true;
+    return p;
   }
-#endif
+  p = static_cast<char*>(heap_caps_malloc(sz + 1, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (p) {
+    return p;
+  }
+  Serial.printf("SD: heap interna libre ~%u, PSRAM ~%u\n",
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                static_cast<unsigned>(psram_free_bytes()));
+  return nullptr;
+#else
   return static_cast<char*>(malloc(sz + 1));
+#endif
 }
 
 }  // namespace
@@ -268,5 +275,68 @@ bool turtle_cart_extract_palette(const TurtleCartBuffer* cart, const char** out_
     }
     return false;
   }
+  return false;
+}
+
+bool turtle_cart_load_bundle_for_cart(const TurtleCartBuffer* cart, TurtleCartBuffer* out,
+                                      bool quiet) {
+  if (!out) {
+    return false;
+  }
+  turtle_cart_free(out);
+
+  char rel[96] = "studio/project_bundle.json";
+  if (cart && cart->data) {
+    char from_header[96];
+    if (turtle_cart_header_value(cart, "BUNDLE_FILE:", from_header, sizeof from_header) &&
+        from_header[0]) {
+      snprintf(rel, sizeof rel, "%s", from_header);
+    }
+  }
+
+  char path[112];
+  if (rel[0] == '/') {
+    snprintf(path, sizeof path, "%s", rel);
+  } else {
+    snprintf(path, sizeof path, "/%s", rel);
+  }
+
+  if (turtle_cart_load_sd_file(path, out, quiet)) {
+    if (!quiet) {
+      Serial.printf("SD: bundle desde %s\n", path);
+    }
+    return true;
+  }
+
+  if (cart) {
+    const char* begin = nullptr;
+    size_t len = 0;
+    if (turtle_cart_extract_embedded(cart, "studio/project_bundle.json", &begin, &len) && begin &&
+        len > 0) {
+      out->data = static_cast<char*>(malloc(len + 1));
+      if (!out->data) {
+#if defined(ESP32) || defined(ESP_PLATFORM)
+        out->data = static_cast<char*>(
+            heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (out->data) {
+          out->in_psram = true;
+        }
+#endif
+      }
+      if (!out->data) {
+        Serial.printf("SD: sin RAM para bundle embebido (%u bytes)\n", static_cast<unsigned>(len));
+        return false;
+      }
+      memcpy(out->data, begin, len);
+      out->data[len] = '\0';
+      out->len = len;
+      if (!quiet) {
+        Serial.printf("SD: bundle embebido en cart (%u bytes)\n", static_cast<unsigned>(len));
+      }
+      return true;
+    }
+  }
+
+  Serial.println("SD: no bundle (falta BUNDLE_FILE o studio/project_bundle.json en SD)");
   return false;
 }

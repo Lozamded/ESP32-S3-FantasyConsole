@@ -39,12 +39,35 @@ struct Placement {
   int y;
 };
 
+struct SceneActor {
+  char obj_id[32];
+  char sprite_id[48];
+  int x;
+  int y;
+  int pw;
+  int ph;
+  int origin_x;
+  int origin_y;
+  uint8_t frame_index;
+  uint8_t frame_count;
+  uint16_t anim_speed_x16;
+  uint32_t frame_accum_ms;
+};
+
 static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
 static uint8_t s_scene_pixels[kSceneW * kSceneH];
 /** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
 static Placement s_placements[kMaxPlacements];
 static TileLayer s_tile_layers[kMaxTileLayers];
 static TurtleTileset s_tileset_draw;
+static SceneActor s_actors[kMaxPlacements];
+static int s_actor_count = 0;
+static const char* s_runtime_json = nullptr;
+static const char* s_runtime_json_end = nullptr;
+static uint8_t s_runtime_transp = 31;
+static bool s_runtime_active = false;
+static int s_target_fps = 30;
+static int s_default_anim_fps = 8;
 
 static const char* strstr_bounded(const char* s, const char* e, const char* needle) {
   const size_t nl = strlen(needle);
@@ -622,13 +645,46 @@ static void extract_sprite_origin(const char* inner, const char* inner_end, int 
   *oy = ty;
 }
 
-static bool fill_pixels_from_asset_buffer(const char* inner, size_t len, int pw, int ph,
-                                          uint8_t* out, int stride) {
+static int sprite_frame_count_from_asset(const char* inner, const char* inner_end, size_t len) {
   if (buffer_is_turtle_asset_bin(inner, len)) {
+    const int fc =
+        turtle_asset_bin_sprite_frame_count(reinterpret_cast<const uint8_t*>(inner), len);
+    return fc > 0 ? fc : 1;
+  }
+  int fc = 1;
+  if (inner && inner_end && json_extract_int_for_key(inner, inner_end, "frame_count", &fc)) {
+    if (fc < 1) {
+      fc = 1;
+    }
+    if (fc > 32) {
+      fc = 32;
+    }
+    return fc;
+  }
+  return 1;
+}
+
+static bool buffer_is_turtle_background_bin(const char* data, size_t len) {
+  return len >= 11 && data && data[0] == 'T' && data[1] == 'B' && data[2] == 'G' && data[3] == 0;
+}
+
+static bool fill_pixels_from_asset_buffer(const char* inner, size_t len, int pw, int ph,
+                                          uint8_t* out, int stride, int frame_index) {
+  if (buffer_is_turtle_background_bin(inner, len)) {
+    if (frame_index != 0) {
+      return false;
+    }
     return turtle_asset_bin_decode_indexed(reinterpret_cast<const uint8_t*>(inner), len, pw, ph,
                                            out, stride);
   }
+  if (buffer_is_turtle_asset_bin(inner, len)) {
+    return turtle_asset_bin_decode_sprite_frame(reinterpret_cast<const uint8_t*>(inner), len,
+                                                frame_index, pw, ph, out, stride);
+  }
   if (!inner || !len) {
+    return false;
+  }
+  if (frame_index != 0) {
     return false;
   }
   return parse_palette_rows_image(inner, inner + len, pw, ph, out, stride);
@@ -649,7 +705,7 @@ static bool draw_indexed_asset_at_origin(const char* inner, const char* inner_en
   }
   memset(s_scene_pixels, 0, need);
   const size_t blob_len = (inner_end > inner) ? static_cast<size_t>(inner_end - inner) : 0;
-  if (!fill_pixels_from_asset_buffer(inner, blob_len, pw, ph, s_scene_pixels, pw)) {
+  if (!fill_pixels_from_asset_buffer(inner, blob_len, pw, ph, s_scene_pixels, pw, 0)) {
     Serial.printf("turtle_scene: pixels invalidos en %s\n", label);
     return false;
   }
@@ -739,7 +795,8 @@ static bool draw_background_for_scene(const char* json, const char* json_end,
 }
 
 static bool draw_sprite_for_object(const char* json, const char* json_end, const char* obj_id,
-                                   int scene_x, int scene_y, uint8_t transparent_index) {
+                                   int scene_x, int scene_y, uint8_t transparent_index,
+                                   int frame_index) {
   const char* od = find_root_objects_dict_brace(json, json_end);
   if (!od || *od != '{') {
     return false;
@@ -810,8 +867,9 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
     memset(s_sprite_pixels, 0, sizeof(s_sprite_pixels));
     const size_t blob_len =
         (asset_inner_end > asset_inner) ? static_cast<size_t>(asset_inner_end - asset_inner) : 0;
-    if (!fill_pixels_from_asset_buffer(asset_inner, blob_len, pw, ph, s_sprite_pixels, pw)) {
-      Serial.printf("turtle_scene: pixels invalidos en \"%s\"\n", sprite_id);
+    if (!fill_pixels_from_asset_buffer(asset_inner, blob_len, pw, ph, s_sprite_pixels, pw,
+                                       frame_index)) {
+      Serial.printf("turtle_scene: pixels invalidos en \"%s\" f%d\n", sprite_id, frame_index);
       return false;
     }
     turtle_gpu_blit_indexed_scene(blit_x, blit_y, pw, ph, s_sprite_pixels, pw, transparent_index);
@@ -1223,6 +1281,127 @@ static bool find_scene_block(const char* json, const char* json_end, const char*
   return false;
 }
 
+static void parse_bundle_timing(const char* json, const char* json_end) {
+  int tf = 30;
+  int af = 8;
+  if (!json_extract_int_for_key(json, json_end, "target_fps", &tf) || tf < 15 || tf > 60) {
+    tf = 30;
+  }
+  if (!json_extract_int_for_key(json, json_end, "default_anim_fps", &af) || af < 1 || af > 30) {
+    af = 8;
+  }
+  s_target_fps = tf;
+  s_default_anim_fps = af;
+}
+
+static bool init_actor_from_placement(const char* json, const char* json_end,
+                                      const Placement* pl, SceneActor* actor) {
+  const char* od = find_root_objects_dict_brace(json, json_end);
+  if (!od || *od != '{') {
+    return false;
+  }
+  const char* od_end = json_object_end(od);
+  if (!od_end) {
+    return false;
+  }
+
+  char pat[40];
+  snprintf(pat, sizeof pat, "\"%s\":", pl->obj_id);
+  const char* hit = strstr_bounded(od, od_end, pat);
+  if (!hit) {
+    return false;
+  }
+  const char* oinner = strchr(hit + strlen(pat), '{');
+  if (!oinner || oinner >= od_end) {
+    return false;
+  }
+  const char* oinner_end = json_object_end(oinner);
+  if (!oinner_end) {
+    return false;
+  }
+
+  AssetSdLoad obj_sd;
+  const char* obj_inner = oinner;
+  const char* obj_inner_end = oinner_end;
+  if (!obj_sd.resolve(oinner, oinner_end, &obj_inner, &obj_inner_end)) {
+    return false;
+  }
+
+  snprintf(actor->obj_id, sizeof actor->obj_id, "%s", pl->obj_id);
+  actor->sprite_id[0] = '\0';
+  if (!json_extract_string_for_key(obj_inner, obj_inner_end, "sprite_id", actor->sprite_id,
+                                   sizeof actor->sprite_id)) {
+    return false;
+  }
+  actor->x = pl->x;
+  actor->y = pl->y;
+  actor->frame_index = 0;
+  actor->frame_accum_ms = 0;
+  actor->anim_speed_x16 = 16;
+
+  AssetSdLoad sd;
+  const char* asset_inner = nullptr;
+  const char* asset_inner_end = nullptr;
+  if (!resolve_sprite_inner(json, json_end, actor->sprite_id, &sd, &asset_inner, &asset_inner_end)) {
+    return false;
+  }
+
+  const size_t blob_len =
+      (asset_inner_end > asset_inner) ? static_cast<size_t>(asset_inner_end - asset_inner) : 0;
+  actor->pw = 0;
+  actor->ph = 0;
+  if (!read_asset_bin_dims(asset_inner, blob_len, &actor->pw, &actor->ph) &&
+      !resolve_pixel_dims_sprite(asset_inner, asset_inner_end, &actor->pw, &actor->ph)) {
+    return false;
+  }
+  extract_sprite_origin(asset_inner, asset_inner_end, actor->pw, actor->ph, &actor->origin_x,
+                        &actor->origin_y);
+  actor->frame_count =
+      static_cast<uint8_t>(sprite_frame_count_from_asset(asset_inner, asset_inner_end, blob_len));
+  if (actor->frame_count < 1) {
+    actor->frame_count = 1;
+  }
+  return true;
+}
+
+static void draw_all_actors(void) {
+  if (!s_runtime_json || !s_runtime_json_end) {
+    return;
+  }
+  turtle_gpu_restore_static();
+  for (int i = 0; i < s_actor_count; ++i) {
+    const SceneActor* a = &s_actors[i];
+    if (!draw_sprite_for_object(s_runtime_json, s_runtime_json_end, a->obj_id, a->x, a->y,
+                                s_runtime_transp, a->frame_index)) {
+      Serial.printf("turtle_scene: no sprite para \"%s\"\n", a->obj_id);
+    }
+  }
+}
+
+static void tick_actors(uint32_t delta_ms) {
+  for (int i = 0; i < s_actor_count; ++i) {
+    SceneActor* a = &s_actors[i];
+    if (a->frame_count <= 1) {
+      continue;
+    }
+    const uint32_t speed = a->anim_speed_x16;
+    const uint32_t denom =
+        static_cast<uint32_t>(s_default_anim_fps) * speed;
+    if (denom == 0) {
+      continue;
+    }
+    uint32_t ms_per_frame = (1000u * 16u) / denom;
+    if (ms_per_frame < 1) {
+      ms_per_frame = 1;
+    }
+    a->frame_accum_ms += delta_ms;
+    while (a->frame_accum_ms >= ms_per_frame) {
+      a->frame_accum_ms -= ms_per_frame;
+      a->frame_index = static_cast<uint8_t>((a->frame_index + 1) % a->frame_count);
+    }
+  }
+}
+
 }  // namespace
 
 bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char* scene_id) {
@@ -1274,7 +1453,7 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
 
   for (int i = 0; i < npl; ++i) {
     if (!draw_sprite_for_object(json, json_end, s_placements[i].obj_id, s_placements[i].x,
-                                s_placements[i].y, static_cast<uint8_t>(transp))) {
+                                s_placements[i].y, static_cast<uint8_t>(transp), 0)) {
       Serial.printf("turtle_scene: no sprite para objeto \"%s\"\n", s_placements[i].obj_id);
     }
     if ((i & 3) == 3) {
@@ -1285,4 +1464,93 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
   Serial.printf("turtle_scene: escena \"%s\" (%d objetos), fondo idx %d (flip = host)\n", scene_id,
                  npl, bg);
   return true;
+}
+
+bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* scene_id) {
+  s_runtime_active = false;
+  s_actor_count = 0;
+  s_runtime_json = nullptr;
+  s_runtime_json_end = nullptr;
+
+  if (!json || json_len == 0 || !scene_id || !scene_id[0]) {
+    return false;
+  }
+  const char* json_end = json + json_len;
+  parse_bundle_timing(json, json_end);
+
+  const char* sc_start = nullptr;
+  const char* sc_end = nullptr;
+  if (!find_scene_block(json, json_end, scene_id, &sc_start, &sc_end)) {
+    Serial.printf("turtle_scene: escena \"%s\" no encontrada en bundle\n", scene_id);
+    return false;
+  }
+
+  int bg = 0;
+  if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
+    bg = 0;
+  }
+  if (bg < 0) {
+    bg = 0;
+  }
+  if (bg > 31) {
+    bg = 31;
+  }
+
+  int transp = kDefaultTransparentIndex;
+  if (!json_extract_int_for_key(json, json_end, "transparent_index", &transp)) {
+    transp = kDefaultTransparentIndex;
+  }
+  if (transp < 0) {
+    transp = 0;
+  }
+  if (transp > 31) {
+    transp = 31;
+  }
+  s_runtime_transp = static_cast<uint8_t>(transp);
+
+  int npl = 0;
+  if (!parse_placements(sc_start, sc_end, s_placements, &npl)) {
+    Serial.println("turtle_scene: sin lista objects valida; solo fondo");
+  }
+
+  turtle_gpu_cls(static_cast<uint8_t>(bg));
+  if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
+    Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
+  }
+  draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
+  turtle_gpu_snapshot_static();
+
+  s_runtime_json = json;
+  s_runtime_json_end = json_end;
+  s_actor_count = 0;
+  for (int i = 0; i < npl && s_actor_count < kMaxPlacements; ++i) {
+    if (init_actor_from_placement(json, json_end, &s_placements[i], &s_actors[s_actor_count])) {
+      ++s_actor_count;
+    }
+  }
+
+  draw_all_actors();
+  s_runtime_active = true;
+
+  Serial.printf(
+      "turtle_scene: runtime escena \"%s\" (%d actores), target_fps=%d anim_fps=%d (capa "
+      "estatica OK)\n",
+      scene_id, s_actor_count, s_target_fps, s_default_anim_fps);
+  return true;
+}
+
+void turtle_scene_runtime_tick(uint32_t delta_ms) {
+  if (!s_runtime_active || delta_ms == 0) {
+    return;
+  }
+  tick_actors(delta_ms);
+  draw_all_actors();
+}
+
+bool turtle_scene_runtime_active(void) {
+  return s_runtime_active;
+}
+
+int turtle_scene_target_fps(void) {
+  return s_target_fps;
 }

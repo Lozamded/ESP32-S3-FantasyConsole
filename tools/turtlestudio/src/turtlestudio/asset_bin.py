@@ -86,9 +86,17 @@ def background_json_to_tbg(data: dict[str, Any]) -> bytes:
     return encode_indexed_rows(pw, ph, rows)
 
 
+def _indexed_frame_payload(pw: int, ph: int, rows: list[list[int]]) -> bytes:
+    """Byte `mode` + payload (sin cabecera magic/dimensiones)."""
+    pack = encode_indexed_rows(pw, ph, rows)
+    return pack[10:]
+
+
 def sprite_json_to_tsp(data: dict[str, Any]) -> bytes:
     from turtlestudio.sprites import (
         parse_palette_rows_image,
+        parse_sprite_all_frame_rows,
+        parse_sprite_frame_count,
         sprite_is_indexed_pixels,
         sprite_pixel_dimensions,
     )
@@ -103,6 +111,18 @@ def sprite_json_to_tsp(data: dict[str, Any]) -> bytes:
             except (TypeError, ValueError):
                 idx = 0
         return _header(TSP_MAGIC, pw, ph, MODE_SOLID) + bytes([clamp_pixel_storage_index(idx)])
+
+    frame_count = parse_sprite_frame_count(data)
+    if frame_count > 1:
+        frames = parse_sprite_all_frame_rows(data)
+        fc = max(1, min(len(frames), frame_count))
+        out = bytearray(TSP_MAGIC + bytes([1, 0]) + _u16_le(pw) + _u16_le(ph) + _u16_le(fc))
+        for i in range(fc):
+            payload = _indexed_frame_payload(pw, ph, frames[i])
+            out.extend(struct.pack("<I", len(payload)))
+            out.extend(payload)
+        return bytes(out)
+
     rows = parse_palette_rows_image(data)
     if rows is None:
         return _header(TSP_MAGIC, pw, ph, MODE_SOLID) + bytes([0])

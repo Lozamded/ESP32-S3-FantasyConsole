@@ -13,6 +13,7 @@ Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
   sprites/character_idle.tsp
   sprites/character_jump.tsp
   sprites/character_walk.tsp
+  studio/project_bundle.json
   tiles/tileset1.tts
 
 No copies solo el .turtlecart: los fondos/sprites/tilesets/objetos referenciados

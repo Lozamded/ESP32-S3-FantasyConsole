@@ -15,6 +15,8 @@ static constexpr int kH = 198;
 static constexpr int kNColors = 32;
 
 static uint8_t s_fb[kW * kH];
+static uint8_t s_static_fb[kW * kH];
+static bool s_has_static = false;
 static uint16_t s_palette[kNColors];
 
 static constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -284,6 +286,22 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
 
 void turtle_gpu_flip(void) {
   turtle_fb_flush_to_display();
+}
+
+void turtle_gpu_snapshot_static(void) {
+  memcpy(s_static_fb, s_fb, sizeof(s_fb));
+  s_has_static = true;
+}
+
+void turtle_gpu_restore_static(void) {
+  if (!s_has_static) {
+    return;
+  }
+  memcpy(s_fb, s_static_fb, sizeof(s_fb));
+}
+
+bool turtle_gpu_has_static_snapshot(void) {
+  return s_has_static;
 }
 
 static int l_cls(lua_State* L) {

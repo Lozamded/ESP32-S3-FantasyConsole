@@ -3247,6 +3247,8 @@ def run_gui() -> int:
             "ts_btn_bg_match_ref_size",
             "ts_btn_bg_clear_pixels",
             "ts_tiles_px",
+            "ts_target_fps",
+            "ts_default_anim_fps",
             "ts_tileset_list",
             "ts_tileset_id",
             "ts_btn_tileset_create",
@@ -4593,6 +4595,12 @@ def run_gui() -> int:
     def _apply_project_scenes_from_info(info: ProjectInfo) -> None:
         _clear_pending_scene_placement()
         _apply_tiles_widgets(info.tile_px)
+        if dpg.does_item_exist("ts_target_fps"):
+            dpg.set_value("ts_target_fps", info.target_fps)
+        if dpg.does_item_exist("ts_default_anim_fps"):
+            dpg.set_value("ts_default_anim_fps", info.default_anim_fps)
+        state["target_fps"] = info.target_fps
+        state["default_anim_fps"] = info.default_anim_fps
         state["scenes"] = [
             {
                 "id": s.id,
@@ -5345,6 +5353,19 @@ def run_gui() -> int:
         for rel in rels:
             lua_files[rel] = lua_m.get(rel, "")
         try:
+            from turtlestudio.project_runtime import (
+                clamp_default_anim_fps,
+                clamp_target_fps,
+            )
+
+            tf = clamp_target_fps(
+                dpg.get_value("ts_target_fps") if dpg.does_item_exist("ts_target_fps") else 30
+            )
+            af = clamp_default_anim_fps(
+                dpg.get_value("ts_default_anim_fps")
+                if dpg.does_item_exist("ts_default_anim_fps")
+                else 8
+            )
             script_path, pal_updated, scenes_updated, tiles_updated = save_project(
                 root,
                 lua_files=lua_files,
@@ -5353,6 +5374,8 @@ def run_gui() -> int:
                 active_scene=active,
                 transparent_index=DEFAULT_TRANSPARENT_INDEX,
                 tile_px=_tiles_px_from_widgets(),
+                target_fps=tf,
+                default_anim_fps=af,
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Error al guardar: {e}\n")
@@ -5368,6 +5391,8 @@ def run_gui() -> int:
             bits.append("escenas / transparent_index")
         if tiles_updated:
             bits.append("tiles")
+        state["target_fps"] = tf
+        state["default_anim_fps"] = af
         extra = f" ({', '.join(bits)} en manifest)\n" if bits else "\n"
         dpg.set_value(
             "ts_log",
@@ -7852,6 +7877,35 @@ def run_gui() -> int:
                     callback=on_tiles_px_change,
                     enabled=False,
                 )
+                dpg.add_spacer(height=6)
+                dpg.add_text(
+                    "Consola (export / firmware): FPS del bucle y velocidad base de fotogramas "
+                    "de sprite (speed=1 en Lua).",
+                    wrap=520,
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_input_int(
+                        tag="ts_target_fps",
+                        label="target_fps",
+                        width=100,
+                        default_value=30,
+                        min_value=15,
+                        max_value=60,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_default_anim_fps",
+                        label="default_anim_fps",
+                        width=100,
+                        default_value=8,
+                        min_value=1,
+                        max_value=30,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                    )
                 dpg.add_separator()
                 dpg.add_text("Tilesets", color=(200, 220, 255, 255))
                 with dpg.group(horizontal=True):

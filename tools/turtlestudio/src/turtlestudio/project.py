@@ -187,6 +187,8 @@ class ProjectInfo:
     active_scene: str
     transparent_index: int
     tile_px: int
+    target_fps: int
+    default_anim_fps: int
 
 
 def _posix_relpath(s: str) -> str:
@@ -517,9 +519,11 @@ def load_project(project_root: Path) -> ProjectInfo:
         data, default_palette=pal, project_root=root
     )
 
+    from turtlestudio.project_runtime import parse_runtime_from_manifest
     from turtlestudio.tiles import parse_tile_px_from_manifest
 
     tile_px = parse_tile_px_from_manifest(data)
+    target_fps, default_anim_fps = parse_runtime_from_manifest(data)
 
     return ProjectInfo(
         root=root,
@@ -531,6 +535,8 @@ def load_project(project_root: Path) -> ProjectInfo:
         active_scene=active_scene,
         transparent_index=transparent_index,
         tile_px=tile_px,
+        target_fps=target_fps,
+        default_anim_fps=default_anim_fps,
     )
 
 
@@ -614,6 +620,8 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
         ],
         "active_scene": DEFAULT_INITIAL_SCENE_ID,
         "transparent_index": DEFAULT_TRANSPARENT_INDEX,
+        "target_fps": 30,
+        "default_anim_fps": 8,
     }
 
 
@@ -801,6 +809,8 @@ def save_project(
     active_scene: str | None = None,
     transparent_index: int | None = None,
     tile_px: int | None = None,
+    target_fps: int | None = None,
+    default_anim_fps: int | None = None,
 ) -> tuple[Path, bool, bool, bool]:
     """
     Guarda uno o mas .lua bajo el proyecto (claves = rutas relativas POSIX),
@@ -811,6 +821,11 @@ def save_project(
 
     Devuelve (ruta_script_entry, manifest_paleta_cambio, manifest_escenas_cambio, tiles_cambio).
     """
+    from turtlestudio.project_runtime import (
+        clamp_default_anim_fps,
+        clamp_target_fps,
+        parse_runtime_from_manifest,
+    )
     from turtlestudio.tiles import (
         normalize_tile_px,
         parse_tile_px_from_manifest,
@@ -877,7 +892,19 @@ def save_project(
         data["active_scene"] = active_scene.strip()
         data["transparent_index"] = ti_final
 
-    if pal_changed or scene_meta_changed or tiles_changed:
+    runtime_changed = False
+    if target_fps is not None:
+        new_tf = clamp_target_fps(target_fps)
+        if parse_runtime_from_manifest(data)[0] != new_tf:
+            data["target_fps"] = new_tf
+            runtime_changed = True
+    if default_anim_fps is not None:
+        new_af = clamp_default_anim_fps(default_anim_fps)
+        if parse_runtime_from_manifest(data)[1] != new_af:
+            data["default_anim_fps"] = new_af
+            runtime_changed = True
+
+    if pal_changed or scene_meta_changed or tiles_changed or runtime_changed:
         write_manifest(root, data)
 
     if norm_scenes is not None:

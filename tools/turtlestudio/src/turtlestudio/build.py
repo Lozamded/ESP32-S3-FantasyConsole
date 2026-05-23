@@ -152,6 +152,7 @@ def assemble_turtlecart_v0(
     main_lua_body: str,
     palette_hex_lines: list[str] | None = None,
     embedded_files: Sequence[tuple[str, str]] | None = None,
+    bundle_file: str | None = None,
     initial_scene: str | None = None,
 ) -> str:
     """
@@ -163,6 +164,7 @@ def assemble_turtlecart_v0(
     La seccion PALETTE: termina en el primer ---FILE: (spec v0).
 
     initial_scene: linea INITIAL_SCENE: (id de escena; por defecto intro).
+    bundle_file: ruta POSIX en SD (p. ej. studio/project_bundle.json); no embeber el JSON.
     """
     entry = _normalize_entry_path(entry_relpath)
     scene_id = normalize_export_initial_scene(initial_scene)
@@ -181,6 +183,8 @@ def assemble_turtlecart_v0(
     if palette_hex_lines:
         parts.append("PALETTE:")
         parts.extend(palette_hex_lines)
+    if bundle_file and str(bundle_file).strip():
+        parts.append(f"BUNDLE_FILE:{_normalize_entry_path(bundle_file.strip())}")
     if embedded_files:
         for rel, raw_body in embedded_files:
             sub = _normalize_entry_path(rel)
@@ -384,12 +388,28 @@ def collect_studio_bundle_files(
         else:
             tilesets_map[tid] = data
 
+    from turtlestudio.project import MANIFEST_NAME
+    from turtlestudio.project_runtime import parse_runtime_from_manifest
+
+    manifest_data: dict[str, Any] = {}
+    mp = root / MANIFEST_NAME
+    if mp.is_file():
+        try:
+            raw_m = json.loads(mp.read_text(encoding="utf-8"))
+            if isinstance(raw_m, dict):
+                manifest_data = raw_m
+        except (OSError, json.JSONDecodeError):
+            manifest_data = {}
+    target_fps, default_anim_fps = parse_runtime_from_manifest(manifest_data)
+
     bundle: dict[str, Any] = {
         "format_version": 1,
         "kind": "turtlestudio.cart_bundle",
         "entry": entry,
         "transparent_index": ti,
         "tile_px": tile_px,
+        "target_fps": target_fps,
+        "default_anim_fps": default_anim_fps,
         "active_scene": (active_scene.strip() or DEFAULT_EXPORT_INITIAL_SCENE_ID),
         "scenes": scenes,
         "objects": objects_map,
@@ -397,9 +417,10 @@ def collect_studio_bundle_files(
         "backgrounds": backgrounds_map,
         "tilesets": tilesets_map,
     }
-    bundle_text = json.dumps(bundle, indent=2, ensure_ascii=False) + "\n"
-    embedded = [("studio/project_bundle.json", bundle_text)]
-    return CartExportPackage(embedded=tuple(embedded), sidecar=tuple(sidecar))
+    bundle_rel = "studio/project_bundle.json"
+    bundle_text = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False) + "\n"
+    sidecar.append((bundle_rel, bundle_text))
+    return CartExportPackage(embedded=(), sidecar=tuple(sidecar))
 
 
 def resolve_package_cart_path(
@@ -460,7 +481,7 @@ def format_cart_package_log(result: CartPackageWriteResult, *, initial_scene: st
         f"  Carpeta: {result.package_dir}",
         f"  Cartucho: {result.cart_path.name} ({cart_n} bytes)",
         f"  INITIAL_SCENE: {initial_scene}",
-        "  Embebido en cart: studio/project_bundle.json (bundle delgado + ENTRY Lua)",
+        "  Cart: ENTRY Lua + BUNDLE_FILE:studio/project_bundle.json (JSON en sidecar)",
     ]
     if result.sidecar_paths:
         by_dir: dict[str, list[Path]] = {}
@@ -574,6 +595,7 @@ def write_turtlecart_content(
     embedded_files: Sequence[tuple[str, str]] | None = None,
     sidecar_files: Sequence[tuple[str, str | bytes]] | None = None,
     initial_scene: str | None = None,
+    bundle_file: str | None = "studio/project_bundle.json",
 ) -> tuple[Path, Path | None, tuple[Path, ...]]:
     """
     Escribe el .turtlecart desde el cuerpo Lua en memoria.
@@ -589,11 +611,21 @@ def write_turtlecart_content(
     if palette_path is not None and palette_path.is_file():
         palette_lines = load_palette_lines(palette_path)
 
+    bundle_rel: str | None = None
+    if sidecar_files:
+        for rel, _payload in sidecar_files:
+            if _normalize_entry_path(rel) == "studio/project_bundle.json":
+                bundle_rel = "studio/project_bundle.json"
+                break
+    if bundle_rel is None and bundle_file:
+        bundle_rel = _normalize_entry_path(bundle_file)
+
     content = assemble_turtlecart_v0(
         entry_relpath=entry,
         main_lua_body=main_lua_body,
         palette_hex_lines=palette_lines,
         embedded_files=embedded_files,
+        bundle_file=bundle_rel,
         initial_scene=initial_scene,
     )
     output.parent.mkdir(parents=True, exist_ok=True)

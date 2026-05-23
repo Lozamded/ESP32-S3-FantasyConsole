@@ -98,17 +98,18 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
 }
 
 static TurtleCartBuffer g_cart = {};
+static TurtleCartBuffer g_bundle = {};
 static char g_initial_scene[64] = "intro";
-static const char* g_bundle_begin = nullptr;
-static size_t g_bundle_len = 0;
 static bool g_has_bundle = false;
+static bool g_runtime_active = false;
+static uint32_t g_last_tick_ms = 0;
 
-/** Lua + paleta; deja `g_cart` cargado para `drawInitialSceneFromBundle`. */
+/** Lua + paleta; carga cartucho pequeno y bundle en sidecar. */
 static bool loadCartRunLua(const char* path) {
   turtle_cart_free(&g_cart);
-  g_bundle_begin = nullptr;
-  g_bundle_len = 0;
+  turtle_cart_free(&g_bundle);
   g_has_bundle = false;
+  g_runtime_active = false;
 
   if (!turtle_cart_load_sd_file(path, &g_cart)) {
     return false;
@@ -120,10 +121,19 @@ static bool loadCartRunLua(const char* path) {
     return false;
   }
 
+  if (!turtle_cart_load_bundle_for_cart(&g_cart, &g_bundle)) {
+    Serial.println("Error: no se pudo cargar studio/project_bundle.json");
+    turtle_cart_free(&g_cart);
+    return false;
+  }
+  g_has_bundle = true;
+
   char entry[128];
   if (!turtle_cart_header_value(&g_cart, "ENTRY:", entry, sizeof entry) || entry[0] == '\0') {
     Serial.println("Error: cartucho sin ENTRY");
     turtle_cart_free(&g_cart);
+    turtle_cart_free(&g_bundle);
+    g_has_bundle = false;
     return false;
   }
 
@@ -155,51 +165,62 @@ static bool loadCartRunLua(const char* path) {
     turtle_gpu_palette_reset_default();
   }
 
-  g_has_bundle = turtle_cart_extract_embedded(&g_cart, "studio/project_bundle.json", &g_bundle_begin,
-                                              &g_bundle_len);
-
   const char* lua_begin = nullptr;
   size_t lua_len = 0;
   if (!turtle_cart_extract_embedded(&g_cart, entry, &lua_begin, &lua_len)) {
     Serial.printf("Error: no se encontro bloque ---FILE:%s--- en cartucho\n", entry);
     turtle_cart_free(&g_cart);
+    turtle_cart_free(&g_bundle);
+    g_has_bundle = false;
     return false;
   }
 
   Serial.println("TurtleCart cargado correctamente");
+  Serial.printf("Cart: %u bytes, bundle: %u bytes\n", static_cast<unsigned>(g_cart.len),
+                static_cast<unsigned>(g_bundle.len));
   Serial.print("ENTRY: ");
   Serial.println(entry);
   Serial.print("INITIAL_SCENE: ");
   Serial.println(g_initial_scene);
-  if (g_has_bundle) {
-    Serial.printf("Bundle embebido: %u bytes\n", static_cast<unsigned>(g_bundle_len));
-  }
 
   Serial.println("--- Lua ---");
   const bool lua_ok = runCartEntryLua(lua_begin, lua_len, entry);
   if (!lua_ok) {
     Serial.println("Lua fallo (revisa ENTRY / sintaxis).");
     turtle_cart_free(&g_cart);
+    turtle_cart_free(&g_bundle);
+    g_has_bundle = false;
     turtle_gpu_flip();
     return true;
   }
   Serial.println("--- Lua termino sin error ---");
+
+  turtle_cart_free(&g_cart);
+  g_cart.data = nullptr;
+  g_cart.len = 0;
+
   return true;
 }
 
-/** Dibuja escena C++ con pila minima (fuera de loadCartRunLua). */
 static void drawInitialSceneFromBundle(void) {
-  if (g_has_bundle && g_bundle_begin && g_bundle_len > 0) {
-    if (turtle_scene_draw_cart_bundle(g_bundle_begin, g_bundle_len, g_initial_scene)) {
-      Serial.println("Escena inicial (C++ desde bundle) aplicada tras Lua.");
+  g_runtime_active = false;
+  if (g_has_bundle && g_bundle.data && g_bundle.len > 0) {
+    if (turtle_scene_begin_runtime(g_bundle.data, g_bundle.len, g_initial_scene)) {
+      g_runtime_active = turtle_scene_runtime_active();
+      Serial.println("Escena inicial (runtime: fondo estatico + sprites animados).");
     } else {
-      Serial.println("Aviso: bundle presente pero escena C++ no aplicada.");
+      Serial.println("Aviso: bundle presente pero escena runtime no iniciada.");
     }
   } else {
-    Serial.println("Sin studio/project_bundle.json: omitido dibujo de escena C++.");
+    Serial.println("Sin bundle: omitido dibujo de escena C++.");
   }
-  turtle_cart_free(&g_cart);
+
+  if (!g_runtime_active) {
+    turtle_cart_free(&g_bundle);
+    g_has_bundle = false;
+  }
   turtle_gpu_flip();
+  g_last_tick_ms = millis();
 }
 
 void setup() {
@@ -221,7 +242,8 @@ void setup() {
 
   Serial.println("microSD montada");
   Serial.println(
-      "Formato paquete: main.turtlecart + backgrounds/ + sprites/ + objects/ en raiz SD.");
+      "Formato paquete: main.turtlecart + studio/project_bundle.json + backgrounds/ + "
+      "sprites/ + objects/ en raiz SD.");
 
   if (loadCartRunLua("/main.turtlecart")) {
     drawInitialSceneFromBundle();
@@ -239,4 +261,28 @@ void setup() {
   Serial.println("Error: ningun cartucho valido en la SD.");
 }
 
-void loop() {}
+void loop() {
+  if (!g_runtime_active || !g_bundle.data || g_bundle.len == 0) {
+    delay(50);
+    return;
+  }
+
+  const uint32_t now = millis();
+  const uint32_t delta = now - g_last_tick_ms;
+  g_last_tick_ms = now;
+
+  const int target_fps = turtle_scene_target_fps();
+  const uint32_t frame_ms =
+      (target_fps > 0) ? (1000u / static_cast<uint32_t>(target_fps)) : 33u;
+
+  static uint32_t accum = 0;
+  accum += delta;
+  if (accum < frame_ms) {
+    delay(1);
+    return;
+  }
+  accum %= frame_ms;
+
+  turtle_scene_runtime_tick(frame_ms);
+  turtle_gpu_flip();
+}

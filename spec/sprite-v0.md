@@ -159,6 +159,8 @@ Al exportar `main.turtlecart`, TurtleStudio puede embeber un JSON con:
 |--------|-----|
 | `kind` | `"turtlestudio.cart_bundle"` |
 | `transparent_index` | Siempre **31** (reservado; no copiar al blitear `indexed_pixels`) |
+| `target_fps` | FPS del bucle de juego en firmware (default **30**, rango 15–60) |
+| `default_anim_fps` | Fotogramas de sprite por segundo con `speed = 1` (default **8**, rango 1–30) |
 | `active_scene` / escenas en `scenes` | Lista de escenas con `id`, `palette`, `background_index`, `objects[]` con `{ "id", "x", "y" }` |
 | `objects` | Mapa `id` → definicion de objeto **o** referencia `{ "kind": "turtlestudio.object_ref", "file": "objects/<id>.json" }` |
 | `sprites` | Mapa `id` → JSON del sprite **o** referencia `{ "kind": "turtlestudio.sprite_ref", "file": "sprites/<id>.json" }` |

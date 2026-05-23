@@ -5,14 +5,18 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from turtlestudio.asset_bin_decode import decode_indexed_blob, decode_tileset_blob
+from turtlestudio.asset_bin_decode import (
+    decode_indexed_blob,
+    decode_sprite_tsp_frames,
+    decode_tileset_blob,
+)
 from turtlestudio.backgrounds import (
     parse_background_palette_rows,
     read_background_file,
     shrink_background_json_for_export,
 )
 from turtlestudio.build import collect_studio_bundle_files, write_cart_package
-from turtlestudio.sprites import parse_palette_rows_image, read_sprite_file
+from turtlestudio.sprites import parse_sprite_all_frame_rows, read_sprite_file
 from turtlestudio.tiles import parse_tileset_all_tiles, read_tileset_file, shrink_tileset_json_for_export
 from turtlestudio.verify_package import verify_package_dir
 
@@ -71,19 +75,22 @@ def test_demo1_build(project_root: Path) -> list[str]:
         stem = tsp.stem
         try:
             src = read_sprite_file(project_root, stem)
-            expect = parse_palette_rows_image(src)
-            if expect is None:
-                continue
             from turtlestudio.sprites import sprite_pixel_dimensions
 
             _, pw, ph = sprite_pixel_dimensions(src)
-            got = decode_indexed_blob(tsp.read_bytes(), expect_w=pw, expect_h=ph)
+            expect_frames = parse_sprite_all_frame_rows(src)
+            got = decode_sprite_tsp_frames(tsp.read_bytes(), expect_w=pw, expect_h=ph)
             if got is None:
                 errors.append(f"{tsp.name}: decode fallo")
                 continue
-            _, _, rows = got
-            if not _rows_equal(rows, expect):
-                errors.append(f"{tsp.name}: pixels distintos al JSON")
+            _, _, got_frames = got
+            if len(got_frames) != len(expect_frames):
+                errors.append(f"{tsp.name}: frame_count distinto al JSON")
+                continue
+            for fi, (a, b) in enumerate(zip(got_frames, expect_frames)):
+                if not _rows_equal(a, b):
+                    errors.append(f"{tsp.name}: frame F{fi} distinto al JSON")
+                    break
         except ValueError as e:
             errors.append(f"{tsp.name}: {e}")
 

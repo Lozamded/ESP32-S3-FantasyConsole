@@ -70,3 +70,9 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
 void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h, const uint8_t* rows_top_first,
                                    int row_stride, uint8_t transparent_index);
 void turtle_gpu_flip(void);
+
+/** Copia el framebuffer actual a capa estatica (fondo + tiles sin sprites). */
+void turtle_gpu_snapshot_static(void);
+/** Restaura capa estatica sobre el framebuffer (antes de redibujar sprites). */
+void turtle_gpu_restore_static(void);
+bool turtle_gpu_has_static_snapshot(void);

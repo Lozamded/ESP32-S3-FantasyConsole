@@ -1,6 +1,8 @@
 {
   "format_version": 1,
   "name": "demo1",
+  "target_fps": 30,
+  "default_anim_fps": 8,
   "entry": "scripts/global.lua",
   "default_palette": "palettes/palette.txt",
   "scenes": [

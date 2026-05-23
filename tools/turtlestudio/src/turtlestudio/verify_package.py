@@ -14,11 +14,20 @@ _FILE_BLOCK = re.compile(
 
 
 def _bundle_from_cart(cart_text: str) -> dict:
-    m = _FILE_BLOCK.search(cart_text)
     for block in _FILE_BLOCK.finditer(cart_text):
         if block.group("path") == "studio/project_bundle.json":
             return json.loads(block.group("body"))
-    raise ValueError("sin studio/project_bundle.json en el cartucho")
+    raise ValueError("sin studio/project_bundle.json embebido en el cartucho")
+
+
+def _bundle_from_package(package_dir: Path) -> dict:
+    sidecar = package_dir / "studio" / "project_bundle.json"
+    if sidecar.is_file():
+        return json.loads(sidecar.read_text(encoding="utf-8"))
+    cart = package_dir / "main.turtlecart"
+    if cart.is_file():
+        return _bundle_from_cart(cart.read_text(encoding="utf-8"))
+    raise ValueError("sin studio/project_bundle.json (sidecar ni embebido)")
 
 
 def verify_package_dir(package_dir: Path) -> list[str]:
@@ -29,7 +38,7 @@ def verify_package_dir(package_dir: Path) -> list[str]:
         errors.append(f"falta {cart}")
         return errors
 
-    bundle = _bundle_from_cart(cart.read_text(encoding="utf-8"))
+    bundle = _bundle_from_package(package_dir)
 
     def check_refs(section: str) -> None:
         data = bundle.get(section)

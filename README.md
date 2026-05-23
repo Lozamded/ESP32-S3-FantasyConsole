@@ -57,7 +57,9 @@ PYTHONPATH=src python3 src/turtlestudio/verify_package.py /ruta/a/build
 PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /ruta/al/proyecto
 ```
 
-Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp` y `turtle_tileset.cpp`).
+Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp`, `turtle_tileset.cpp`).
+
+Tras cargar el cartucho, el firmware puede animar sprites en `loop()` (fondo + tiles en capa estatica; solo se redibujan sprites). En TurtleStudio: pestana **Tiles** → `target_fps` / `default_anim_fps` (se exportan en el bundle).
 
 Con **paquete SD** (carpeta `build/` copiada entera), el monitor serial deberia mostrar algo como:
 - `SD: leyendo /main.turtlecart` (~5–50 KB, no ~1 MB)
