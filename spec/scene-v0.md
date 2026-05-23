@@ -68,6 +68,7 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 ## Vista previa TurtleStudio (canvas)
 
 - Las **cuatro capas de fondo** admiten opacidad `0..255` en el manifest; el estudio las mezcla en la vista previa (el firmware sigue usando un unico `cls()` hasta soporte multilayer).
+- Hasta **cuatro capas de tiles** por escena (`tile_layers` en el manifest y en `scenes/<id>.json`): cada capa tiene `enabled`, `tileset` (stem de `tiles/<tileset>.json`) y `cells` (matriz de indices de tile en la rejilla de la escena). Solo se listan tilesets cuya `palette` coincide con la de la escena. La rejilla usa `tiles.tile_px` del proyecto (multiplo de 4). Celda vacia = indice **31** (transparente). El editor pinta con clic / arrastrar en el canvas de escena (capa activa + tile elegido). En el panel de escena, el **pincel** es una fila de miniaturas (T0, T1, …) del tileset activo; clic en una para seleccionarla (borde amarillo). En el canvas, **Rejilla tiles** dibuja lineas cada `tile_px` px; con capa tile activa, la celda bajo el cursor se resalta en amarillo.
 - La **capa de sprites** (objetos colocados en la escena) tiene en el editor **Mostrar sprites** y **Opacidad sprites (vista previa)** `0..255`; no se guarda en el proyecto. Las cruces de ancla siguen visibles para colocar objetos.
 
 ## Objetos y capas (v0)

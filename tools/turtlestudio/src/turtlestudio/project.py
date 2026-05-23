@@ -30,6 +30,7 @@ STANDARD_SUBDIRS: tuple[str, ...] = (
     "objects/Fonts",
     "scripts",
     "backgrounds",
+    "tiles",
     "audio/json",
     "audio/effects",
     "audio/music",
@@ -171,6 +172,8 @@ class SceneEntry:
     background_layers: tuple[BackgroundLayer, ...] = _DEFAULT_SCENE_BACKGROUND_LAYERS
     # Stem opcional: backgrounds/<stem>.json (misma paleta que la escena).
     background: str = ""
+    # Hasta 4 capas de tilemap (rejilla segun `tiles.tile_px` del manifest).
+    tile_layers: tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -183,6 +186,7 @@ class ProjectInfo:
     scenes: tuple[SceneEntry, ...]
     active_scene: str
     transparent_index: int
+    tile_px: int
 
 
 def _posix_relpath(s: str) -> str:
@@ -355,6 +359,10 @@ def _parse_scenes_from_manifest(
     Si falta `scenes` en el JSON, sintetiza una escena `intro` con la paleta por defecto del proyecto.
     """
     ti = _clamp_transparent_index(data.get("transparent_index", DEFAULT_TRANSPARENT_INDEX))
+    from turtlestudio.scene_tiles import default_tile_layers, parse_tile_layers
+    from turtlestudio.tiles import parse_tile_px_from_manifest
+
+    tile_px = parse_tile_px_from_manifest(data)
     raw_scenes = data.get("scenes")
     pal_fallback = default_palette or DEFAULT_EXAMPLE_PALETTE_REL
 
@@ -374,6 +382,7 @@ def _parse_scenes_from_manifest(
                 script=DEFAULT_INITIAL_SCENE_ID,
                 background_layers=layers,
                 background="",
+                tile_layers=default_tile_layers(tile_px),
             )
         ]
     else:
@@ -425,6 +434,7 @@ def _parse_scenes_from_manifest(
                 item.get("background", item.get("background_id", "")),
                 scene_palette_rel=pal,
             )
+            tile_ly = parse_tile_layers(item.get("tile_layers"), tile_px=tile_px)
             parsed.append(
                 SceneEntry(
                     id=sid,
@@ -434,6 +444,7 @@ def _parse_scenes_from_manifest(
                     script=stem,
                     background_layers=layers,
                     background=bg_asset,
+                    tile_layers=tile_ly,
                 )
             )
         scenes_list = parsed
@@ -506,6 +517,10 @@ def load_project(project_root: Path) -> ProjectInfo:
         data, default_palette=pal, project_root=root
     )
 
+    from turtlestudio.tiles import parse_tile_px_from_manifest
+
+    tile_px = parse_tile_px_from_manifest(data)
+
     return ProjectInfo(
         root=root,
         format_version=ver,
@@ -515,6 +530,7 @@ def load_project(project_root: Path) -> ProjectInfo:
         scenes=scenes,
         active_scene=active_scene,
         transparent_index=transparent_index,
+        tile_px=tile_px,
     )
 
 
@@ -551,6 +567,9 @@ def _write_mirror_scene_json_files(
             else background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
             "background": str(row.get("background", "") or ""),
             "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
+            "tile_layers": list(row["tile_layers"])
+            if isinstance(row.get("tile_layers"), list)
+            else [],
         }
         path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -573,11 +592,14 @@ def _write_mirror_scene_json_files(
 
 
 def _default_manifest_dict(display_name: str) -> dict[str, Any]:
+    from turtlestudio.tiles import DEFAULT_TILE_PX, tiles_section_to_json
+
     return {
         "format_version": FORMAT_VERSION,
         "name": display_name,
         "entry": DEFAULT_ENTRY,
         "default_palette": DEFAULT_EXAMPLE_PALETTE_REL,
+        "tiles": tiles_section_to_json(DEFAULT_TILE_PX),
         "scenes": [
             {
                 "id": DEFAULT_INITIAL_SCENE_ID,
@@ -587,6 +609,7 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
                 "background": "",
                 "script": DEFAULT_INITIAL_SCENE_ID,
                 "objects": [],
+                "tile_layers": [],
             },
         ],
         "active_scene": DEFAULT_INITIAL_SCENE_ID,
@@ -686,6 +709,18 @@ def _normalize_scenes_for_save(
     if not scenes:
         raise ValueError("Debe existir al menos una escena.")
     from turtlestudio.backgrounds import validate_scene_background_for_save
+    from turtlestudio.scene_tiles import validate_tile_layers_for_save
+    from turtlestudio.tiles import DEFAULT_TILE_PX, parse_tile_px_from_manifest
+
+    mp = manifest_path(root)
+    tile_px = DEFAULT_TILE_PX
+    if mp.is_file():
+        try:
+            mdata = json.loads(mp.read_text(encoding="utf-8"))
+            if isinstance(mdata, dict):
+                tile_px = parse_tile_px_from_manifest(mdata)
+        except (OSError, json.JSONDecodeError):
+            tile_px = DEFAULT_TILE_PX
 
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
@@ -734,6 +769,12 @@ def _normalize_scenes_for_save(
             item.get("background", item.get("background_id", "")),
             scene_palette_rel=pal,
         )
+        tile_saved = validate_tile_layers_for_save(
+            root,
+            item.get("tile_layers"),
+            scene_palette_rel=pal,
+            tile_px=tile_px,
+        )
         out.append(
             {
                 "id": sid,
@@ -743,6 +784,7 @@ def _normalize_scenes_for_save(
                 "background": bg_saved,
                 "script": stem,
                 "objects": objs_ok,
+                "tile_layers": tile_saved,
             }
         )
     if active_scene.strip() not in seen:
@@ -758,7 +800,8 @@ def save_project(
     scenes: list[dict[str, Any]] | None = None,
     active_scene: str | None = None,
     transparent_index: int | None = None,
-) -> tuple[Path, bool, bool]:
+    tile_px: int | None = None,
+) -> tuple[Path, bool, bool, bool]:
     """
     Guarda uno o mas .lua bajo el proyecto (claves = rutas relativas POSIX),
     actualiza default_palette segun `palette_file`,
@@ -766,8 +809,14 @@ def save_project(
 
     `lua_files` debe incluir al menos el script manifest `entry`.
 
-    Devuelve (ruta_script_entry, manifest_paleta_cambio, manifest_escenas_cambio).
+    Devuelve (ruta_script_entry, manifest_paleta_cambio, manifest_escenas_cambio, tiles_cambio).
     """
+    from turtlestudio.tiles import (
+        normalize_tile_px,
+        parse_tile_px_from_manifest,
+        tiles_section_to_json,
+    )
+
     root = project_root.expanduser().resolve()
     data = _read_manifest_for_save(root)
     entry = data["entry"]
@@ -807,6 +856,12 @@ def save_project(
     norm_scenes: list[dict[str, Any]] | None = None
     ti_final = _clamp_transparent_index(data.get("transparent_index"))
     scene_meta_changed = False
+    tiles_changed = False
+    if tile_px is not None:
+        new_px = normalize_tile_px(tile_px)
+        if parse_tile_px_from_manifest(data) != new_px:
+            data["tiles"] = tiles_section_to_json(new_px)
+            tiles_changed = True
     if scenes is not None and active_scene is not None:
         ti_final = _clamp_transparent_index(
             transparent_index if transparent_index is not None else data.get("transparent_index")
@@ -822,10 +877,10 @@ def save_project(
         data["active_scene"] = active_scene.strip()
         data["transparent_index"] = ti_final
 
-    if pal_changed or scene_meta_changed:
+    if pal_changed or scene_meta_changed or tiles_changed:
         write_manifest(root, data)
 
     if norm_scenes is not None:
         _write_mirror_scene_json_files(root, norm_scenes)
 
-    return entry_path, pal_changed, scene_meta_changed
+    return entry_path, pal_changed, scene_meta_changed, tiles_changed

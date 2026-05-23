@@ -402,6 +402,72 @@ def ref_rgba_to_palette_rows(
     return rows
 
 
+def crop_ref_tile_rgba(
+    ref_source: tuple[int, int, list[float]],
+    grid_x: int,
+    grid_y: int,
+    tile_px: int,
+    *,
+    pad_rgba: tuple[float, float, float, float] = (0.0, 0.0, 0.0, 0.0),
+) -> tuple[list[float], int, int]:
+    """
+    Recorta una celda de la rejilla (grid_x, grid_y) con origen arriba-izquierda.
+    Devuelve rgba tile_px×tile_px (rellena pad si la imagen no alcanza).
+    """
+    sw, sh, src = ref_source
+    px = max(1, int(tile_px))
+    gx = max(0, int(grid_x))
+    gy = max(0, int(grid_y))
+    x0 = gx * px
+    y0 = gy * px
+    out = [0.0] * (px * px * 4)
+    pr, pg, pb, pa = pad_rgba
+    for y in range(px):
+        for x in range(px):
+            i = (y * px + x) * 4
+            out[i] = pr
+            out[i + 1] = pg
+            out[i + 2] = pb
+            out[i + 3] = pa
+    if sw <= 0 or sh <= 0 or len(src) < sw * sh * 4:
+        return out, px, px
+    for ly in range(px):
+        sy = y0 + ly
+        if sy >= sh:
+            continue
+        for lx in range(px):
+            sx = x0 + lx
+            if sx >= sw:
+                continue
+            si = (sy * sw + sx) * 4
+            oi = (ly * px + lx) * 4
+            out[oi] = src[si]
+            out[oi + 1] = src[si + 1]
+            out[oi + 2] = src[si + 2]
+            out[oi + 3] = src[si + 3]
+    return out, px, px
+
+
+def ref_grid_dimensions(sw: int, sh: int, tile_px: int) -> tuple[int, int]:
+    """Numero de celdas (columnas, filas) que caben en la imagen."""
+    px = max(1, int(tile_px))
+    return (max(0, int(sw) // px), max(0, int(sh) // px))
+
+
+def convert_ref_tile_to_palette_rows(
+    ref_source: tuple[int, int, list[float]],
+    grid_x: int,
+    grid_y: int,
+    tile_px: int,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    alpha_cutoff: float = 0.5,
+) -> list[list[int]]:
+    """Celda de la rejilla → matriz de indices de paleta (tamano tile_px)."""
+    rgba, pw, ph = crop_ref_tile_rgba(ref_source, grid_x, grid_y, tile_px)
+    return ref_rgba_to_palette_rows(rgba, pw, ph, rgbs, alpha_cutoff=alpha_cutoff)
+
+
 def convert_ref_source_to_palette_rows(
     ref_source: tuple[int, int, list[float]],
     pw: int,

@@ -38,6 +38,21 @@ from turtlestudio.palette_policy import (
     resolve_palette_color,
     swatch_indices_for_palette,
 )
+from turtlestudio.tiles import (
+    DEFAULT_TILE_PX,
+    MAX_TILE_PX,
+    MAX_TILES_PER_TILESET,
+    MIN_TILE_PX,
+    TILE_PX_STEP,
+    empty_tile_rows,
+    list_tileset_json_stems,
+    normalize_tile_px,
+    parse_tileset_all_tiles,
+    read_tileset_file,
+    save_tileset_json,
+    tileset_file_pixel_dimensions,
+    write_tileset_json,
+)
 from turtlestudio.project import (
     BACKGROUND_LAYER_COUNT,
     BackgroundLayer,
@@ -59,6 +74,19 @@ from turtlestudio.project import (
     save_project,
     scene_lua_relpath,
     validate_scene_script_stem,
+)
+from turtlestudio.scene_tiles import (
+    TILE_LAYER_COUNT,
+    SceneTileLayer,
+    default_tile_layers,
+    draw_scene_tile_grid_on_rgba,
+    list_tileset_stems_for_palette,
+    paint_tile_layers_on_rgba,
+    parse_tile_layers,
+    resize_tile_layer_cells,
+    scene_coords_to_cell,
+    set_cell_index,
+    tile_layers_to_json_list,
 )
 from turtlestudio.objects import (
     OBJECT_COLLISION_MODE_AABB,
@@ -89,7 +117,10 @@ from turtlestudio.sprite_ref_image import (
     composite_ref_for_sprite_editor,
     composite_sprite_editor_preview,
     convert_ref_source_to_palette_rows,
+    convert_ref_tile_to_palette_rows,
+    crop_ref_tile_rgba,
     load_image_rgba_float01,
+    ref_grid_dimensions,
     resample_rgba_nearest,
     resample_rgba_stretch,
 )
@@ -756,6 +787,109 @@ _BG_EDITOR_IMG_TAG = "ts_bg_editor_img"
 _BG_EDITOR_TEX_MAX = 640
 _BG_EDITOR_SCALE_MAX = 8
 _BG_EDITOR_PAD_RGBA = (0.32, 0.34, 0.4, 1.0)
+_TILESET_EDITOR_TEX_TAG = "ts_tileset_edit_texture"
+_TILESET_EDITOR_IMG_TAG = "ts_tileset_edit_image"
+_TILESET_EDITOR_SCALE_DEFAULT = 8
+_TILESET_EDITOR_CANVAS_BG_DEFAULT = (140, 140, 150, 255)
+_TILESET_ATLAS_TEX_TAG = "ts_tileset_atlas_tex"
+_TILESET_ATLAS_IMG_TAG = "ts_tileset_atlas_img"
+_TILESET_ATLAS_SCALE_DEFAULT = 2
+_TILESET_ATLAS_GRID_RGBA = (0.92, 0.94, 1.0, 0.85)
+_TILESET_ATLAS_SEL_RGBA = (1.0, 0.85, 0.15, 0.95)
+_SCENE_TILE_GRID_RGBA = (0.75, 0.82, 1.0, 0.72)
+_SCENE_TILE_GRID_HOVER_RGBA = (1.0, 0.9, 0.2, 0.88)
+_SCENE_TILE_BRUSH_PICKER_SCALE = 3
+_SCENE_TILE_BRUSH_TEX_REGISTRY = "ts_texture_registry"
+
+
+def _tileset_editor_uv_max(dw: int, dh: int) -> tuple[float, float]:
+    mx = float(_SPRITE_EDITOR_TEX_MAX)
+    return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / mx)))
+
+
+def _tileset_atlas_uv_max(dw: int, dh: int) -> tuple[float, float]:
+    return _tileset_editor_uv_max(dw, dh)
+
+
+def _blend_rgba_pixel_inplace(
+    rgba: list[float],
+    i: int,
+    cr: float,
+    cg: float,
+    cb: float,
+    ca: float,
+) -> None:
+    a = max(0.0, min(1.0, ca))
+    inv = 1.0 - a
+    rgba[i] = rgba[i] * inv + cr * a
+    rgba[i + 1] = rgba[i + 1] * inv + cg * a
+    rgba[i + 2] = rgba[i + 2] * inv + cb * a
+    rgba[i + 3] = max(rgba[i + 3], a)
+
+
+def _draw_pixel_grid_overlay(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    step_px: int,
+    *,
+    sel_cell: tuple[int, int] | None = None,
+    grid_rgba: tuple[float, float, float, float] = _TILESET_ATLAS_GRID_RGBA,
+    sel_rgba: tuple[float, float, float, float] = _TILESET_ATLAS_SEL_RGBA,
+) -> None:
+    """Rejilla en espacio de imagen (fila 0 = arriba). sel_cell = (col, row) desde arriba."""
+    px = max(1, int(step_px))
+    gr, gg, gb, ga = grid_rgba
+    for x in range(0, lw + 1, px):
+        xi = min(lw - 1, x) if lw > 0 else 0
+        for y in range(lh):
+            _blend_rgba_pixel_inplace(rgba, (y * lw + xi) * 4, gr, gg, gb, ga)
+    for y in range(0, lh + 1, px):
+        yi = min(lh - 1, y) if lh > 0 else 0
+        for x in range(lw):
+            _blend_rgba_pixel_inplace(rgba, (yi * lw + x) * 4, gr, gg, gb, ga)
+    if sel_cell is not None:
+        gx, gy = sel_cell
+        x0 = gx * px
+        y0 = gy * px
+        sr, sg, sb, sa = sel_rgba
+        border = 2
+        for t in range(border):
+            for x in range(x0, min(lw, x0 + px)):
+                if 0 <= y0 + t < lh:
+                    _blend_rgba_pixel_inplace(
+                        rgba, ((y0 + t) * lw + x) * 4, sr, sg, sb, sa
+                    )
+                yb = y0 + px - 1 - t
+                if 0 <= yb < lh:
+                    _blend_rgba_pixel_inplace(rgba, (yb * lw + x) * 4, sr, sg, sb, sa)
+            for y in range(y0, min(lh, y0 + px)):
+                if 0 <= x0 + t < lw:
+                    _blend_rgba_pixel_inplace(
+                        rgba, (y * lw + (x0 + t)) * 4, sr, sg, sb, sa
+                    )
+                xb = x0 + px - 1 - t
+                if 0 <= xb < lw:
+                    _blend_rgba_pixel_inplace(rgba, (y * lw + xb) * 4, sr, sg, sb, sa)
+
+
+def _draw_tileset_atlas_grid_overlay(
+    rgba: list[float],
+    lw: int,
+    lh: int,
+    tile_px: int,
+    *,
+    sel_cell: tuple[int, int] | None = None,
+) -> None:
+    _draw_pixel_grid_overlay(
+        rgba,
+        lw,
+        lh,
+        tile_px,
+        sel_cell=sel_cell,
+        grid_rgba=_TILESET_ATLAS_GRID_RGBA,
+        sel_rgba=_TILESET_ATLAS_SEL_RGBA,
+    )
 
 
 def _sprite_editor_uv_max(pw: int, ph: int) -> tuple[float, float]:
@@ -1422,6 +1556,11 @@ def run_gui() -> int:
         "lua_edit_rel": "",
         "project_entry": DEFAULT_ENTRY,
         "edit_bg_layer_slot": 0,
+        "edit_tile_layer_slot": 0,
+        "scene_tile_brush_index": 0,
+        "scene_tile_hover_cell": None,
+        "scene_tile_brush_asset_tags": [],
+        "scene_tile_brush_cell_items": [],
         "sprite_pixel_rows": None,
         "sprite_pixel_stash": None,
         "sprite_frame_pixels": None,
@@ -1447,6 +1586,21 @@ def run_gui() -> int:
         "bg_ref_path": "",
         "bg_pending_ref_path": "",
         "bg_pending_ref_size": (0, 0),
+        "tile_px": DEFAULT_TILE_PX,
+        "tileset_palette_rgb": [],
+        "tileset_palette_hexes": [],
+        "tileset_tiles_pixels": None,
+        "tileset_pixel_rows": None,
+        "tileset_active_index": 0,
+        "tileset_brush_index": 1,
+        "tileset_canvas_bg_rgb01": (
+            _TILESET_EDITOR_CANVAS_BG_DEFAULT[0] / 255.0,
+            _TILESET_EDITOR_CANVAS_BG_DEFAULT[1] / 255.0,
+            _TILESET_EDITOR_CANVAS_BG_DEFAULT[2] / 255.0,
+        ),
+        "tileset_ref_source": None,
+        "tileset_ref_path": "",
+        "tileset_atlas_cell": None,
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -1458,6 +1612,9 @@ def run_gui() -> int:
 
     def _clear_pending_scene_placement() -> None:
         state["pending_scene_object_id"] = None
+
+    def _clear_scene_tile_hover() -> None:
+        state["scene_tile_hover_cell"] = None
 
     def _texture_px_to_scene_coords(lx: int, ly_top: int) -> tuple[int, int]:
         sx = max(0, min(_FB_W - 1, lx))
@@ -1930,6 +2087,335 @@ def run_gui() -> int:
 
     def _commit_background_for_active_scene() -> None:
         _commit_background_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def _parse_tile_layer_slot_value(v: object) -> int:
+        if isinstance(v, int):
+            return max(0, min(TILE_LAYER_COUNT - 1, v))
+        s = str(v).strip()
+        if s.isdigit():
+            return max(0, min(TILE_LAYER_COUNT - 1, int(s)))
+        return 0
+
+    def _normalize_row_tile_layers_inplace(row: dict[str, Any]) -> None:
+        px = _tiles_px_from_widgets()
+        row["tile_layers"] = tile_layers_to_json_list(
+            parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        )
+
+    def _commit_widgets_to_tile_row_for_slot(row: dict[str, Any], slot: int) -> None:
+        px = _tiles_px_from_widgets()
+        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
+        en = (
+            bool(dpg.get_value("ts_tile_layer_enabled"))
+            if dpg.does_item_exist("ts_tile_layer_enabled")
+            else False
+        )
+        ts = ""
+        if dpg.does_item_exist("ts_tile_layer_tileset"):
+            raw = dpg.get_value("ts_tile_layer_tileset")
+            if raw is not None:
+                rs = str(raw).strip()
+                if rs and not rs.startswith("("):
+                    ts = rs
+        ly = tpl[slot]
+        new_list = [tpl[i] for i in range(TILE_LAYER_COUNT)]
+        new_list[slot] = SceneTileLayer(en, ts, ly.cells)
+        row["tile_layers"] = tile_layers_to_json_list(tuple(new_list))
+
+    def _load_tile_widgets_from_row_for_slot(row: dict[str, Any], slot: int) -> None:
+        _normalize_row_tile_layers_inplace(row)
+        px = _tiles_px_from_widgets()
+        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
+        ly = tpl[slot]
+        if dpg.does_item_exist("ts_tile_layer_enabled"):
+            dpg.set_value("ts_tile_layer_enabled", ly.enabled)
+        _refresh_tile_layer_tileset_combo(select=ly.tileset)
+        _rebuild_scene_tile_brush_picker(ly.tileset)
+
+    def _scene_canvas_palette_rgb() -> list[tuple[float, float, float]]:
+        rgbs = state.get("rgb")
+        if isinstance(rgbs, list) and rgbs:
+            return rgbs
+        return []
+
+    def _destroy_scene_tile_brush_picker_assets() -> None:
+        tags = state.get("scene_tile_brush_asset_tags")
+        if isinstance(tags, list):
+            for t in tags:
+                if isinstance(t, str) and dpg.does_item_exist(t):
+                    dpg.delete_item(t)
+        state["scene_tile_brush_asset_tags"] = []
+        state["scene_tile_brush_cell_items"] = []
+
+    def _apply_scene_tile_brush_selection_theme() -> None:
+        cells = state.get("scene_tile_brush_cell_items")
+        if not isinstance(cells, list):
+            return
+        try:
+            sel = int(state.get("scene_tile_brush_index", 0))
+        except (TypeError, ValueError):
+            sel = 0
+        for idx, wrap_tag in cells:
+            if not isinstance(wrap_tag, str) or not dpg.does_item_exist(wrap_tag):
+                continue
+            if idx == sel and dpg.does_item_exist("ts_scene_tile_brush_sel_theme"):
+                dpg.bind_item_theme(wrap_tag, "ts_scene_tile_brush_sel_theme")
+            else:
+                dpg.bind_item_theme(wrap_tag, 0)
+
+    def _set_scene_tile_brush_index(idx: int) -> None:
+        state["scene_tile_brush_index"] = max(0, int(idx))
+        _apply_scene_tile_brush_selection_theme()
+
+    def _on_scene_tile_brush_click(
+        _sender: object, _app_data: object, user_data: object
+    ) -> None:
+        try:
+            _set_scene_tile_brush_index(int(user_data))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+
+    def _rebuild_scene_tile_brush_picker(tileset_stem: str) -> None:
+        gid = "ts_scene_tile_brush_group"
+        if not dpg.does_item_exist(gid):
+            return
+        _destroy_scene_tile_brush_picker_assets()
+        dpg.delete_item(gid, children_only=True)
+        stem = str(tileset_stem).strip()
+        root = state.get("project_root")
+        if not stem or not isinstance(root, Path):
+            dpg.add_text(
+                "(elige un tileset)",
+                parent=gid,
+                wrap=_LEFT_TEXT_WRAP,
+                color=(160, 180, 210, 255),
+            )
+            return
+        try:
+            data = read_tileset_file(root, stem)
+            tiles = parse_tileset_all_tiles(data, fill_index=1)
+            tpx = tileset_file_pixel_dimensions(data)
+        except ValueError:
+            dpg.add_text(
+                "(tileset invalido)",
+                parent=gid,
+                wrap=_LEFT_TEXT_WRAP,
+                color=(160, 180, 210, 255),
+            )
+            return
+        if not tiles:
+            dpg.add_text(
+                "(sin tiles en el tileset)",
+                parent=gid,
+                wrap=_LEFT_TEXT_WRAP,
+                color=(160, 180, 210, 255),
+            )
+            return
+        rgbs = _scene_canvas_palette_rgb()
+        if not rgbs:
+            dpg.add_text(
+                "(carga la paleta de la escena)",
+                parent=gid,
+                wrap=_LEFT_TEXT_WRAP,
+                color=(160, 180, 210, 255),
+            )
+            return
+        bi = int(state.get("scene_tile_brush_index", 0))
+        bi = max(0, min(len(tiles) - 1, bi))
+        state["scene_tile_brush_index"] = bi
+        sc = max(1, min(6, _SCENE_TILE_BRUSH_PICKER_SCALE))
+        fill = (0.45, 0.45, 0.48)
+        asset_tags: list[str] = []
+        cell_items: list[tuple[int, str]] = []
+        tex_parent = (
+            _SCENE_TILE_BRUSH_TEX_REGISTRY
+            if dpg.does_item_exist(_SCENE_TILE_BRUSH_TEX_REGISTRY)
+            else 0
+        )
+        for i, rows in enumerate(tiles):
+            if not isinstance(rows, list):
+                continue
+            preview = composite_sprite_editor_preview(
+                rows,
+                rgbs,
+                None,
+                canvas_fill_rgb=fill,
+                ref_alpha=0.0,
+                paint_alpha=1.0,
+            )
+            disp_rgba, dw, dh = _scale_rgba_nearest(preview, tpx, tpx, sc)
+            dw = max(1, dw)
+            dh = max(1, dh)
+            need = dw * dh * 4
+            if len(disp_rgba) < need:
+                continue
+            tex_tag = f"ts_scene_tile_brush_tex_{i}"
+            reg_tag = f"ts_scene_tile_pick_reg_{i}"
+            wrap_tag = f"ts_scene_tile_brush_wrap_{i}"
+            img_tag = f"ts_scene_tile_brush_img_{i}"
+            asset_tags.extend([tex_tag, reg_tag, wrap_tag, img_tag])
+            pad = 4
+            # Buffer must match texture width×height exactly (not _SPRITE_EDITOR_TEX_MAX).
+            tex_buf = _pack_sprite_rgba_into_tex_buffer(
+                disp_rgba, dw, dh, tex_w=dw, tex_h=dh
+            )
+            dpg.add_dynamic_texture(
+                width=dw,
+                height=dh,
+                default_value=tex_buf,
+                tag=tex_tag,
+                parent=tex_parent,
+            )
+            dpg.add_child_window(
+                parent=gid,
+                tag=wrap_tag,
+                width=max(28, dw + pad * 2),
+                height=max(28, dh + pad * 2 + 14),
+                border=True,
+                no_scrollbar=True,
+            )
+            dpg.add_image(
+                tex_tag,
+                tag=img_tag,
+                parent=wrap_tag,
+                width=max(1, dw),
+                height=max(1, dh),
+                uv_min=(0.0, 0.0),
+                uv_max=(1.0, 1.0),
+            )
+            dpg.add_text(
+                f"T{i}",
+                parent=wrap_tag,
+                color=(180, 200, 230, 255),
+            )
+            with dpg.item_handler_registry(tag=reg_tag):
+                dpg.add_item_clicked_handler(
+                    button=dpg.mvMouseButton_Left,
+                    callback=_on_scene_tile_brush_click,
+                    user_data=i,
+                )
+            dpg.bind_item_handler_registry(img_tag, reg_tag)
+            cell_items.append((i, wrap_tag))
+        state["scene_tile_brush_asset_tags"] = asset_tags
+        state["scene_tile_brush_cell_items"] = cell_items
+        _apply_scene_tile_brush_selection_theme()
+
+    def _commit_tile_layers_for_scene_id(sid: str) -> None:
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list) or not sid:
+            return
+        slot = int(state.get("edit_tile_layer_slot", 0))
+        for row in scenes:
+            if row.get("id") == sid:
+                _commit_widgets_to_tile_row_for_slot(row, slot)
+                break
+
+    def _commit_tile_layers_for_active_scene() -> None:
+        _commit_tile_layers_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def _refresh_tile_layer_tileset_combo(*, select: str = "") -> None:
+        if not dpg.does_item_exist("ts_tile_layer_tileset"):
+            return
+        root = state.get("project_root")
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        if not isinstance(root, Path) or not isinstance(scenes, list) or not active:
+            dpg.configure_item(
+                "ts_tile_layer_tileset",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            dpg.set_value("ts_tile_layer_tileset", "(abre un proyecto)")
+            return
+        row = next((x for x in scenes if x.get("id") == active), None)
+        pal = str(row.get("palette", "")).strip() if row else ""
+        stems = list_tileset_stems_for_palette(root, pal) if pal else []
+        items = stems if stems else ["(ningun tileset con esta paleta)"]
+        dpg.configure_item("ts_tile_layer_tileset", items=items, enabled=bool(stems))
+        pick = select.strip() if select.strip() in stems else (stems[0] if stems else items[0])
+        dpg.set_value("ts_tile_layer_tileset", pick)
+
+    def _parse_tile_brush_index_from_widget() -> int:
+        try:
+            return max(0, int(state.get("scene_tile_brush_index", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def _active_scene_row() -> dict[str, Any] | None:
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        if not isinstance(scenes, list) or not active:
+            return None
+        return next((x for x in scenes if x.get("id") == active), None)
+
+    def _scene_tile_grid_visible() -> bool:
+        if not isinstance(state.get("project_root"), Path):
+            return False
+        if not dpg.does_item_exist("ts_show_tile_grid"):
+            return True
+        return bool(dpg.get_value("ts_show_tile_grid"))
+
+    def _scene_tile_layer_paint_active() -> bool:
+        row = _active_scene_row()
+        if row is None:
+            return False
+        slot = max(0, min(TILE_LAYER_COUNT - 1, int(state.get("edit_tile_layer_slot", 0))))
+        px = _tiles_px_from_widgets()
+        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ly = tpl[slot]
+        return ly.enabled and bool(ly.tileset.strip())
+
+    def _scene_canvas_cell_from_mouse() -> tuple[int, int] | None:
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
+            return None
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_SCENE_CANVAS_IMG_TAG)
+        rel_x = float(mx - min_x)
+        rel_y = float(my - min_y)
+        sc = _canvas_display_scale()
+        show_grid = bool(dpg.get_value("ts_show_grid"))
+        dw, dh = _sprite_display_size(_FB_W, _FB_H, sc, with_gaps=show_grid)
+        if rel_x < 0 or rel_y < 0 or rel_x >= dw or rel_y >= dh:
+            return None
+        hit = _sprite_pixel_from_display(
+            rel_x, rel_y, _FB_W, _FB_H, sc, with_gaps=show_grid
+        )
+        if hit is None:
+            return None
+        lx, ly_top = hit
+        sx, sy = _texture_px_to_scene_coords(lx, ly_top)
+        return scene_coords_to_cell(sx, sy, tile_px=_tiles_px_from_widgets())
+
+    def _try_scene_tile_paint_at_mouse(*, erase: bool = False) -> bool:
+        row = _active_scene_row()
+        if row is None or not isinstance(state.get("project_root"), Path):
+            return False
+        if not _scene_tile_layer_paint_active():
+            return False
+        cell = _scene_canvas_cell_from_mouse()
+        if cell is None:
+            return False
+        gx, gy = cell
+        state["scene_tile_hover_cell"] = (gx, gy)
+        slot = int(state.get("edit_tile_layer_slot", 0))
+        slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
+        px = _tiles_px_from_widgets()
+        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ly = tpl[slot]
+        brush = (
+            TRANSPARENT_PALETTE_INDEX
+            if erase
+            else _parse_tile_brush_index_from_widget()
+        )
+        cells = [list(r) for r in ly.cells]
+        set_cell_index(cells, gx, gy, brush)
+        new_list = [tpl[i] for i in range(TILE_LAYER_COUNT)]
+        new_list[slot] = SceneTileLayer(ly.enabled, ly.tileset, tuple(tuple(r) for r in cells))
+        row["tile_layers"] = tile_layers_to_json_list(tuple(new_list))
+        refresh_canvas_texture()
+        return True
 
     def _commit_scene_background_for_scene_id(sid: str) -> None:
         if not dpg.does_item_exist("ts_scene_background"):
@@ -2555,6 +3041,18 @@ def run_gui() -> int:
             base = _composite_background_layers_rgba(
                 tpl, rgbs, _FB_W, _FB_H, underlay_rgba=None
             )
+        if row is not None and isinstance(root, Path):
+            tpx = _tiles_px_from_widgets()
+            tile_tpl = parse_tile_layers(row.get("tile_layers"), tile_px=tpx)
+            paint_tile_layers_on_rgba(
+                base,
+                _FB_W,
+                _FB_H,
+                tile_tpl,
+                root,
+                rgbs,
+                tile_px=tpx,
+            )
         slot = int(state.get("edit_bg_layer_slot", 0))
         slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
         ly = tpl[slot]
@@ -2591,6 +3089,22 @@ def run_gui() -> int:
                 _paint_placement_crosses_only(
                     base, _FB_W, _FB_H, placements, tr, tg, tb
                 )
+        if _scene_tile_grid_visible():
+            tpx_grid = _tiles_px_from_widgets()
+            hover: tuple[int, int] | None = None
+            if _scene_tile_layer_paint_active():
+                hc = state.get("scene_tile_hover_cell")
+                if isinstance(hc, tuple) and len(hc) == 2:
+                    hover = (int(hc[0]), int(hc[1]))
+            draw_scene_tile_grid_on_rgba(
+                base,
+                _FB_W,
+                _FB_H,
+                tpx_grid,
+                hover_cell=hover,
+                grid_rgba=_SCENE_TILE_GRID_RGBA,
+                hover_rgba=_SCENE_TILE_GRID_HOVER_RGBA,
+            )
         show = bool(dpg.get_value("ts_show_grid"))
         sc = _canvas_display_scale()
         if show:
@@ -2638,6 +3152,9 @@ def run_gui() -> int:
             "ts_btn_scene_obj_add",
             "ts_scene_obj_inscene_list",
             "ts_btn_scene_obj_remove",
+            "ts_tile_layer",
+            "ts_tile_layer_enabled",
+            "ts_tile_layer_tileset",
             "ts_bg_layer",
             "ts_bg_layer_enabled",
             "ts_bg_layer_opacity",
@@ -2729,6 +3246,24 @@ def run_gui() -> int:
             "ts_bg_ref_resize_on_import",
             "ts_btn_bg_match_ref_size",
             "ts_btn_bg_clear_pixels",
+            "ts_tiles_px",
+            "ts_tileset_list",
+            "ts_tileset_id",
+            "ts_btn_tileset_create",
+            "ts_btn_tileset_save",
+            "ts_btn_tileset_refresh",
+            "ts_tile_list",
+            "ts_btn_tile_add",
+            "ts_btn_tile_remove",
+            "ts_tileset_palette_rel",
+            "ts_btn_tileset_palette_reload",
+            "ts_tileset_editor_scale",
+            "ts_btn_tileset_fill",
+            "ts_btn_tileset_clear",
+            "ts_btn_tileset_ref_import",
+            "ts_btn_tileset_ref_clear",
+            "ts_btn_tileset_ref_convert",
+            "ts_tileset_atlas_scale",
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=enabled)
@@ -2958,6 +3493,12 @@ def run_gui() -> int:
             _bg_palette_reload_core(append_log=False)
             _refresh_bg_tab_list()
             _refresh_bg_editor_canvas()
+            if dpg.does_item_exist("ts_tileset_palette_rel"):
+                dpg.set_value(
+                    "ts_tileset_palette_rel",
+                    sp if sp else DEFAULT_EXAMPLE_PALETTE_REL,
+                )
+            _refresh_tileset_file_list()
         else:
             state["bg_palette_rgb"] = []
             state["bg_palette_hexes"] = []
@@ -2968,6 +3509,24 @@ def run_gui() -> int:
             _rebuild_bg_palette_swatches()
             _refresh_bg_tab_list()
             _refresh_bg_editor_canvas()
+            _apply_tiles_widgets(DEFAULT_TILE_PX)
+            state["tileset_tiles_pixels"] = None
+            state["tileset_pixel_rows"] = None
+            state["tileset_ref_source"] = None
+            state["tileset_ref_path"] = ""
+            state["tileset_atlas_cell"] = None
+            _update_tileset_ref_path_label()
+            _refresh_tileset_atlas_texture()
+            _refresh_tileset_file_list()
+            _destroy_scene_tile_brush_picker_assets()
+            if dpg.does_item_exist("ts_scene_tile_brush_group"):
+                dpg.delete_item("ts_scene_tile_brush_group", children_only=True)
+                dpg.add_text(
+                    "(abre un proyecto)",
+                    parent="ts_scene_tile_brush_group",
+                    wrap=_LEFT_TEXT_WRAP,
+                    color=(160, 180, 210, 255),
+                )
         log = palette_reload_from_path()
         refresh_canvas_texture()
         if isinstance(state.get("project_root"), Path):
@@ -3044,6 +3603,11 @@ def run_gui() -> int:
         if dpg.does_item_exist("ts_bg_layer"):
             dpg.set_value("ts_bg_layer", "0")
         _load_background_widgets_from_row_for_slot(row, 0)
+        _normalize_row_tile_layers_inplace(row)
+        state["edit_tile_layer_slot"] = 0
+        if dpg.does_item_exist("ts_tile_layer"):
+            dpg.set_value("ts_tile_layer", "0")
+        _load_tile_widgets_from_row_for_slot(row, 0)
         if dpg.does_item_exist("ts_scene_script"):
             dpg.set_value("ts_scene_script", str(row.get("script", row.get("id", ""))))
             dpg.configure_item(
@@ -3144,6 +3708,8 @@ def run_gui() -> int:
     def on_canvas_preview_click(_sender: object, _app_data: object) -> None:
         pending = state.get("pending_scene_object_id")
         if not isinstance(pending, str) or not pending.strip():
+            if _try_scene_tile_paint_at_mouse(erase=False):
+                return
             return
         if not isinstance(state.get("project_root"), Path):
             return
@@ -3233,8 +3799,800 @@ def run_gui() -> int:
             prev + f"Escena: quitado {label} (Guardar proyecto para persistir).\n",
         )
 
+    def _apply_tiles_widgets(tile_px: int) -> None:
+        px = normalize_tile_px(tile_px)
+        state["tile_px"] = px
+        if dpg.does_item_exist("ts_tiles_px"):
+            dpg.set_value("ts_tiles_px", px)
+
+    def _tiles_px_from_widgets() -> int:
+        if not dpg.does_item_exist("ts_tiles_px"):
+            return normalize_tile_px(state.get("tile_px", DEFAULT_TILE_PX))
+        return normalize_tile_px(dpg.get_value("ts_tiles_px"))
+
+    def on_tiles_px_change(_sender: object, _app_data: object) -> None:
+        old_px = normalize_tile_px(state.get("tile_px", DEFAULT_TILE_PX))
+        px = _tiles_px_from_widgets()
+        state["tile_px"] = px
+        if dpg.does_item_exist("ts_tiles_px") and int(dpg.get_value("ts_tiles_px")) != px:
+            dpg.set_value("ts_tiles_px", px)
+        if old_px != px:
+            state["scene_tile_hover_cell"] = None
+            scenes = state.get("scenes")
+            if isinstance(scenes, list):
+                for row in scenes:
+                    if not isinstance(row, dict):
+                        continue
+                    tpl = parse_tile_layers(row.get("tile_layers"), tile_px=old_px)
+                    new_tpl: list[SceneTileLayer] = []
+                    for ly in tpl:
+                        cells = [list(r) for r in ly.cells]
+                        cells2 = resize_tile_layer_cells(
+                            cells, old_tile_px=old_px, new_tile_px=px
+                        )
+                        new_tpl.append(
+                            SceneTileLayer(
+                                ly.enabled,
+                                ly.tileset,
+                                tuple(tuple(r) for r in cells2),
+                            )
+                        )
+                    row["tile_layers"] = tile_layers_to_json_list(tuple(new_tpl))
+            refresh_canvas_texture()
+        if isinstance(state.get("tileset_tiles_pixels"), list):
+            _tileset_resize_all_entries(px)
+        _refresh_tileset_atlas_texture()
+
+
+    def _tileset_px_for_editor() -> int:
+        return _tiles_px_from_widgets()
+
+    def _palette_len_tileset() -> int:
+        hexes = state.get("tileset_palette_hexes")
+        return len(hexes) if isinstance(hexes, list) else 0
+
+    def parse_tileset_palette_index() -> int:
+        try:
+            v = int(state.get("tileset_brush_index", 1))
+        except (TypeError, ValueError):
+            v = 1
+        n = _palette_len_tileset()
+        if n <= 0:
+            return max(0, v)
+        return clamp_paint_palette_index(v, palette_len=n)
+
+    def _set_tileset_brush_index(idx: int) -> None:
+        n = _palette_len_tileset()
+        i = clamp_paint_palette_index(idx, palette_len=n) if n > 0 else max(0, idx)
+        state["tileset_brush_index"] = i
+
+    def _on_tileset_palette_swatch_click(
+        sender: object, app_data: object, user_data: object | None = None,
+    ) -> None:
+        try:
+            idx = int(user_data)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        _set_tileset_brush_index(idx)
+
+    def _tileset_palette_reload_core(*, append_log: bool = True) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            state["tileset_palette_rgb"] = []
+            state["tileset_palette_hexes"] = []
+            if dpg.does_item_exist("ts_tileset_palette_swatches_group"):
+                dpg.delete_item("ts_tileset_palette_swatches_group", children_only=True)
+            return
+        raw = ""
+        if dpg.does_item_exist("ts_tileset_palette_rel"):
+            raw = str(dpg.get_value("ts_tileset_palette_rel")).strip()
+        rel = normalize_palette_rel(raw) if raw else DEFAULT_EXAMPLE_PALETTE_REL
+        if dpg.does_item_exist("ts_tileset_palette_rel"):
+            dpg.set_value("ts_tileset_palette_rel", rel)
+        abs_p = (root / rel).resolve()
+        if not abs_p.is_file():
+            state["tileset_palette_rgb"] = []
+            state["tileset_palette_hexes"] = []
+            if append_log:
+                dpg.set_value(
+                    "ts_log",
+                    (dpg.get_value("ts_log") or "")
+                    + f"Tiles: no existe la paleta {rel}\n",
+                )
+            return
+        rgbs, hexes = load_palette_rgb01_for_preview(abs_p)
+        state["tileset_palette_rgb"] = rgbs
+        state["tileset_palette_hexes"] = hexes
+        _set_tileset_brush_index(parse_tileset_palette_index())
+        gid = "ts_tileset_palette_swatches_group"
+        if dpg.does_item_exist(gid):
+            dpg.delete_item(gid, children_only=True)
+            _add_palette_swatch_buttons(
+                gid, rgbs, _on_tileset_palette_swatch_click, wrap=480
+            )
+        if append_log:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + f"Tiles: paleta cargada ({len(hexes)} colores) — {rel}\n",
+            )
+
+    def _refresh_tileset_file_list() -> None:
+        if not dpg.does_item_exist("ts_tileset_list"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item(
+                "ts_tileset_list",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            return
+        stems = list_tileset_json_stems(root)
+        items = stems if stems else ["(ningun tileset aun)"]
+        dpg.configure_item("ts_tileset_list", items=items, enabled=True)
+
+    def _tileset_list_selected_stem() -> str | None:
+        if not dpg.does_item_exist("ts_tileset_list"):
+            return None
+        raw = dpg.get_value("ts_tileset_list")
+        s = str(raw).strip() if raw is not None else ""
+        if not s or s.startswith("("):
+            return None
+        return s
+
+    def _tileset_active_index() -> int:
+        try:
+            i = int(state.get("tileset_active_index") or 0)
+        except (TypeError, ValueError):
+            i = 0
+        frames = state.get("tileset_tiles_pixels")
+        n = len(frames) if isinstance(frames, list) else 0
+        return max(0, min(max(0, n - 1), i))
+
+    def _tileset_ensure_buffers() -> list[list[list[int]]]:
+        frames = state.get("tileset_tiles_pixels")
+        rows = state.get("tileset_pixel_rows")
+        if not isinstance(frames, list) or not frames:
+            if isinstance(rows, list) and rows:
+                state["tileset_tiles_pixels"] = [rows]
+            else:
+                px = _tileset_px_for_editor()
+                state["tileset_tiles_pixels"] = [empty_tile_rows(px, fill_index=1)]
+            frames = state.get("tileset_tiles_pixels")
+        if not isinstance(frames, list):
+            return []
+        return frames
+
+    def _tileset_flush_current_tile() -> None:
+        rows = state.get("tileset_pixel_rows")
+        frames = _tileset_ensure_buffers()
+        if not frames:
+            return
+        idx = _tileset_active_index()
+        if isinstance(rows, list) and idx < len(frames):
+            frames[idx] = rows
+
+    def _tileset_load_active_tile_into_editor() -> None:
+        frames = _tileset_ensure_buffers()
+        if not frames:
+            return
+        idx = _tileset_active_index()
+        state["tileset_pixel_rows"] = frames[idx]
+        if dpg.does_item_exist("ts_tile_list"):
+            labels = [f"T{i}" for i in range(len(frames))]
+            dpg.configure_item("ts_tile_list", items=labels)
+            pick = f"T{idx}" if idx < len(labels) else labels[0]
+            dpg.set_value("ts_tile_list", pick)
+
+    def _tileset_resize_all_entries(px: int) -> None:
+        _tileset_flush_current_tile()
+        px = normalize_tile_px(px)
+        frames = state.get("tileset_tiles_pixels")
+        if not isinstance(frames, list):
+            return
+        fi = parse_tileset_palette_index()
+        if fi == 0:
+            fi = 1
+        new_frames = [
+            trim_palette_rows(
+                fr if isinstance(fr, list) else None, px, px, fill_index=fi
+            )
+            for fr in frames
+        ]
+        state["tileset_tiles_pixels"] = new_frames
+        _tileset_load_active_tile_into_editor()
+        _refresh_tileset_edit_texture()
+        _refresh_tileset_atlas_texture()
+
+    def _tileset_editor_display_scale() -> int:
+        if not dpg.does_item_exist("ts_tileset_editor_scale"):
+            return _TILESET_EDITOR_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_tileset_editor_scale"))
+        except (TypeError, ValueError):
+            v = _TILESET_EDITOR_SCALE_DEFAULT
+        return max(1, min(16, v))
+
+    def _tileset_editor_effective_scale(pw: int, ph: int) -> int:
+        sc = _tileset_editor_display_scale()
+        if pw <= 0 or ph <= 0:
+            return sc
+        cap = min(_SPRITE_EDITOR_TEX_MAX // pw, _SPRITE_EDITOR_TEX_MAX // ph)
+        return max(1, min(sc, cap))
+
+    def _tileset_canvas_fill_rgb01() -> tuple[float, float, float]:
+        cached = state.get("tileset_canvas_bg_rgb01")
+        if isinstance(cached, tuple) and len(cached) == 3:
+            return cached
+        return (0.55, 0.55, 0.58)
+
+    def _sync_tileset_edit_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_TILESET_EDITOR_IMG_TAG):
+            return
+        uv = _tileset_editor_uv_max(dw, dh)
+        dpg.configure_item(
+            _TILESET_EDITOR_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_TILESET_EDITOR_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _apply_tileset_edit_rgba(pw: int, ph: int, rgba: list[float]) -> None:
+        if pw <= 0 or ph <= 0 or not dpg.does_item_exist(_TILESET_EDITOR_TEX_TAG):
+            return
+        if len(rgba) != pw * ph * 4:
+            return
+        sc = _tileset_editor_effective_scale(pw, ph)
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
+        if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
+            dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
+            dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_TILESET_EDITOR_TEX_TAG, tex_rgba)
+        _sync_tileset_edit_image_widget(dw, dh)
+
+    def _refresh_tileset_edit_texture() -> None:
+        if not dpg.does_item_exist(_TILESET_EDITOR_TEX_TAG):
+            return
+        rows = state.get("tileset_pixel_rows")
+        rgbs = state.get("tileset_palette_rgb")
+        px = _tileset_px_for_editor()
+        if not isinstance(rows, list) or not rows:
+            sc0 = _tileset_editor_effective_scale(px, px)
+            _sync_tileset_edit_image_widget(px * sc0, px * sc0)
+            return
+        if not isinstance(rgbs, list) or not rgbs:
+            sc0 = _tileset_editor_effective_scale(px, px)
+            _sync_tileset_edit_image_widget(px * sc0, px * sc0)
+            return
+        fi = parse_tileset_palette_index()
+        if fi == 0:
+            fi = 1
+        norm = trim_palette_rows(rows, px, px, fill_index=fi)
+        if norm is not rows:
+            state["tileset_pixel_rows"] = norm
+            _tileset_flush_current_tile()
+        base = composite_sprite_editor_preview(
+            norm,
+            rgbs,
+            None,
+            canvas_fill_rgb=_tileset_canvas_fill_rgb01(),
+            ref_alpha=0.0,
+            paint_alpha=1.0,
+        )
+        _apply_tileset_edit_rgba(px, px, base)
+
+    def _tileset_atlas_display_scale() -> int:
+        if not dpg.does_item_exist("ts_tileset_atlas_scale"):
+            return _TILESET_ATLAS_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_tileset_atlas_scale"))
+        except (TypeError, ValueError):
+            v = _TILESET_ATLAS_SCALE_DEFAULT
+        return max(1, min(16, v))
+
+    def _tileset_atlas_effective_scale(sw: int, sh: int) -> int:
+        sc = _tileset_atlas_display_scale()
+        if sw <= 0 or sh <= 0:
+            return sc
+        cap = min(_SPRITE_EDITOR_TEX_MAX // sw, _SPRITE_EDITOR_TEX_MAX // sh)
+        return max(1, min(sc, cap))
+
+    def _sync_tileset_atlas_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_TILESET_ATLAS_IMG_TAG):
+            return
+        uv = _tileset_atlas_uv_max(dw, dh)
+        dpg.configure_item(
+            _TILESET_ATLAS_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_TILESET_ATLAS_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _apply_tileset_atlas_rgba(sw: int, sh: int, rgba: list[float]) -> None:
+        if sw <= 0 or sh <= 0 or not dpg.does_item_exist(_TILESET_ATLAS_TEX_TAG):
+            return
+        if len(rgba) != sw * sh * 4:
+            return
+        sc = _tileset_atlas_effective_scale(sw, sh)
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, sw, sh, sc)
+        if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
+            dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
+            dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_TILESET_ATLAS_TEX_TAG, tex_rgba)
+        _sync_tileset_atlas_image_widget(dw, dh)
+
+    def _update_tileset_ref_path_label() -> None:
+        if not dpg.does_item_exist("ts_tileset_ref_path_label"):
+            return
+        p = str(state.get("tileset_ref_path") or "").strip()
+        if not p:
+            dpg.set_value("ts_tileset_ref_path_label", "(sin imagen importada)")
+            return
+        dpg.set_value("ts_tileset_ref_path_label", f"Imagen: {p}")
+
+    def _update_tileset_atlas_info_label() -> None:
+        if not dpg.does_item_exist("ts_tileset_atlas_info"):
+            return
+        src = state.get("tileset_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_tileset_atlas_info",
+                "Importa una imagen; la rejilla usa el tamano de tile del proyecto.",
+            )
+            return
+        sw, sh, _rgba = src
+        px = _tileset_px_for_editor()
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        cell = state.get("tileset_atlas_cell")
+        sel = ""
+        if isinstance(cell, tuple) and len(cell) == 2:
+            gx, gy = int(cell[0]), int(cell[1])
+            sel = f" Celda seleccionada: ({gx}, {gy}) → tile T{_tileset_active_index()} al convertir."
+        dpg.set_value(
+            "ts_tileset_atlas_info",
+            f"Rejilla {cols}×{rows} celdas ({px}×{px} px). Imagen {sw}×{sh} px.{sel}",
+        )
+
+    def _refresh_tileset_atlas_texture() -> None:
+        if not dpg.does_item_exist(_TILESET_ATLAS_TEX_TAG):
+            return
+        src = state.get("tileset_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            sc0 = _tileset_atlas_effective_scale(64, 64)
+            _sync_tileset_atlas_image_widget(64 * sc0, 64 * sc0)
+            _update_tileset_atlas_info_label()
+            return
+        sw, sh, rgba = src
+        if sw <= 0 or sh <= 0 or len(rgba) < sw * sh * 4:
+            _update_tileset_atlas_info_label()
+            return
+        px = _tileset_px_for_editor()
+        cell = state.get("tileset_atlas_cell")
+        sel = cell if isinstance(cell, tuple) and len(cell) == 2 else None
+        base = list(rgba[: sw * sh * 4])
+        _draw_tileset_atlas_grid_overlay(base, sw, sh, px, sel_cell=sel)
+        _apply_tileset_atlas_rgba(sw, sh, base)
+        _update_tileset_atlas_info_label()
+
+    def _tileset_show_atlas_cell_rgb_preview(gx: int, gy: int) -> None:
+        src = state.get("tileset_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return
+        px = _tileset_px_for_editor()
+        rgba, pw, ph = crop_ref_tile_rgba(src, gx, gy, px)
+        _apply_tileset_edit_rgba(pw, ph, rgba)
+
+    def _tileset_atlas_cell_from_mouse() -> tuple[int, int] | None:
+        src = state.get("tileset_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return None
+        if not dpg.does_item_exist(_TILESET_ATLAS_IMG_TAG):
+            return None
+        sw, sh, _rgba = src
+        px = _tileset_px_for_editor()
+        sc = _tileset_atlas_effective_scale(sw, sh)
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_TILESET_ATLAS_IMG_TAG)
+        rx = float(mx - min_x)
+        ry = float(my - min_y)
+        dw, dh = sw * sc, sh * sc
+        if rx < 0 or ry < 0 or rx >= dw or ry >= dh:
+            return None
+        lx = min(sw - 1, int(rx) // sc)
+        ly = min(sh - 1, int(ry) // sc)
+        gx = lx // px
+        gy = ly // px
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
+            return None
+        return gx, gy
+
+    def _load_tileset_ref_from_path(path: str) -> None:
+        try:
+            sw, sh, rgba = load_image_rgba_float01(path)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Tiles imagen: {e}\n",
+            )
+            return
+        state["tileset_ref_source"] = (sw, sh, rgba)
+        state["tileset_ref_path"] = str(Path(path).expanduser())
+        state["tileset_atlas_cell"] = None
+        _update_tileset_ref_path_label()
+        px = _tileset_px_for_editor()
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Tiles: imagen {sw}×{sh} px, rejilla {cols}×{rows} ({px}×{px}). "
+            "No se guarda en el .json del tileset.\n",
+        )
+        _refresh_tileset_atlas_texture()
+
+    def on_tileset_ref_import_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_tileset_ref_file_dialog"):
+            dpg.show_item("ts_tileset_ref_file_dialog")
+
+    def on_tileset_ref_file_picked(_sender: object, app_data: object) -> None:
+        if not isinstance(app_data, dict):
+            return
+        path = ""
+        fp = app_data.get("file_path_name")
+        if isinstance(fp, str) and fp.strip():
+            path = fp.strip()
+        else:
+            selections = app_data.get("selections")
+            if isinstance(selections, dict) and selections:
+                path = str(next(iter(selections.values()))).strip()
+        if path:
+            _load_tileset_ref_from_path(path)
+
+    def on_tileset_ref_clear_click(_sender: object, _app_data: object) -> None:
+        state["tileset_ref_source"] = None
+        state["tileset_ref_path"] = ""
+        state["tileset_atlas_cell"] = None
+        _update_tileset_ref_path_label()
+        _refresh_tileset_atlas_texture()
+        _refresh_tileset_edit_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + "Tiles: imagen de hoja quitada.\n",
+        )
+
+    def on_tileset_ref_convert_click(_sender: object, _app_data: object) -> None:
+        src = state.get("tileset_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Tiles: importa una imagen antes de convertir.\n",
+            )
+            return
+        cell = state.get("tileset_atlas_cell")
+        if not isinstance(cell, tuple) or len(cell) != 2:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Tiles: haz clic en una celda de la rejilla.\n",
+            )
+            return
+        gx, gy = int(cell[0]), int(cell[1])
+        rgbs = state.get("tileset_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            if isinstance(state.get("project_root"), Path):
+                _tileset_palette_reload_core(append_log=False)
+            rgbs = state.get("tileset_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Tiles: carga la paleta del tileset antes de convertir.\n",
+            )
+            return
+        px = _tileset_px_for_editor()
+        try:
+            rows = convert_ref_tile_to_palette_rows(src, gx, gy, px, rgbs)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Tiles convertir: {e}\n",
+            )
+            return
+        if not rows:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Tiles convertir: celda vacia.\n",
+            )
+            return
+        _tileset_flush_current_tile()
+        state["tileset_pixel_rows"] = rows
+        _tileset_flush_current_tile()
+        _refresh_tileset_edit_texture()
+        ti = _tileset_active_index()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Tiles: celda ({gx}, {gy}) convertida al tile T{ti}.\n",
+        )
+
+    def on_tileset_atlas_click(_sender: object, _app_data: object) -> None:
+        cell = _tileset_atlas_cell_from_mouse()
+        if cell is None:
+            return
+        state["tileset_atlas_cell"] = cell
+        _refresh_tileset_atlas_texture()
+        _tileset_show_atlas_cell_rgb_preview(cell[0], cell[1])
+
+    def on_tileset_atlas_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_tileset_atlas_texture()
+        cell = state.get("tileset_atlas_cell")
+        if isinstance(cell, tuple) and len(cell) == 2:
+            _tileset_show_atlas_cell_rgb_preview(int(cell[0]), int(cell[1]))
+
+    def _tileset_edit_paint_at_mouse(*, erase: bool = False) -> bool:
+        rows = state.get("tileset_pixel_rows")
+        if not isinstance(rows, list) or not rows:
+            px = _tileset_px_for_editor()
+            state["tileset_pixel_rows"] = empty_tile_rows(px, fill_index=1)
+            rows = state["tileset_pixel_rows"]
+        rgbs = state.get("tileset_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            if isinstance(state.get("project_root"), Path):
+                _tileset_palette_reload_core(append_log=False)
+            rows = state.get("tileset_pixel_rows")
+            if not isinstance(rows, list):
+                return False
+        if not dpg.does_item_exist(_TILESET_EDITOR_IMG_TAG):
+            return False
+        pw = px = _tileset_px_for_editor()
+        ph = px
+        if pw <= 0:
+            return False
+        sc = _tileset_editor_effective_scale(pw, ph)
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_TILESET_EDITOR_IMG_TAG)
+        rx = float(mx - min_x)
+        ry = float(my - min_y)
+        dw, dh = pw * sc, ph * sc
+        if rx < 0 or ry < 0 or rx >= dw or ry >= dh:
+            return False
+        lx = min(pw - 1, int(rx) // sc)
+        ly = min(ph - 1, int(ry) // sc)
+        color_i = (
+            TRANSPARENT_PALETTE_INDEX
+            if erase
+            else parse_tileset_palette_index()
+        )
+        row = rows[ly] if ly < len(rows) else []
+        if isinstance(row, list) and lx < len(row):
+            row[lx] = color_i
+        _tileset_flush_current_tile()
+        _refresh_tileset_edit_texture()
+        return True
+
+    def _tileset_edit_paint_drag(*, erase: bool) -> None:
+        if not dpg.does_item_exist(_TILESET_EDITOR_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_TILESET_EDITOR_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _tileset_edit_paint_at_mouse(erase=erase)
+
+    def _load_tileset_into_form(stem: str) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        try:
+            data = read_tileset_file(root, stem)
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Tiles: {e}\n")
+            return
+        tid = str(data.get("id", stem)).strip() or stem
+        if dpg.does_item_exist("ts_tileset_id"):
+            dpg.set_value("ts_tileset_id", tid)
+        pal = str(data.get("palette", "")).strip().replace("\\", "/")
+        if not pal:
+            pal = DEFAULT_EXAMPLE_PALETTE_REL
+        if dpg.does_item_exist("ts_tileset_palette_rel"):
+            dpg.set_value("ts_tileset_palette_rel", pal)
+        px_file = tileset_file_pixel_dimensions(data)
+        proj_px = _tileset_px_for_editor()
+        if px_file != proj_px and dpg.does_item_exist("ts_tiles_px"):
+            dpg.set_value("ts_tiles_px", px_file)
+            state["tile_px"] = px_file
+        tiles = parse_tileset_all_tiles(data, fill_index=1)
+        state["tileset_tiles_pixels"] = tiles
+        state["tileset_active_index"] = 0
+        _tileset_load_active_tile_into_editor()
+        _tileset_palette_reload_core(append_log=False)
+        _set_tileset_brush_index(1)
+        _refresh_tileset_edit_texture()
+        _refresh_tileset_atlas_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Tiles: cargado tileset {tid} ({len(tiles)} tiles, {px_file}×{px_file} px).\n",
+        )
+
+    def on_tileset_list_pick(_sender: object, _app_data: object) -> None:
+        stem = _tileset_list_selected_stem()
+        if stem:
+            _load_tileset_into_form(stem)
+
+    def on_tile_list_pick(_sender: object, app_data: object) -> None:
+        _tileset_flush_current_tile()
+        raw = app_data if app_data is not None else dpg.get_value("ts_tile_list")
+        s = str(raw).strip()
+        if not s.startswith("T"):
+            return
+        try:
+            idx = int(s[1:])
+        except ValueError:
+            return
+        state["tileset_active_index"] = idx
+        _tileset_load_active_tile_into_editor()
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_add_tile(_sender: object, _app_data: object) -> None:
+        _tileset_flush_current_tile()
+        frames = _tileset_ensure_buffers()
+        if len(frames) >= MAX_TILES_PER_TILESET:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + f"Tiles: maximo {MAX_TILES_PER_TILESET} tiles por tileset.\n",
+            )
+            return
+        px = _tileset_px_for_editor()
+        fi = parse_tileset_palette_index()
+        if fi == 0:
+            fi = 1
+        frames.append(empty_tile_rows(px, fill_index=fi))
+        state["tileset_tiles_pixels"] = frames
+        state["tileset_active_index"] = len(frames) - 1
+        _tileset_load_active_tile_into_editor()
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_remove_tile(_sender: object, _app_data: object) -> None:
+        _tileset_flush_current_tile()
+        frames = _tileset_ensure_buffers()
+        if len(frames) <= 1:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Tiles: debe quedar al menos un tile.\n",
+            )
+            return
+        idx = _tileset_active_index()
+        frames.pop(idx)
+        state["tileset_tiles_pixels"] = frames
+        state["tileset_active_index"] = min(idx, len(frames) - 1)
+        _tileset_load_active_tile_into_editor()
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_create(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        tid = str(dpg.get_value("ts_tileset_id")).strip() if dpg.does_item_exist(
+            "ts_tileset_id"
+        ) else ""
+        if not tid:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Tiles: indica un id de tileset.\n",
+            )
+            return
+        pal = ""
+        if dpg.does_item_exist("ts_tileset_palette_rel"):
+            pal = str(dpg.get_value("ts_tileset_palette_rel")).strip()
+        if not pal:
+            pal = str(dpg.get_value("ts_scene_pal")).strip() if dpg.does_item_exist(
+                "ts_scene_pal"
+            ) else DEFAULT_EXAMPLE_PALETTE_REL
+        try:
+            px = _tileset_px_for_editor()
+            write_tileset_json(
+                root, tid, palette_rel=pal, tile_px=px, initial_tiles=1, fill_index=1
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Tiles: {e}\n")
+            return
+        _refresh_tileset_file_list()
+        if dpg.does_item_exist("ts_tileset_list"):
+            dpg.set_value("ts_tileset_list", tid)
+        _load_tileset_into_form(tid)
+
+    def on_tileset_save(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        tid = str(dpg.get_value("ts_tileset_id")).strip() if dpg.does_item_exist(
+            "ts_tileset_id"
+        ) else ""
+        if not tid:
+            tid = _tileset_list_selected_stem() or ""
+        if not tid:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Tiles: indica id o elige tileset.\n",
+            )
+            return
+        _tileset_flush_current_tile()
+        frames = _tileset_ensure_buffers()
+        pal = str(dpg.get_value("ts_tileset_palette_rel")).strip()
+        if not pal:
+            pal = DEFAULT_EXAMPLE_PALETTE_REL
+        try:
+            save_tileset_json(
+                root,
+                tid,
+                palette_rel=pal,
+                tile_px=_tileset_px_for_editor(),
+                tiles_rows=frames,
+                fill_index=parse_tileset_palette_index(),
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Tiles: {e}\n")
+            return
+        _refresh_tileset_file_list()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Tiles: guardado tiles/{tid}.json ({len(frames)} tiles).\n",
+        )
+
+    def on_tileset_refresh_list(_sender: object, _app_data: object) -> None:
+        _refresh_tileset_file_list()
+
+    def on_tileset_palette_reload_click(_sender: object, _app_data: object) -> None:
+        _tileset_palette_reload_core(append_log=True)
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_fill_tile(_sender: object, _app_data: object) -> None:
+        px = _tileset_px_for_editor()
+        fi = parse_tileset_palette_index()
+        state["tileset_pixel_rows"] = empty_tile_rows(px, fill_index=fi)
+        _tileset_flush_current_tile()
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_clear_tile(_sender: object, _app_data: object) -> None:
+        px = _tileset_px_for_editor()
+        state["tileset_pixel_rows"] = empty_tile_rows(
+            px, fill_index=TRANSPARENT_PALETTE_INDEX
+        )
+        _tileset_flush_current_tile()
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_editor_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_tileset_edit_texture()
+
+    def on_tileset_edit_canvas_click(_sender: object, _app_data: object) -> None:
+        _tileset_edit_paint_at_mouse(erase=False)
+
+    def on_tileset_edit_canvas_erase_click(_sender: object, _app_data: object) -> None:
+        _tileset_edit_paint_at_mouse(erase=True)
+
+    def on_tileset_edit_paint_drag(_sender: object, _app_data: object) -> None:
+        _tileset_edit_paint_drag(erase=False)
+
+    def on_tileset_edit_erase_drag(_sender: object, _app_data: object) -> None:
+        _tileset_edit_paint_drag(erase=True)
+
     def _apply_project_scenes_from_info(info: ProjectInfo) -> None:
         _clear_pending_scene_placement()
+        _apply_tiles_widgets(info.tile_px)
         state["scenes"] = [
             {
                 "id": s.id,
@@ -3244,6 +4602,9 @@ def run_gui() -> int:
                 "background": s.background,
                 "script": s.script,
                 "objects": [{"id": o.id, "x": o.x, "y": o.y} for o in s.objects],
+                "tile_layers": tile_layers_to_json_list(s.tile_layers)
+                if s.tile_layers
+                else tile_layers_to_json_list(default_tile_layers(info.tile_px)),
             }
             for s in info.scenes
         ]
@@ -3255,11 +4616,13 @@ def run_gui() -> int:
 
     def on_scene_combo(_sender: object, _app_data: object) -> None:
         _clear_pending_scene_placement()
+        _clear_scene_tile_hover()
         old_active = str(state.get("active_scene_id") or "")
         _commit_script_stem_from_widget(old_active)
         _commit_palette_for_scene_id(old_active)
         _commit_background_for_scene_id(old_active)
         _commit_scene_background_for_scene_id(old_active)
+        _commit_tile_layers_for_scene_id(old_active)
         new_id = str(dpg.get_value("ts_scene_combo")).strip()
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
@@ -3280,6 +4643,7 @@ def run_gui() -> int:
         _commit_palette_for_scene_id(cur)
         _commit_background_for_scene_id(cur)
         _commit_scene_background_for_scene_id(cur)
+        _commit_tile_layers_for_scene_id(cur)
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
             scenes = []
@@ -3300,6 +4664,9 @@ def run_gui() -> int:
                 "background": "",
                 "script": new_id,
                 "objects": [],
+                "tile_layers": tile_layers_to_json_list(
+                    default_tile_layers(_tiles_px_from_widgets())
+                ),
             }
         )
         state["active_scene_id"] = new_id
@@ -3320,6 +4687,15 @@ def run_gui() -> int:
 
     def on_scene_palette_input_change(_sender: object, _app_data: object) -> None:
         _refresh_scene_background_combo()
+        row = _active_scene_row()
+        if row is not None:
+            slot = int(state.get("edit_tile_layer_slot", 0))
+            _refresh_tile_layer_tileset_combo()
+            tpl = parse_tile_layers(
+                row.get("tile_layers"), tile_px=_tiles_px_from_widgets()
+            )
+            ly = tpl[max(0, min(TILE_LAYER_COUNT - 1, slot))]
+            _rebuild_scene_tile_brush_picker(ly.tileset)
 
     def on_bg_tab_copy_scene_pal(_sender: object, _app_data: object) -> None:
         pal = ""
@@ -3554,6 +4930,15 @@ def run_gui() -> int:
                 dpg.mvThemeCol_Border, (255, 210, 64, 255), category=dpg.mvThemeCat_Core
             )
 
+    with dpg.theme(tag="ts_scene_tile_brush_sel_theme"):
+        with dpg.theme_component(dpg.mvChildWindow):
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FrameBorderSize, 2, category=dpg.mvThemeCat_Core
+            )
+            dpg.add_theme_color(
+                dpg.mvThemeCol_Border, (255, 210, 64, 255), category=dpg.mvThemeCat_Core
+            )
+
     with dpg.texture_registry(tag="ts_texture_registry"):
         dpg.add_dynamic_texture(
             width=_SCENE_PREVIEW_TEX_W,
@@ -3596,6 +4981,30 @@ def run_gui() -> int:
                 _BG_EDITOR_PAD_RGBA[2],
             ),
             tag=_BG_EDITOR_TEX_TAG,
+        )
+        dpg.add_dynamic_texture(
+            width=_SPRITE_EDITOR_TEX_MAX,
+            height=_SPRITE_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _SPRITE_EDITOR_TEX_MAX,
+                _SPRITE_EDITOR_TEX_MAX,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_TILESET_EDITOR_TEX_TAG,
+        )
+        dpg.add_dynamic_texture(
+            width=_SPRITE_EDITOR_TEX_MAX,
+            height=_SPRITE_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _SPRITE_EDITOR_TEX_MAX,
+                _SPRITE_EDITOR_TEX_MAX,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_TILESET_ATLAS_TEX_TAG,
         )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
@@ -3732,6 +5141,31 @@ def run_gui() -> int:
     def on_grid_toggle(_sender: object, _app_data: object) -> None:
         refresh_canvas_texture()
 
+    def on_scene_tile_grid_toggle(_sender: object, _app_data: object) -> None:
+        refresh_canvas_texture()
+
+    def on_scene_canvas_mouse_move(_sender: object, _app_data: object) -> None:
+        if not _scene_tile_grid_visible() or not _scene_tile_layer_paint_active():
+            if state.get("scene_tile_hover_cell") is not None:
+                state["scene_tile_hover_cell"] = None
+                refresh_canvas_texture()
+            return
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_SCENE_CANVAS_IMG_TAG):
+                if state.get("scene_tile_hover_cell") is not None:
+                    state["scene_tile_hover_cell"] = None
+                    refresh_canvas_texture()
+                return
+        except SystemError:
+            return
+        cell = _scene_canvas_cell_from_mouse()
+        prev = state.get("scene_tile_hover_cell")
+        if cell != prev:
+            state["scene_tile_hover_cell"] = cell
+            refresh_canvas_texture()
+
     def on_canvas_scale_change(_sender: object, _app_data: object) -> None:
         refresh_canvas_texture()
 
@@ -3777,6 +5211,80 @@ def run_gui() -> int:
     def on_scene_sprites_preview_change(_sender: object, _app_data: object) -> None:
         refresh_canvas_texture()
 
+    def on_tile_layer_slot_change(_sender: object, app_data: object) -> None:
+        new_slot = _parse_tile_layer_slot_value(app_data)
+        if app_data is None and dpg.does_item_exist("ts_tile_layer"):
+            new_slot = _parse_tile_layer_slot_value(dpg.get_value("ts_tile_layer"))
+        old = int(state.get("edit_tile_layer_slot", 0))
+        if new_slot == old:
+            return
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        if (
+            isinstance(scenes, list)
+            and isinstance(state.get("project_root"), Path)
+            and active
+        ):
+            row = next((x for x in scenes if x.get("id") == active), None)
+            if isinstance(row, dict):
+                _commit_widgets_to_tile_row_for_slot(row, old)
+        state["edit_tile_layer_slot"] = new_slot
+        if isinstance(scenes, list) and active:
+            row2 = next((x for x in scenes if x.get("id") == active), None)
+            if isinstance(row2, dict):
+                _load_tile_widgets_from_row_for_slot(row2, new_slot)
+        refresh_canvas_texture()
+
+    def on_tile_layer_enabled_change(_sender: object, _app_data: object) -> None:
+        if isinstance(state.get("project_root"), Path):
+            _commit_tile_layers_for_active_scene()
+        if not _scene_tile_layer_paint_active():
+            state["scene_tile_hover_cell"] = None
+        refresh_canvas_texture()
+
+    def on_tile_layer_tileset_change(_sender: object, _app_data: object) -> None:
+        if isinstance(state.get("project_root"), Path):
+            _commit_tile_layers_for_active_scene()
+        raw = (
+            dpg.get_value("ts_tile_layer_tileset")
+            if dpg.does_item_exist("ts_tile_layer_tileset")
+            else ""
+        )
+        stem = str(raw).strip() if raw is not None else ""
+        if stem.startswith("("):
+            stem = ""
+        _rebuild_scene_tile_brush_picker(stem)
+        refresh_canvas_texture()
+
+    def on_scene_canvas_erase_click(_sender: object, _app_data: object) -> None:
+        if state.get("pending_scene_object_id"):
+            return
+        _try_scene_tile_paint_at_mouse(erase=True)
+
+    def on_scene_tile_paint_drag(_sender: object, _app_data: object) -> None:
+        if state.get("pending_scene_object_id"):
+            return
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_SCENE_CANVAS_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _try_scene_tile_paint_at_mouse(erase=False)
+
+    def on_scene_tile_erase_drag(_sender: object, _app_data: object) -> None:
+        if state.get("pending_scene_object_id"):
+            return
+        if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_SCENE_CANVAS_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _try_scene_tile_paint_at_mouse(erase=True)
+
     def on_reload_palette_click(_sender: object, _app_data: object) -> None:
         log = palette_reload_from_path()
         prev = dpg.get_value("ts_log") or ""
@@ -3790,6 +5298,17 @@ def run_gui() -> int:
                     _normalize_row_background_layers_inplace(row)
                     slot = int(state.get("edit_bg_layer_slot", 0))
                     _load_background_widgets_from_row_for_slot(row, slot)
+                    row2 = next(
+                        (x for x in scenes if x.get("id") == active), None
+                    )
+                    if isinstance(row2, dict):
+                        tpl = parse_tile_layers(
+                            row2.get("tile_layers"),
+                            tile_px=_tiles_px_from_widgets(),
+                        )
+                        tslot = int(state.get("edit_tile_layer_slot", 0))
+                        ly = tpl[max(0, min(TILE_LAYER_COUNT - 1, tslot))]
+                        _rebuild_scene_tile_brush_picker(ly.tileset)
         refresh_canvas_texture()
 
     def on_save_project(_sender: object, _app_data: object) -> None:
@@ -3807,6 +5326,7 @@ def run_gui() -> int:
         _commit_palette_for_scene_id(active)
         _commit_background_for_active_scene()
         _commit_scene_background_for_active_scene()
+        _commit_tile_layers_for_active_scene()
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
         pal: Path | None = Path(pal_s).expanduser() if pal_s else None
         scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
@@ -3818,13 +5338,14 @@ def run_gui() -> int:
         for rel in rels:
             lua_files[rel] = lua_m.get(rel, "")
         try:
-            script_path, pal_updated, scenes_updated = save_project(
+            script_path, pal_updated, scenes_updated, tiles_updated = save_project(
                 root,
                 lua_files=lua_files,
                 palette_file=pal,
                 scenes=scenes_list,
                 active_scene=active,
                 transparent_index=DEFAULT_TRANSPARENT_INDEX,
+                tile_px=_tiles_px_from_widgets(),
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Error al guardar: {e}\n")
@@ -3838,6 +5359,8 @@ def run_gui() -> int:
             bits.append("default_palette")
         if scenes_updated:
             bits.append("escenas / transparent_index")
+        if tiles_updated:
+            bits.append("tiles")
         extra = f" ({', '.join(bits)} en manifest)\n" if bits else "\n"
         dpg.set_value(
             "ts_log",
@@ -5765,6 +7288,64 @@ def run_gui() -> int:
                             wrap=_LEFT_TEXT_WRAP,
                             color=(160, 180, 210, 255),
                         )
+                        dpg.add_separator()
+                        dpg.add_text(
+                            "Capas de tiles (max 4): rejilla segun tamano de tile del proyecto. "
+                            "Solo tilesets con la misma paleta que la escena.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(180, 200, 230, 255),
+                        )
+                        dpg.add_combo(
+                            tag="ts_tile_layer",
+                            label="Capa tile",
+                            items=[str(i) for i in range(TILE_LAYER_COUNT)],
+                            default_value="0",
+                            width=_LEFT_FORM_WIDTH,
+                            callback=on_tile_layer_slot_change,
+                            enabled=False,
+                            use_internal_label=False,
+                        )
+                        dpg.add_checkbox(
+                            tag="ts_tile_layer_enabled",
+                            label="Capa tile activa",
+                            default_value=False,
+                            callback=on_tile_layer_enabled_change,
+                            enabled=False,
+                        )
+                        dpg.add_combo(
+                            tag="ts_tile_layer_tileset",
+                            label="Tileset",
+                            width=_LEFT_FORM_WIDTH,
+                            items=["(abre un proyecto)"],
+                            default_value="(abre un proyecto)",
+                            callback=on_tile_layer_tileset_change,
+                            enabled=False,
+                            use_internal_label=False,
+                        )
+                        dpg.add_text(
+                            "Pincel (tile): clic en un tile del tileset",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(180, 200, 230, 255),
+                        )
+                        with dpg.child_window(
+                            tag="ts_scene_tile_brush_viewport",
+                            width=_LEFT_FORM_WIDTH,
+                            height=88,
+                            border=True,
+                            horizontal_scrollbar=True,
+                        ):
+                            dpg.add_group(
+                                tag="ts_scene_tile_brush_group",
+                                horizontal=True,
+                                horizontal_spacing=4,
+                            )
+                        dpg.add_text(
+                            "Clic en el canvas: pintar celda (capa activa + tileset). "
+                            "Clic derecho: borrar celda (transparente). Prioridad: colocar objeto pendiente. "
+                            "En el canvas usa «Rejilla tiles» para ver celdas del tamano de tile.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(160, 180, 210, 255),
+                        )
                         dpg.add_text(
                             "Objetos en escena (misma paleta que la escena). "
                             "Anadir: elige uno en la lista y pulsa en el canvas para fijar posicion "
@@ -5922,13 +7503,20 @@ def run_gui() -> int:
                         ):
                             with dpg.group(horizontal=True):
                                 dpg.add_text(
-                                    f"Canvas · {_FB_W}×{_FB_H} (vista previa · rejilla cada {_GRID_STEP}px)"
+                                    f"Canvas · {_FB_W}×{_FB_H} (vista previa · rejilla opcional cada {_GRID_STEP}px; "
+                                    "rejilla tiles = tamano de tile del proyecto)"
                                 )
                                 dpg.add_checkbox(
                                     tag="ts_show_grid",
                                     label="Mostrar rejilla",
                                     default_value=False,
                                     callback=on_grid_toggle,
+                                )
+                                dpg.add_checkbox(
+                                    tag="ts_show_tile_grid",
+                                    label="Rejilla tiles",
+                                    default_value=True,
+                                    callback=on_scene_tile_grid_toggle,
                                 )
                                 dpg.add_slider_int(
                                     tag="ts_canvas_scale",
@@ -5967,7 +7555,12 @@ def run_gui() -> int:
                                 )
                                 with dpg.item_handler_registry(tag="ts_canvas_click_reg"):
                                     dpg.add_item_clicked_handler(
-                                        callback=on_canvas_preview_click
+                                        button=dpg.mvMouseButton_Left,
+                                        callback=on_canvas_preview_click,
+                                    )
+                                    dpg.add_item_clicked_handler(
+                                        button=dpg.mvMouseButton_Right,
+                                        callback=on_scene_canvas_erase_click,
                                     )
                                 dpg.bind_item_handler_registry(
                                     _SCENE_CANVAS_IMG_TAG, "ts_canvas_click_reg"
@@ -6230,6 +7823,258 @@ def run_gui() -> int:
                         uv_min=(0.0, 0.0),
                         uv_max=(0.25, 0.25),
                     )
+
+            with dpg.tab(label="Tiles"):
+                dpg.add_text(
+                    "Tilesets en `tiles/<id>.json`. Tamano de tile del proyecto (multiplos de 4); "
+                    "cada tile es un cuadrado de ese tamano. Guardar proyecto persiste `tile_px`; "
+                    "«Guardar tileset» persiste el tileset.",
+                    wrap=520,
+                )
+                dpg.add_spacer(height=6)
+                dpg.add_input_int(
+                    tag="ts_tiles_px",
+                    label="Tamano tile proyecto (px)",
+                    width=140,
+                    default_value=DEFAULT_TILE_PX,
+                    min_value=MIN_TILE_PX,
+                    max_value=MAX_TILE_PX,
+                    step=TILE_PX_STEP,
+                    min_clamped=True,
+                    max_clamped=True,
+                    callback=on_tiles_px_change,
+                    enabled=False,
+                )
+                dpg.add_separator()
+                dpg.add_text("Tilesets", color=(200, 220, 255, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_listbox(
+                        tag="ts_tileset_list",
+                        label="Archivos tiles/",
+                        width=200,
+                        num_items=6,
+                        items=["(abre un proyecto)"],
+                        callback=on_tileset_list_pick,
+                        enabled=False,
+                    )
+                    with dpg.group():
+                        dpg.add_input_text(
+                            tag="ts_tileset_id",
+                            label="Id tileset",
+                            width=160,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_tileset_create",
+                            label="Crear tileset",
+                            width=140,
+                            callback=on_tileset_create,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_tileset_save",
+                            label="Guardar tileset",
+                            width=140,
+                            callback=on_tileset_save,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_tileset_refresh",
+                            label="Actualizar lista",
+                            width=140,
+                            callback=on_tileset_refresh_list,
+                            enabled=False,
+                        )
+                dpg.add_separator()
+                with dpg.group(horizontal=True):
+                    dpg.add_listbox(
+                        tag="ts_tile_list",
+                        label="Tiles en tileset",
+                        width=120,
+                        num_items=8,
+                        items=["T0"],
+                        callback=on_tile_list_pick,
+                        enabled=False,
+                    )
+                    with dpg.group():
+                        dpg.add_button(
+                            tag="ts_btn_tile_add",
+                            label="Añadir tile",
+                            width=120,
+                            callback=on_tileset_add_tile,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_tile_remove",
+                            label="Quitar tile",
+                            width=120,
+                            callback=on_tileset_remove_tile,
+                            enabled=False,
+                        )
+                dpg.add_separator()
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(
+                        tag="ts_tileset_palette_rel",
+                        label="Paleta",
+                        width=280,
+                        default_value=DEFAULT_EXAMPLE_PALETTE_REL,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_tileset_palette_reload",
+                        label="Cargar paleta",
+                        width=110,
+                        callback=on_tileset_palette_reload_click,
+                        enabled=False,
+                    )
+                with dpg.child_window(
+                    width=500,
+                    height=72,
+                    border=True,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_group(
+                        tag="ts_tileset_palette_swatches_group",
+                        horizontal=True,
+                        horizontal_spacing=3,
+                    )
+                dpg.add_separator()
+                dpg.add_text(
+                    "Hoja de tiles: importa una imagen con rejilla del tamano de tile. "
+                    "Clic en una celda para previsualizarla; «Convertir celda» la pasa al tile activo (T0, T1, …) con la paleta.",
+                    wrap=520,
+                    color=(180, 200, 230, 255),
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_tileset_ref_import",
+                        label="Importar imagen…",
+                        width=150,
+                        callback=on_tileset_ref_import_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_tileset_ref_clear",
+                        label="Quitar imagen",
+                        width=120,
+                        callback=on_tileset_ref_clear_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_tileset_ref_convert",
+                        label="Convertir celda → tile activo",
+                        width=220,
+                        callback=on_tileset_ref_convert_click,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    tag="ts_tileset_ref_path_label",
+                    default_value="(sin imagen importada)",
+                    color=(160, 180, 210, 255),
+                    wrap=520,
+                )
+                dpg.add_text(
+                    tag="ts_tileset_atlas_info",
+                    default_value="Importa una imagen; la rejilla usa el tamano de tile del proyecto.",
+                    wrap=520,
+                    color=(160, 180, 210, 255),
+                )
+                with dpg.item_handler_registry(tag="ts_tileset_atlas_click_reg"):
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Left,
+                        callback=on_tileset_atlas_click,
+                    )
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        dpg.add_slider_int(
+                            tag="ts_tileset_atlas_scale",
+                            label="Zoom hoja",
+                            width=180,
+                            default_value=_TILESET_ATLAS_SCALE_DEFAULT,
+                            min_value=1,
+                            max_value=16,
+                            callback=on_tileset_atlas_preview_change,
+                            enabled=False,
+                        )
+                        with dpg.child_window(
+                            tag="ts_tileset_atlas_viewport",
+                            border=True,
+                            width=360,
+                            height=280,
+                            horizontal_scrollbar=True,
+                        ):
+                            dpg.add_image(
+                                _TILESET_ATLAS_TEX_TAG,
+                                tag=_TILESET_ATLAS_IMG_TAG,
+                                width=64,
+                                height=64,
+                                uv_min=(0.0, 0.0),
+                                uv_max=(0.25, 0.25),
+                            )
+                        dpg.bind_item_handler_registry(
+                            _TILESET_ATLAS_IMG_TAG, "ts_tileset_atlas_click_reg"
+                        )
+                    with dpg.group():
+                        dpg.add_text(
+                            "Tile activo (editor)",
+                            color=(180, 200, 230, 255),
+                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_slider_int(
+                                tag="ts_tileset_editor_scale",
+                                label="Zoom tile",
+                                width=180,
+                                default_value=_TILESET_EDITOR_SCALE_DEFAULT,
+                                min_value=1,
+                                max_value=16,
+                                callback=on_tileset_editor_preview_change,
+                                enabled=False,
+                            )
+                            dpg.add_button(
+                                tag="ts_btn_tileset_fill",
+                                label="Rellenar tile",
+                                width=100,
+                                callback=on_tileset_fill_tile,
+                                enabled=False,
+                            )
+                            dpg.add_button(
+                                tag="ts_btn_tileset_clear",
+                                label="Borrar tile",
+                                width=100,
+                                callback=on_tileset_clear_tile,
+                                enabled=False,
+                            )
+                        dpg.add_text(
+                            "Clic izquierdo o arrastrar: pintar. Clic derecho: borrar (indice 31 = transparente).",
+                            wrap=360,
+                        )
+                        with dpg.item_handler_registry(tag="ts_tileset_edit_click_reg"):
+                            dpg.add_item_clicked_handler(
+                                button=dpg.mvMouseButton_Left,
+                                callback=on_tileset_edit_canvas_click,
+                            )
+                            dpg.add_item_clicked_handler(
+                                button=dpg.mvMouseButton_Right,
+                                callback=on_tileset_edit_canvas_erase_click,
+                            )
+                        with dpg.child_window(
+                            tag="ts_tileset_edit_viewport",
+                            border=True,
+                            width=360,
+                            height=280,
+                            horizontal_scrollbar=True,
+                        ):
+                            dpg.add_image(
+                                _TILESET_EDITOR_TEX_TAG,
+                                tag=_TILESET_EDITOR_IMG_TAG,
+                                width=DEFAULT_TILE_PX * _TILESET_EDITOR_SCALE_DEFAULT,
+                                height=DEFAULT_TILE_PX * _TILESET_EDITOR_SCALE_DEFAULT,
+                                uv_min=(0.0, 0.0),
+                                uv_max=(0.25, 0.25),
+                            )
+                        dpg.bind_item_handler_registry(
+                            _TILESET_EDITOR_IMG_TAG, "ts_tileset_edit_click_reg"
+                        )
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
@@ -7007,6 +8852,29 @@ def run_gui() -> int:
             callback=on_sprite_edit_erase_drag,
         )
 
+    with dpg.handler_registry(tag="ts_tileset_paint_drag_reg"):
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Left,
+            callback=on_tileset_edit_paint_drag,
+        )
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Right,
+            callback=on_tileset_edit_erase_drag,
+        )
+
+    with dpg.handler_registry(tag="ts_scene_tile_paint_drag_reg"):
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Left,
+            callback=on_scene_tile_paint_drag,
+        )
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Right,
+            callback=on_scene_tile_erase_drag,
+        )
+
+    with dpg.handler_registry(tag="ts_scene_canvas_mouse_reg"):
+        dpg.add_mouse_move_handler(callback=on_scene_canvas_mouse_move)
+
     with dpg.file_dialog(
         directory_selector=False,
         show=False,
@@ -7032,6 +8900,21 @@ def run_gui() -> int:
         modal=True,
     ):
         pass
+
+    with dpg.file_dialog(
+        directory_selector=False,
+        show=False,
+        callback=on_tileset_ref_file_picked,
+        tag="ts_tileset_ref_file_dialog",
+        width=700,
+        height=400,
+        modal=True,
+    ):
+        dpg.add_file_extension(".png", color=(150, 255, 150, 255))
+        dpg.add_file_extension(".jpg")
+        dpg.add_file_extension(".jpeg")
+        dpg.add_file_extension(".webp")
+        dpg.add_file_extension(".bmp")
 
     with dpg.file_dialog(
         directory_selector=False,
