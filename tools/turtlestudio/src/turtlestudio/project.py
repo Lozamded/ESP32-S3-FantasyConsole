@@ -174,6 +174,9 @@ class SceneEntry:
     background: str = ""
     # Hasta 4 capas de tilemap (rejilla segun `tiles.tile_px` del manifest).
     tile_layers: tuple[Any, ...] = ()
+    # Opcional: override por escena (si falta, usa target_fps/default_anim_fps del proyecto).
+    target_fps: int | None = None
+    default_anim_fps: int | None = None
 
 
 @dataclass(frozen=True)
@@ -437,6 +440,14 @@ def _parse_scenes_from_manifest(
                 scene_palette_rel=pal,
             )
             tile_ly = parse_tile_layers(item.get("tile_layers"), tile_px=tile_px)
+            from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
+
+            scene_tf: int | None = None
+            if "target_fps" in item:
+                scene_tf = clamp_target_fps(item.get("target_fps"))
+            scene_af: int | None = None
+            if "default_anim_fps" in item:
+                scene_af = clamp_default_anim_fps(item.get("default_anim_fps"))
             parsed.append(
                 SceneEntry(
                     id=sid,
@@ -447,6 +458,8 @@ def _parse_scenes_from_manifest(
                     background_layers=layers,
                     background=bg_asset,
                     tile_layers=tile_ly,
+                    target_fps=scene_tf,
+                    default_anim_fps=scene_af,
                 )
             )
         scenes_list = parsed
@@ -577,6 +590,10 @@ def _write_mirror_scene_json_files(
             if isinstance(row.get("tile_layers"), list)
             else [],
         }
+        if "target_fps" in row:
+            payload["target_fps"] = int(row["target_fps"])
+        if "default_anim_fps" in row:
+            payload["default_anim_fps"] = int(row["default_anim_fps"])
         path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -783,18 +800,23 @@ def _normalize_scenes_for_save(
             scene_palette_rel=pal,
             tile_px=tile_px,
         )
-        out.append(
-            {
-                "id": sid,
-                "palette": pal,
-                "background_index": bg_fw,
-                "background_layers": background_layers_to_json_list(layers),
-                "background": bg_saved,
-                "script": stem,
-                "objects": objs_ok,
-                "tile_layers": tile_saved,
-            }
-        )
+        row_out: dict[str, Any] = {
+            "id": sid,
+            "palette": pal,
+            "background_index": bg_fw,
+            "background_layers": background_layers_to_json_list(layers),
+            "background": bg_saved,
+            "script": stem,
+            "objects": objs_ok,
+            "tile_layers": tile_saved,
+        }
+        from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
+
+        if "target_fps" in item:
+            row_out["target_fps"] = clamp_target_fps(item.get("target_fps"))
+        if "default_anim_fps" in item:
+            row_out["default_anim_fps"] = clamp_default_anim_fps(item.get("default_anim_fps"))
+        out.append(row_out)
     if active_scene.strip() not in seen:
         raise ValueError(f"active_scene {active_scene!r} no coincide con ninguna escena.")
     return out

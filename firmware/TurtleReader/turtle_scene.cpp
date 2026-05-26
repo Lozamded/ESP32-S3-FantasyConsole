@@ -1281,7 +1281,8 @@ static bool find_scene_block(const char* json, const char* json_end, const char*
   return false;
 }
 
-static void parse_bundle_timing(const char* json, const char* json_end) {
+static void parse_scene_timing(const char* json, const char* json_end, const char* sc_start,
+                               const char* sc_end) {
   int tf = 30;
   int af = 8;
   if (!json_extract_int_for_key(json, json_end, "target_fps", &tf) || tf < 15 || tf > 60) {
@@ -1289,6 +1290,18 @@ static void parse_bundle_timing(const char* json, const char* json_end) {
   }
   if (!json_extract_int_for_key(json, json_end, "default_anim_fps", &af) || af < 1 || af > 30) {
     af = 8;
+  }
+  if (sc_start && sc_end && sc_end > sc_start) {
+    int stf = 0;
+    int saf = 0;
+    if (json_extract_int_for_key(sc_start, sc_end, "target_fps", &stf) && stf >= 15 &&
+        stf <= 60) {
+      tf = stf;
+    }
+    if (json_extract_int_for_key(sc_start, sc_end, "default_anim_fps", &saf) && saf >= 1 &&
+        saf <= 30) {
+      af = saf;
+    }
   }
   s_target_fps = tf;
   s_default_anim_fps = af;
@@ -1476,7 +1489,6 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     return false;
   }
   const char* json_end = json + json_len;
-  parse_bundle_timing(json, json_end);
 
   const char* sc_start = nullptr;
   const char* sc_end = nullptr;
@@ -1484,6 +1496,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     Serial.printf("turtle_scene: escena \"%s\" no encontrada en bundle\n", scene_id);
     return false;
   }
+  parse_scene_timing(json, json_end, sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {

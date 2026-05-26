@@ -38,6 +38,23 @@ from turtlestudio.palette_policy import (
     resolve_palette_color,
     swatch_indices_for_palette,
 )
+from turtlestudio.fonts import (
+    DEFAULT_GLYPH_PX,
+    FONT_GLYPH_SIZE_CHOICES,
+    LATIN_CHARSET,
+    empty_glyph_rows,
+    font_char_from_label,
+    font_char_label,
+    font_file_glyph_px,
+    glyph_px_from_label,
+    glyph_px_label,
+    latin_charset_labels,
+    list_font_json_stems,
+    parse_font_glyphs,
+    read_font_file,
+    save_font_json,
+    write_font_json,
+)
 from turtlestudio.tiles import (
     DEFAULT_TILE_PX,
     MAX_TILE_PX,
@@ -796,6 +813,10 @@ _TILESET_ATLAS_IMG_TAG = "ts_tileset_atlas_img"
 _TILESET_ATLAS_SCALE_DEFAULT = 2
 _TILESET_ATLAS_GRID_RGBA = (0.92, 0.94, 1.0, 0.85)
 _TILESET_ATLAS_SEL_RGBA = (1.0, 0.85, 0.15, 0.95)
+_FONT_EDITOR_TEX_TAG = "ts_font_edit_texture"
+_FONT_EDITOR_IMG_TAG = "ts_font_edit_image"
+_FONT_EDITOR_SCALE_DEFAULT = 12
+_FONT_EDITOR_CANVAS_BG_DEFAULT = (140, 140, 150, 255)
 _SCENE_TILE_GRID_RGBA = (0.75, 0.82, 1.0, 0.72)
 _SCENE_TILE_GRID_HOVER_RGBA = (1.0, 0.9, 0.2, 0.88)
 _SCENE_TILE_BRUSH_PICKER_SCALE = 3
@@ -1601,6 +1622,18 @@ def run_gui() -> int:
         "tileset_ref_source": None,
         "tileset_ref_path": "",
         "tileset_atlas_cell": None,
+        "font_glyphs_pixels": None,
+        "font_pixel_rows": None,
+        "font_active_char": "A",
+        "font_glyph_px": DEFAULT_GLYPH_PX,
+        "font_palette_rgb": [],
+        "font_palette_hexes": [],
+        "font_brush_index": 1,
+        "font_canvas_bg_rgb01": (
+            _FONT_EDITOR_CANVAS_BG_DEFAULT[0] / 255.0,
+            _FONT_EDITOR_CANVAS_BG_DEFAULT[1] / 255.0,
+            _FONT_EDITOR_CANVAS_BG_DEFAULT[2] / 255.0,
+        ),
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -2437,6 +2470,72 @@ def run_gui() -> int:
     def _commit_scene_background_for_active_scene() -> None:
         _commit_scene_background_for_scene_id(str(state.get("active_scene_id") or ""))
 
+    def _project_runtime_defaults(*, from_widgets: bool = False) -> tuple[int, int]:
+        from turtlestudio.project_runtime import (
+            DEFAULT_ANIM_FPS,
+            DEFAULT_TARGET_FPS,
+            clamp_default_anim_fps,
+            clamp_target_fps,
+        )
+
+        tf = clamp_target_fps(state.get("target_fps", DEFAULT_TARGET_FPS))
+        af = clamp_default_anim_fps(state.get("default_anim_fps", DEFAULT_ANIM_FPS))
+        if from_widgets:
+            if dpg.does_item_exist("ts_target_fps"):
+                tf = clamp_target_fps(dpg.get_value("ts_target_fps"))
+            if dpg.does_item_exist("ts_default_anim_fps"):
+                af = clamp_default_anim_fps(dpg.get_value("ts_default_anim_fps"))
+        return tf, af
+
+    def _load_scene_runtime_widgets_from_row(row: dict[str, Any]) -> None:
+        from turtlestudio.project_runtime import (
+            scene_default_anim_fps,
+            scene_target_fps,
+        )
+
+        if not dpg.does_item_exist("ts_scene_target_fps"):
+            return
+        proj_tf, proj_af = _project_runtime_defaults(from_widgets=False)
+        tf = scene_target_fps(row, proj_tf)
+        af = scene_default_anim_fps(row, proj_af)
+        dpg.set_value("ts_scene_target_fps", int(tf))
+        dpg.configure_item(
+            "ts_scene_target_fps",
+            enabled=isinstance(state.get("project_root"), Path),
+        )
+        if dpg.does_item_exist("ts_scene_default_anim_fps"):
+            dpg.set_value("ts_scene_default_anim_fps", int(af))
+            dpg.configure_item(
+                "ts_scene_default_anim_fps",
+                enabled=isinstance(state.get("project_root"), Path),
+            )
+
+    def _commit_scene_runtime_for_scene_id(sid: str) -> None:
+        if not sid or not dpg.does_item_exist("ts_scene_target_fps"):
+            return
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list):
+            return
+        row = next((x for x in scenes if x.get("id") == sid), None)
+        if row is None:
+            return
+        from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
+
+        proj_tf, proj_af = _project_runtime_defaults(from_widgets=True)
+        tf = clamp_target_fps(dpg.get_value("ts_scene_target_fps"))
+        af = clamp_default_anim_fps(dpg.get_value("ts_scene_default_anim_fps"))
+        if tf == proj_tf:
+            row.pop("target_fps", None)
+        else:
+            row["target_fps"] = tf
+        if af == proj_af:
+            row.pop("default_anim_fps", None)
+        else:
+            row["default_anim_fps"] = af
+
+    def _commit_scene_runtime_for_active_scene() -> None:
+        _commit_scene_runtime_for_scene_id(str(state.get("active_scene_id") or ""))
+
     def _refresh_scene_background_combo() -> None:
         if not dpg.does_item_exist("ts_scene_background"):
             return
@@ -3146,6 +3245,8 @@ def run_gui() -> int:
             "ts_scene_combo",
             "ts_scene_pal",
             "ts_scene_script",
+            "ts_scene_target_fps",
+            "ts_scene_default_anim_fps",
             "ts_btn_new_scene",
             "ts_scene_background",
             "ts_scene_obj_compat_list",
@@ -3266,6 +3367,18 @@ def run_gui() -> int:
             "ts_btn_tileset_ref_clear",
             "ts_btn_tileset_ref_convert",
             "ts_tileset_atlas_scale",
+            "ts_font_list",
+            "ts_font_id",
+            "ts_btn_font_create",
+            "ts_btn_font_save",
+            "ts_btn_font_refresh",
+            "ts_font_char_combo",
+            "ts_font_glyph_px_combo",
+            "ts_font_palette_combo",
+            "ts_btn_font_palette_reload",
+            "ts_font_editor_scale",
+            "ts_btn_font_fill",
+            "ts_btn_font_clear",
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=enabled)
@@ -3483,24 +3596,9 @@ def run_gui() -> int:
         _refresh_sprite_file_list()
         _refresh_object_file_list()
         if isinstance(state.get("project_root"), Path):
-            sp = str(dpg.get_value("ts_scene_pal")).strip()
-            dpg.set_value(
-                "ts_sprite_palette_rel",
-                sp if sp else DEFAULT_EXAMPLE_PALETTE_REL,
-            )
-            _sprite_palette_reload_core(append_log=False)
-            _refresh_bg_palette_combo(
-                select_rel=sp if sp else DEFAULT_EXAMPLE_PALETTE_REL
-            )
-            _bg_palette_reload_core(append_log=False)
-            _refresh_bg_tab_list()
-            _refresh_bg_editor_canvas()
-            if dpg.does_item_exist("ts_tileset_palette_rel"):
-                dpg.set_value(
-                    "ts_tileset_palette_rel",
-                    sp if sp else DEFAULT_EXAMPLE_PALETTE_REL,
-                )
-            _refresh_tileset_file_list()
+            _sync_scene_widgets_after_project_load()
+            _refresh_font_file_list()
+            _refresh_font_palette_combo()
         else:
             state["bg_palette_rgb"] = []
             state["bg_palette_hexes"] = []
@@ -3520,6 +3618,15 @@ def run_gui() -> int:
             _update_tileset_ref_path_label()
             _refresh_tileset_atlas_texture()
             _refresh_tileset_file_list()
+            state["font_glyphs_pixels"] = None
+            state["font_pixel_rows"] = None
+            state["font_active_char"] = "A"
+            state["font_glyph_px"] = DEFAULT_GLYPH_PX
+            state["font_palette_rgb"] = []
+            state["font_palette_hexes"] = []
+            _refresh_font_file_list()
+            _refresh_font_palette_combo()
+            _refresh_font_edit_texture()
             _destroy_scene_tile_brush_picker_assets()
             if dpg.does_item_exist("ts_scene_tile_brush_group"):
                 dpg.delete_item("ts_scene_tile_brush_group", children_only=True)
@@ -3529,20 +3636,9 @@ def run_gui() -> int:
                     wrap=_LEFT_TEXT_WRAP,
                     color=(160, 180, 210, 255),
                 )
-        log = palette_reload_from_path()
-        refresh_canvas_texture()
-        if isinstance(state.get("project_root"), Path):
-            scenes = state.get("scenes")
-            active = str(state.get("active_scene_id") or "")
-            if isinstance(scenes, list) and scenes:
-                row = next((x for x in scenes if x.get("id") == active), None)
-                if row is not None:
-                    _normalize_row_background_layers_inplace(row)
-                    state["edit_bg_layer_slot"] = 0
-                    if dpg.does_item_exist("ts_bg_layer"):
-                        dpg.set_value("ts_bg_layer", "0")
-                    _load_background_widgets_from_row_for_slot(row, 0)
-                    refresh_canvas_texture()
+        log = palette_reload_from_path() if not isinstance(state.get("project_root"), Path) else ""
+        if not isinstance(state.get("project_root"), Path):
+            refresh_canvas_texture()
         _refresh_scene_object_lists()
         dpg.set_value("ts_log", log_append + log)
 
@@ -3616,6 +3712,7 @@ def run_gui() -> int:
                 "ts_scene_script",
                 enabled=isinstance(state.get("project_root"), Path),
             )
+        _load_scene_runtime_widgets_from_row(row)
         _refresh_bg_palette_combo(select_rel=pal)
         _bg_palette_reload_core(append_log=False)
         _refresh_scene_background_combo()
@@ -4592,6 +4689,498 @@ def run_gui() -> int:
     def on_tileset_edit_erase_drag(_sender: object, _app_data: object) -> None:
         _tileset_edit_paint_drag(erase=True)
 
+    def _font_glyph_px_from_widgets() -> int:
+        if dpg.does_item_exist("ts_font_glyph_px_combo"):
+            return glyph_px_from_label(str(dpg.get_value("ts_font_glyph_px_combo")))
+        return int(state.get("font_glyph_px", DEFAULT_GLYPH_PX))
+
+    def _font_tab_palette_rel() -> str:
+        if dpg.does_item_exist("ts_font_palette_combo"):
+            raw = str(dpg.get_value("ts_font_palette_combo")).strip()
+            if raw and not raw.startswith("("):
+                from turtlestudio.sprites import normalize_palette_rel
+
+                return normalize_palette_rel(raw)
+        return DEFAULT_EXAMPLE_PALETTE_REL
+
+    def _refresh_font_palette_combo(*, select_rel: str | None = None) -> None:
+        if not dpg.does_item_exist("ts_font_palette_combo"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item(
+                "ts_font_palette_combo",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            return
+        paths = list_palette_relpaths(root)
+        if not paths:
+            items = ["(sin palettes/*.txt)"]
+            dpg.configure_item("ts_font_palette_combo", items=items, enabled=False)
+            dpg.set_value("ts_font_palette_combo", items[0])
+            return
+        dpg.configure_item("ts_font_palette_combo", items=paths, enabled=True)
+        pick = select_rel if select_rel and select_rel in paths else None
+        if not pick:
+            cur = str(dpg.get_value("ts_font_palette_combo")).strip()
+            pick = cur if cur in paths else paths[0]
+        dpg.set_value("ts_font_palette_combo", pick)
+
+    def _palette_len_font() -> int:
+        hexes = state.get("font_palette_hexes")
+        return len(hexes) if isinstance(hexes, list) else 0
+
+    def parse_font_palette_index() -> int:
+        try:
+            v = int(state.get("font_brush_index", 1))
+        except (TypeError, ValueError):
+            v = 1
+        n = _palette_len_font()
+        if n <= 0:
+            return max(0, v)
+        return clamp_paint_palette_index(v, palette_len=n)
+
+    def _set_font_brush_index(idx: int) -> None:
+        n = _palette_len_font()
+        i = clamp_paint_palette_index(idx, palette_len=n) if n > 0 else max(0, idx)
+        state["font_brush_index"] = i
+
+    def _on_font_palette_swatch_click(
+        sender: object, app_data: object, user_data: object | None = None,
+    ) -> None:
+        try:
+            idx = int(user_data)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        _set_font_brush_index(idx)
+
+    def _font_palette_reload_core(*, append_log: bool = True) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            state["font_palette_rgb"] = []
+            state["font_palette_hexes"] = []
+            gid = "ts_font_palette_swatches_group"
+            if dpg.does_item_exist(gid):
+                dpg.delete_item(gid, children_only=True)
+            return
+        rel = _font_tab_palette_rel()
+        abs_p = (root / rel).resolve()
+        if not abs_p.is_file():
+            state["font_palette_rgb"] = []
+            state["font_palette_hexes"] = []
+            if append_log:
+                dpg.set_value(
+                    "ts_log",
+                    (dpg.get_value("ts_log") or "")
+                    + f"Fuentes: no existe la paleta {rel}\n",
+                )
+            return
+        rgbs, hexes = load_palette_rgb01_for_preview(abs_p)
+        state["font_palette_rgb"] = rgbs
+        state["font_palette_hexes"] = hexes
+        _set_font_brush_index(parse_font_palette_index())
+        gid = "ts_font_palette_swatches_group"
+        if dpg.does_item_exist(gid):
+            dpg.delete_item(gid, children_only=True)
+            _add_palette_swatch_buttons(gid, rgbs, _on_font_palette_swatch_click, wrap=480)
+        if append_log:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + f"Fuentes: paleta cargada ({len(hexes)} colores) — {rel}\n",
+            )
+
+    def _refresh_font_file_list() -> None:
+        if not dpg.does_item_exist("ts_font_list"):
+            return
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.configure_item(
+                "ts_font_list",
+                items=["(abre un proyecto)"],
+                enabled=False,
+            )
+            return
+        stems = list_font_json_stems(root)
+        items = stems if stems else ["(ninguna fuente aun)"]
+        dpg.configure_item("ts_font_list", items=items, enabled=True)
+
+    def _font_list_selected_stem() -> str | None:
+        if not dpg.does_item_exist("ts_font_list"):
+            return None
+        raw = dpg.get_value("ts_font_list")
+        s = str(raw).strip() if raw is not None else ""
+        if not s or s.startswith("("):
+            return None
+        return s
+
+    def _font_active_char() -> str:
+        ch = str(state.get("font_active_char") or "A")
+        if len(ch) != 1 or ch not in LATIN_CHARSET:
+            ch = "A"
+        return ch
+
+    def _font_char_from_combo() -> str:
+        if dpg.does_item_exist("ts_font_char_combo"):
+            ch = font_char_from_label(str(dpg.get_value("ts_font_char_combo")))
+            if ch is not None and ch in LATIN_CHARSET:
+                return ch
+        return _font_active_char()
+
+    def _sync_font_char_combo(ch: str) -> None:
+        if dpg.does_item_exist("ts_font_char_combo"):
+            dpg.set_value("ts_font_char_combo", font_char_label(ch))
+
+    def _font_ensure_glyph_map() -> dict[str, list[list[int]]]:
+        glyphs = state.get("font_glyphs_pixels")
+        if not isinstance(glyphs, dict):
+            glyphs = {}
+            state["font_glyphs_pixels"] = glyphs
+        return glyphs
+
+    def _font_flush_active_glyph() -> None:
+        rows = state.get("font_pixel_rows")
+        glyphs = _font_ensure_glyph_map()
+        ch = _font_active_char()
+        if isinstance(rows, list):
+            glyphs[ch] = rows
+
+    def _font_load_active_glyph_into_editor() -> None:
+        glyphs = _font_ensure_glyph_map()
+        px = _font_glyph_px_from_widgets()
+        ch = _font_active_char()
+        rows = glyphs.get(ch)
+        if not isinstance(rows, list):
+            rows = empty_glyph_rows(px, fill_index=1)
+            glyphs[ch] = rows
+        state["font_pixel_rows"] = rows
+        state["font_active_char"] = ch
+        _sync_font_char_combo(ch)
+
+    def _font_resize_all_glyphs(px: int) -> None:
+        _font_flush_active_glyph()
+        px = int(px)
+        glyphs = _font_ensure_glyph_map()
+        fi = parse_font_palette_index()
+        if fi == 0:
+            fi = 1
+        new_map: dict[str, list[list[int]]] = {}
+        for ch in LATIN_CHARSET:
+            rows = glyphs.get(ch)
+            if isinstance(rows, list):
+                new_map[ch] = trim_palette_rows(rows, px, px, fill_index=fi)
+            else:
+                new_map[ch] = empty_glyph_rows(px, fill_index=fi)
+        state["font_glyphs_pixels"] = new_map
+        state["font_glyph_px"] = px
+        _font_load_active_glyph_into_editor()
+
+    def _font_editor_display_scale() -> int:
+        if not dpg.does_item_exist("ts_font_editor_scale"):
+            return _FONT_EDITOR_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_font_editor_scale"))
+        except (TypeError, ValueError):
+            v = _FONT_EDITOR_SCALE_DEFAULT
+        return max(1, min(16, v))
+
+    def _font_editor_effective_scale(pw: int, ph: int) -> int:
+        sc = _font_editor_display_scale()
+        if pw <= 0 or ph <= 0:
+            return sc
+        cap = min(_SPRITE_EDITOR_TEX_MAX // pw, _SPRITE_EDITOR_TEX_MAX // ph)
+        return max(1, min(sc, cap))
+
+    def _font_canvas_fill_rgb01() -> tuple[float, float, float]:
+        cached = state.get("font_canvas_bg_rgb01")
+        if isinstance(cached, tuple) and len(cached) == 3:
+            return cached
+        return (0.55, 0.55, 0.58)
+
+    def _sync_font_edit_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_FONT_EDITOR_IMG_TAG):
+            return
+        uv = _tileset_editor_uv_max(dw, dh)
+        dpg.configure_item(
+            _FONT_EDITOR_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_FONT_EDITOR_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _apply_font_edit_rgba(pw: int, ph: int, rgba: list[float]) -> None:
+        if pw <= 0 or ph <= 0 or not dpg.does_item_exist(_FONT_EDITOR_TEX_TAG):
+            return
+        if len(rgba) != pw * ph * 4:
+            return
+        sc = _font_editor_effective_scale(pw, ph)
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
+        if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
+            dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
+            dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_FONT_EDITOR_TEX_TAG, tex_rgba)
+        _sync_font_edit_image_widget(dw, dh)
+
+    def _refresh_font_edit_texture() -> None:
+        if not dpg.does_item_exist(_FONT_EDITOR_TEX_TAG):
+            return
+        rows = state.get("font_pixel_rows")
+        rgbs = state.get("font_palette_rgb")
+        px = _font_glyph_px_from_widgets()
+        if not isinstance(rows, list) or not rows:
+            sc0 = _font_editor_effective_scale(px, px)
+            _sync_font_edit_image_widget(px * sc0, px * sc0)
+            return
+        if not isinstance(rgbs, list) or not rgbs:
+            sc0 = _font_editor_effective_scale(px, px)
+            _sync_font_edit_image_widget(px * sc0, px * sc0)
+            return
+        fi = parse_font_palette_index()
+        if fi == 0:
+            fi = 1
+        norm = trim_palette_rows(rows, px, px, fill_index=fi)
+        if norm is not rows:
+            state["font_pixel_rows"] = norm
+            _font_flush_active_glyph()
+        base = composite_sprite_editor_preview(
+            norm,
+            rgbs,
+            None,
+            canvas_fill_rgb=_font_canvas_fill_rgb01(),
+            ref_alpha=0.0,
+            paint_alpha=1.0,
+        )
+        _apply_font_edit_rgba(px, px, base)
+
+    def _font_edit_paint_at_mouse(*, erase: bool = False) -> bool:
+        rows = state.get("font_pixel_rows")
+        px = _font_glyph_px_from_widgets()
+        if not isinstance(rows, list) or not rows:
+            state["font_pixel_rows"] = empty_glyph_rows(px, fill_index=1)
+            rows = state["font_pixel_rows"]
+        rgbs = state.get("font_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            if isinstance(state.get("project_root"), Path):
+                _font_palette_reload_core(append_log=False)
+            rows = state.get("font_pixel_rows")
+            if not isinstance(rows, list):
+                return False
+        if not dpg.does_item_exist(_FONT_EDITOR_IMG_TAG):
+            return False
+        pw = ph = px
+        if pw <= 0:
+            return False
+        sc = _font_editor_effective_scale(pw, ph)
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_FONT_EDITOR_IMG_TAG)
+        rx = float(mx - min_x)
+        ry = float(my - min_y)
+        dw, dh = pw * sc, ph * sc
+        if rx < 0 or ry < 0 or rx >= dw or ry >= dh:
+            return False
+        lx = min(pw - 1, int(rx) // sc)
+        ly = min(ph - 1, int(ry) // sc)
+        color_i = (
+            TRANSPARENT_PALETTE_INDEX
+            if erase
+            else parse_font_palette_index()
+        )
+        row = rows[ly] if ly < len(rows) else []
+        if isinstance(row, list) and lx < len(row):
+            row[lx] = color_i
+        _font_flush_active_glyph()
+        _refresh_font_edit_texture()
+        return True
+
+    def _font_edit_paint_drag(*, erase: bool) -> None:
+        if not dpg.does_item_exist(_FONT_EDITOR_IMG_TAG):
+            return
+        try:
+            if not dpg.is_item_hovered(_FONT_EDITOR_IMG_TAG):
+                return
+        except SystemError:
+            return
+        _font_edit_paint_at_mouse(erase=erase)
+
+    def _load_font_into_form(stem: str) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        try:
+            data = read_font_file(root, stem)
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fuentes: {e}\n")
+            return
+        fid = str(data.get("id", stem)).strip() or stem
+        if dpg.does_item_exist("ts_font_id"):
+            dpg.set_value("ts_font_id", fid)
+        pal = str(data.get("palette", "")).strip().replace("\\", "/")
+        if not pal:
+            pal = DEFAULT_EXAMPLE_PALETTE_REL
+        _refresh_font_palette_combo(select_rel=pal)
+        px_file = font_file_glyph_px(data)
+        if dpg.does_item_exist("ts_font_glyph_px_combo"):
+            dpg.set_value("ts_font_glyph_px_combo", glyph_px_label(px_file))
+        state["font_glyph_px"] = px_file
+        glyphs = parse_font_glyphs(data, fill_index=1)
+        state["font_glyphs_pixels"] = glyphs
+        ch = _font_active_char()
+        if ch not in glyphs:
+            ch = "A" if "A" in glyphs else LATIN_CHARSET[0]
+        state["font_active_char"] = ch
+        _font_load_active_glyph_into_editor()
+        _font_palette_reload_core(append_log=False)
+        _set_font_brush_index(1)
+        _refresh_font_edit_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fuentes: cargada {fid} ({len(LATIN_CHARSET)} glifos, {px_file}×{px_file} px).\n",
+        )
+
+    def on_font_list_pick(_sender: object, _app_data: object) -> None:
+        stem = _font_list_selected_stem()
+        if stem:
+            _load_font_into_form(stem)
+
+    def on_font_char_change(_sender: object, _app_data: object) -> None:
+        _font_flush_active_glyph()
+        ch = _font_char_from_combo()
+        state["font_active_char"] = ch
+        _font_load_active_glyph_into_editor()
+        _refresh_font_edit_texture()
+
+    def on_font_glyph_px_change(_sender: object, _app_data: object) -> None:
+        old_px = int(state.get("font_glyph_px", DEFAULT_GLYPH_PX))
+        px = _font_glyph_px_from_widgets()
+        state["font_glyph_px"] = px
+        if dpg.does_item_exist("ts_font_glyph_px_combo"):
+            lbl = glyph_px_label(px)
+            if str(dpg.get_value("ts_font_glyph_px_combo")) != lbl:
+                dpg.set_value("ts_font_glyph_px_combo", lbl)
+        if old_px != px:
+            _font_resize_all_glyphs(px)
+        _refresh_font_edit_texture()
+
+    def on_font_palette_combo_change(_sender: object, _app_data: object) -> None:
+        _font_palette_reload_core(append_log=False)
+        _refresh_font_edit_texture()
+
+    def on_font_palette_reload_click(_sender: object, _app_data: object) -> None:
+        _font_palette_reload_core(append_log=True)
+        _refresh_font_edit_texture()
+
+    def on_font_create(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        fid = str(dpg.get_value("ts_font_id")).strip() if dpg.does_item_exist("ts_font_id") else ""
+        if not fid:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + "Fuentes: indica un id.\n")
+            return
+        pal = _font_tab_palette_rel()
+        px = _font_glyph_px_from_widgets()
+        glyphs = {ch: empty_glyph_rows(px, fill_index=1) for ch in LATIN_CHARSET}
+        try:
+            write_font_json(
+                root,
+                fid,
+                palette_rel=pal,
+                glyph_px=px,
+                glyphs=glyphs,
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fuentes: {e}\n")
+            return
+        state["font_glyphs_pixels"] = glyphs
+        state["font_active_char"] = "A"
+        _font_load_active_glyph_into_editor()
+        _font_palette_reload_core(append_log=False)
+        _refresh_font_file_list()
+        if dpg.does_item_exist("ts_font_list"):
+            dpg.set_value("ts_font_list", fid)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + f"Fuentes: creada objects/Fonts/{fid}.json\n",
+        )
+
+    def on_font_save(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            return
+        _font_flush_active_glyph()
+        fid = str(dpg.get_value("ts_font_id")).strip() if dpg.does_item_exist("ts_font_id") else ""
+        if not fid:
+            stem = _font_list_selected_stem()
+            if not stem:
+                dpg.set_value(
+                    "ts_log",
+                    (dpg.get_value("ts_log") or "") + "Fuentes: indica id o elige fuente.\n",
+                )
+                return
+            fid = stem
+        pal = _font_tab_palette_rel()
+        px = _font_glyph_px_from_widgets()
+        glyphs = _font_ensure_glyph_map()
+        try:
+            save_font_json(
+                root,
+                fid,
+                palette_rel=pal,
+                glyph_px=px,
+                glyphs=glyphs,
+                fill_index=parse_font_palette_index(),
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Fuentes: {e}\n")
+            return
+        _refresh_font_file_list()
+        if dpg.does_item_exist("ts_font_list"):
+            dpg.set_value("ts_font_list", fid)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fuentes: guardado objects/Fonts/{fid}.json\n",
+        )
+
+    def on_font_refresh_list(_sender: object, _app_data: object) -> None:
+        _refresh_font_file_list()
+
+    def on_font_editor_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_font_edit_texture()
+
+    def on_font_fill_glyph(_sender: object, _app_data: object) -> None:
+        px = _font_glyph_px_from_widgets()
+        fi = parse_font_palette_index()
+        if fi == 0:
+            fi = 1
+        state["font_pixel_rows"] = empty_glyph_rows(px, fill_index=fi)
+        _font_flush_active_glyph()
+        _refresh_font_edit_texture()
+
+    def on_font_clear_glyph(_sender: object, _app_data: object) -> None:
+        px = _font_glyph_px_from_widgets()
+        state["font_pixel_rows"] = empty_glyph_rows(px, fill_index=TRANSPARENT_PALETTE_INDEX)
+        _font_flush_active_glyph()
+        _refresh_font_edit_texture()
+
+    def on_font_edit_canvas_click(_sender: object, _app_data: object) -> None:
+        _font_edit_paint_at_mouse(erase=False)
+
+    def on_font_edit_canvas_erase_click(_sender: object, _app_data: object) -> None:
+        _font_edit_paint_at_mouse(erase=True)
+
+    def on_font_edit_paint_drag(_sender: object, _app_data: object) -> None:
+        _font_edit_paint_drag(erase=False)
+
+    def on_font_edit_erase_drag(_sender: object, _app_data: object) -> None:
+        _font_edit_paint_drag(erase=True)
+
     def _apply_project_scenes_from_info(info: ProjectInfo) -> None:
         _clear_pending_scene_placement()
         _apply_tiles_widgets(info.tile_px)
@@ -4613,6 +5202,16 @@ def run_gui() -> int:
                 "tile_layers": tile_layers_to_json_list(s.tile_layers)
                 if s.tile_layers
                 else tile_layers_to_json_list(default_tile_layers(info.tile_px)),
+                **(
+                    {"target_fps": s.target_fps}
+                    if s.target_fps is not None
+                    else {}
+                ),
+                **(
+                    {"default_anim_fps": s.default_anim_fps}
+                    if s.default_anim_fps is not None
+                    else {}
+                ),
             }
             for s in info.scenes
         ]
@@ -4620,6 +5219,14 @@ def run_gui() -> int:
         state["project_entry"] = info.entry
         if dpg.does_item_exist("ts_export_initial_scene"):
             dpg.set_value("ts_export_initial_scene", info.active_scene)
+
+    def _sync_scene_widgets_after_project_load() -> None:
+        """Actualiza panel Escena tras cargar proyecto (ventana principal ya visible)."""
+        if not isinstance(state.get("project_root"), Path):
+            return
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list) or not scenes:
+            return
         _refresh_scene_widgets()
 
     def on_scene_combo(_sender: object, _app_data: object) -> None:
@@ -4631,6 +5238,7 @@ def run_gui() -> int:
         _commit_background_for_scene_id(old_active)
         _commit_scene_background_for_scene_id(old_active)
         _commit_tile_layers_for_scene_id(old_active)
+        _commit_scene_runtime_for_scene_id(old_active)
         new_id = str(dpg.get_value("ts_scene_combo")).strip()
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
@@ -4652,6 +5260,7 @@ def run_gui() -> int:
         _commit_background_for_scene_id(cur)
         _commit_scene_background_for_scene_id(cur)
         _commit_tile_layers_for_scene_id(cur)
+        _commit_scene_runtime_for_scene_id(cur)
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
             scenes = []
@@ -5014,6 +5623,18 @@ def run_gui() -> int:
             ),
             tag=_TILESET_ATLAS_TEX_TAG,
         )
+        dpg.add_dynamic_texture(
+            width=_SPRITE_EDITOR_TEX_MAX,
+            height=_SPRITE_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _SPRITE_EDITOR_TEX_MAX,
+                _SPRITE_EDITOR_TEX_MAX,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_FONT_EDITOR_TEX_TAG,
+        )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
         p_s = str(dpg.get_value("ts_import_lua_path")).strip()
@@ -5055,6 +5676,7 @@ def run_gui() -> int:
             _commit_background_for_scene_id(active)
             _commit_scene_background_for_scene_id(active)
             _commit_tile_layers_for_scene_id(active)
+            _commit_scene_runtime_for_scene_id(active)
         out_s = dpg.get_value("ts_out_path").strip()
         pal_s = dpg.get_value("ts_pal_path").strip()
         entry_s = str(dpg.get_value("ts_entry")).strip().replace("\\", "/")
@@ -5342,6 +5964,7 @@ def run_gui() -> int:
         _commit_background_for_active_scene()
         _commit_scene_background_for_active_scene()
         _commit_tile_layers_for_active_scene()
+        _commit_scene_runtime_for_active_scene()
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
         pal: Path | None = Path(pal_s).expanduser() if pal_s else None
         scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
@@ -5393,6 +6016,9 @@ def run_gui() -> int:
             bits.append("tiles")
         state["target_fps"] = tf
         state["default_anim_fps"] = af
+        row = _active_scene_row()
+        if row is not None:
+            _load_scene_runtime_widgets_from_row(row)
         extra = f" ({', '.join(bits)} en manifest)\n" if bits else "\n"
         dpg.set_value(
             "ts_log",
@@ -7296,6 +7922,37 @@ def run_gui() -> int:
                             enabled=False,
                             use_internal_label=False,
                         )
+                        dpg.add_text(
+                            "Consola (por escena). Si coincide con Tiles → proyecto, hereda; "
+                            "si no, override en esta escena.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(160, 180, 210, 255),
+                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_int(
+                                tag="ts_scene_target_fps",
+                                label="target_fps",
+                                width=100,
+                                default_value=30,
+                                min_value=15,
+                                max_value=60,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                use_internal_label=False,
+                            )
+                            dpg.add_input_int(
+                                tag="ts_scene_default_anim_fps",
+                                label="default_anim_fps",
+                                width=100,
+                                default_value=8,
+                                min_value=1,
+                                max_value=30,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                use_internal_label=False,
+                            )
                         dpg.add_button(
                             tag="ts_btn_new_scene",
                             label="Nueva escena",
@@ -7879,14 +8536,14 @@ def run_gui() -> int:
                 )
                 dpg.add_spacer(height=6)
                 dpg.add_text(
-                    "Consola (export / firmware): FPS del bucle y velocidad base de fotogramas "
-                    "de sprite (speed=1 en Lua).",
+                    "Proyecto (defecto para escenas sin override): FPS del bucle y velocidad base "
+                    "de fotogramas de sprite (speed=1 en Lua).",
                     wrap=520,
                 )
                 with dpg.group(horizontal=True):
                     dpg.add_input_int(
                         tag="ts_target_fps",
-                        label="target_fps",
+                        label="target_fps (proyecto)",
                         width=100,
                         default_value=30,
                         min_value=15,
@@ -7897,7 +8554,7 @@ def run_gui() -> int:
                     )
                     dpg.add_input_int(
                         tag="ts_default_anim_fps",
-                        label="default_anim_fps",
+                        label="default_anim_fps (proyecto)",
                         width=100,
                         default_value=8,
                         min_value=1,
@@ -8136,6 +8793,157 @@ def run_gui() -> int:
                         dpg.bind_item_handler_registry(
                             _TILESET_EDITOR_IMG_TAG, "ts_tileset_edit_click_reg"
                         )
+
+            with dpg.tab(label="Fuentes"):
+                dpg.add_text(
+                    "Fuentes en `objects/Fonts/<id>.json`: glifos cuadrados (multiplos de 4 px), "
+                    "indices de paleta como sprites. Alfabeto latino basico en el selector.",
+                    wrap=520,
+                )
+                dpg.add_spacer(height=6)
+                dpg.add_text("Archivos", color=(200, 220, 255, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_listbox(
+                        tag="ts_font_list",
+                        label="objects/Fonts/",
+                        width=200,
+                        num_items=6,
+                        items=["(abre un proyecto)"],
+                        callback=on_font_list_pick,
+                        enabled=False,
+                    )
+                    with dpg.group():
+                        dpg.add_input_text(
+                            tag="ts_font_id",
+                            label="Id fuente",
+                            width=160,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_font_create",
+                            label="Crear fuente",
+                            width=140,
+                            callback=on_font_create,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_font_save",
+                            label="Guardar fuente",
+                            width=140,
+                            callback=on_font_save,
+                            enabled=False,
+                        )
+                        dpg.add_button(
+                            tag="ts_btn_font_refresh",
+                            label="Actualizar lista",
+                            width=140,
+                            callback=on_font_refresh_list,
+                            enabled=False,
+                        )
+                dpg.add_separator()
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        tag="ts_font_char_combo",
+                        label="Caracter",
+                        width=160,
+                        items=latin_charset_labels(),
+                        default_value=font_char_label("A"),
+                        callback=on_font_char_change,
+                        enabled=False,
+                    )
+                    dpg.add_combo(
+                        tag="ts_font_glyph_px_combo",
+                        label="Tamano glifo",
+                        width=120,
+                        items=[glyph_px_label(px) for px in FONT_GLYPH_SIZE_CHOICES],
+                        default_value=glyph_px_label(DEFAULT_GLYPH_PX),
+                        callback=on_font_glyph_px_change,
+                        enabled=False,
+                    )
+                    dpg.add_combo(
+                        tag="ts_font_palette_combo",
+                        label="Paleta",
+                        width=220,
+                        items=["(abre un proyecto)"],
+                        callback=on_font_palette_combo_change,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_font_palette_reload",
+                        label="Cargar paleta",
+                        width=110,
+                        callback=on_font_palette_reload_click,
+                        enabled=False,
+                    )
+                with dpg.child_window(
+                    width=500,
+                    height=72,
+                    border=True,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_group(
+                        tag="ts_font_palette_swatches_group",
+                        horizontal=True,
+                        horizontal_spacing=3,
+                    )
+                dpg.add_separator()
+                dpg.add_text("Glifo activo", color=(180, 200, 230, 255))
+                with dpg.group(horizontal=True):
+                    dpg.add_slider_int(
+                        tag="ts_font_editor_scale",
+                        label="Zoom",
+                        width=180,
+                        default_value=_FONT_EDITOR_SCALE_DEFAULT,
+                        min_value=1,
+                        max_value=16,
+                        callback=on_font_editor_preview_change,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_font_fill",
+                        label="Rellenar",
+                        width=100,
+                        callback=on_font_fill_glyph,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_font_clear",
+                        label="Borrar",
+                        width=100,
+                        callback=on_font_clear_glyph,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    "Clic izquierdo o arrastrar: pintar. Clic derecho: transparente (indice 31).",
+                    wrap=520,
+                )
+                with dpg.item_handler_registry(tag="ts_font_edit_click_reg"):
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Left,
+                        callback=on_font_edit_canvas_click,
+                    )
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Right,
+                        callback=on_font_edit_canvas_erase_click,
+                    )
+                with dpg.child_window(
+                    tag="ts_font_edit_viewport",
+                    border=True,
+                    width=360,
+                    height=280,
+                    horizontal_scrollbar=True,
+                ):
+                    dpg.add_image(
+                        _FONT_EDITOR_TEX_TAG,
+                        tag=_FONT_EDITOR_IMG_TAG,
+                        width=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
+                        height=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
+                        uv_min=(0.0, 0.0),
+                        uv_max=(0.25, 0.25),
+                    )
+                dpg.bind_item_handler_registry(
+                    _FONT_EDITOR_IMG_TAG, "ts_font_edit_click_reg"
+                )
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
@@ -8921,6 +9729,16 @@ def run_gui() -> int:
         dpg.add_mouse_drag_handler(
             button=dpg.mvMouseButton_Right,
             callback=on_tileset_edit_erase_drag,
+        )
+
+    with dpg.handler_registry(tag="ts_font_paint_drag_reg"):
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Left,
+            callback=on_font_edit_paint_drag,
+        )
+        dpg.add_mouse_drag_handler(
+            button=dpg.mvMouseButton_Right,
+            callback=on_font_edit_erase_drag,
         )
 
     with dpg.handler_registry(tag="ts_scene_tile_paint_drag_reg"):

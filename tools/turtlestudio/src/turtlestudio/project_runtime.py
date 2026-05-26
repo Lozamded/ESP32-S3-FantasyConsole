@@ -29,7 +29,21 @@ def clamp_default_anim_fps(raw: Any) -> int:
 
 
 def parse_runtime_from_manifest(data: dict[str, Any]) -> tuple[int, int]:
-    """(target_fps, default_anim_fps)."""
+    """(target_fps, default_anim_fps) a nivel proyecto."""
     target = clamp_target_fps(data.get("target_fps", DEFAULT_TARGET_FPS))
     anim = clamp_default_anim_fps(data.get("default_anim_fps", DEFAULT_ANIM_FPS))
     return target, anim
+
+
+def scene_target_fps(scene: dict[str, Any], project_target: int) -> int:
+    """FPS de bucle para una escena (override opcional en la fila de escena)."""
+    if "target_fps" in scene:
+        return clamp_target_fps(scene.get("target_fps"))
+    return clamp_target_fps(project_target)
+
+
+def scene_default_anim_fps(scene: dict[str, Any], project_anim: int) -> int:
+    """FPS de animacion por defecto para una escena (override opcional)."""
+    if "default_anim_fps" in scene:
+        return clamp_default_anim_fps(scene.get("default_anim_fps"))
+    return clamp_default_anim_fps(project_anim)
