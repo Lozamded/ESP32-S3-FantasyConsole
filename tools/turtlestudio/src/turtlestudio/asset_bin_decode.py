@@ -10,6 +10,8 @@ MODE_ROW_RLE = 2
 
 TTS_MAGIC = b"TTS\0"
 TTS_HEADER_SIZE = 10
+TFN_MAGIC = b"TFN\0"
+TFN_HEADER_SIZE = 14
 
 
 def decode_mode_payload(
@@ -149,3 +151,37 @@ def decode_tileset_blob(data: bytes) -> tuple[int, list[list[list[int]]]] | None
         _, _, rows = got
         tiles.append(rows)
     return px, tiles
+
+
+def decode_font_blob(
+    data: bytes,
+) -> tuple[int, int, int, list[int], list[list[list[int]]]] | None:
+    """Devuelve (glyph_px, line_height, baseline, advances, glyphs) desde .tfn exportado."""
+    if len(data) < TFN_HEADER_SIZE or data[:4] != TFN_MAGIC:
+        return None
+    if data[4] != 0:
+        return None
+    px, lh, bl, count = struct.unpack_from("<HHHH", data, 6)
+    if px < 1 or count < 0:
+        return None
+    off = TFN_HEADER_SIZE
+    advances: list[int] = []
+    glyphs: list[list[list[int]]] = []
+    for _ in range(count):
+        if off + 5 > len(data):
+            return None
+        adv = data[off]
+        off += 1
+        (chunk_len,) = struct.unpack_from("<I", data, off)
+        off += 4
+        if chunk_len < 11 or off + chunk_len > len(data):
+            return None
+        chunk = data[off : off + chunk_len]
+        off += chunk_len
+        got = decode_indexed_blob(chunk, expect_w=px, expect_h=px)
+        if got is None:
+            return None
+        _, _, rows = got
+        advances.append(int(adv))
+        glyphs.append(rows)
+    return px, lh, bl, advances, glyphs

@@ -4,6 +4,8 @@ Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
 
   main.turtlecart
   backgrounds/cielo.tbg
+  fonts/default.tfn
+  fonts/ui.tfn
   objects/bloque.json
   objects/box.json
   objects/character.json
@@ -16,7 +18,7 @@ Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
   studio/project_bundle.json
   tiles/tileset1.tts
 
-No copies solo el .turtlecart: los fondos/sprites/tilesets/objetos referenciados
-estan en las subcarpetas backgrounds/, sprites/, tiles/, objects/.
+No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos referenciados
+estan en backgrounds/, sprites/, tiles/, fonts/, objects/.
 
 Generado por TurtleStudio.

@@ -16,6 +16,7 @@ BACKGROUND_REF_KIND = "turtlestudio.background_ref"
 SPRITE_REF_KIND = "turtlestudio.sprite_ref"
 OBJECT_REF_KIND = "turtlestudio.object_ref"
 TILESET_REF_KIND = "turtlestudio.tileset_ref"
+FONT_REF_KIND = "turtlestudio.font_ref"
 DEFAULT_PACKAGE_DIR_NAME = "build"
 DEFAULT_CART_FILENAME = "main.turtlecart"
 SD_DEPLOY_README_NAME = "COPIAR_A_SD.txt"
@@ -247,6 +248,15 @@ def should_externalize_tileset(data: dict[str, Any]) -> bool:
     return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
 
 
+def should_externalize_font(data: dict[str, Any]) -> bool:
+    """Fuentes con glifos indexados van a sidecar .tfn."""
+    from turtlestudio.fonts import parse_font_glyphs
+
+    if parse_font_glyphs(data, fill_index=1):
+        return True
+    return _asset_json_utf8_size(data) > DEFAULT_ASSET_INLINE_MAX_BYTES
+
+
 def _manifest_tile_px(project_root: Path) -> int:
     from turtlestudio.project import MANIFEST_NAME
     from turtlestudio.tiles import DEFAULT_TILE_PX, parse_tile_px_from_manifest
@@ -288,12 +298,18 @@ def collect_studio_bundle_files(
     """
     from turtlestudio.asset_bin import (
         background_json_to_tbg,
+        font_json_to_tfn,
         sprite_json_to_tsp,
         tileset_json_to_tts,
     )
     from turtlestudio.backgrounds import read_background_file, shrink_background_json_for_export
     from turtlestudio.objects import object_sprite_ids_for_bundle, read_object_file
     from turtlestudio.sprites import read_sprite_file
+    from turtlestudio.fonts import (
+        list_font_json_stems,
+        read_font_file,
+        shrink_font_json_for_export,
+    )
     from turtlestudio.tiles import (
         collect_tileset_stems_from_scenes,
         read_tileset_file,
@@ -388,6 +404,20 @@ def collect_studio_bundle_files(
         else:
             tilesets_map[tid] = data
 
+    fonts_map: dict[str, Any] = {}
+    for fid in sorted(list_font_json_stems(root)):
+        try:
+            data = shrink_font_json_for_export(read_font_file(root, fid))
+        except ValueError:
+            fonts_map[fid] = {"error": "missing_font_json", "id": fid}
+            continue
+        rel = f"fonts/{fid}.tfn"
+        if should_externalize_font(data):
+            fonts_map[fid] = _asset_ref_entry(fid, rel, FONT_REF_KIND)
+            sidecar.append((rel, font_json_to_tfn(data)))
+        else:
+            fonts_map[fid] = data
+
     from turtlestudio.project import MANIFEST_NAME
     from turtlestudio.project_runtime import parse_runtime_from_manifest
 
@@ -416,6 +446,7 @@ def collect_studio_bundle_files(
         "sprites": sprites_map,
         "backgrounds": backgrounds_map,
         "tilesets": tilesets_map,
+        "fonts": fonts_map,
     }
     bundle_rel = "studio/project_bundle.json"
     bundle_text = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False) + "\n"
@@ -456,8 +487,8 @@ def _sd_deploy_readme_text(*, cart_name: str, sidecar_rels: Sequence[str]) -> st
     lines.extend(
         [
             "",
-            "No copies solo el .turtlecart: los fondos/sprites/tilesets/objetos referenciados",
-            "estan en las subcarpetas backgrounds/, sprites/, tiles/, objects/.",
+            "No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos referenciados",
+            "estan en backgrounds/, sprites/, tiles/, fonts/, objects/.",
             "",
             "Generado por TurtleStudio.",
         ]

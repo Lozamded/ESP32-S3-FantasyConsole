@@ -283,6 +283,136 @@ def save_font_json(
     return path
 
 
+def font_charset_from_data(data: dict[str, Any]) -> str:
+    cs = str(data.get("charset", LATIN_CHARSET))
+    return cs if cs else LATIN_CHARSET
+
+
+def font_metrics_from_data(data: dict[str, Any]) -> tuple[int, int, int]:
+    """(glyph_px, line_height, baseline)."""
+    px = font_file_glyph_px(data)
+    try:
+        lh = int(data.get("line_height", px))
+    except (TypeError, ValueError):
+        lh = px
+    try:
+        bl = int(data.get("baseline", px))
+    except (TypeError, ValueError):
+        bl = px
+    lh = max(px, lh)
+    bl = max(0, min(px, bl))
+    return px, lh, bl
+
+
+def parse_font_advances(data: dict[str, Any]) -> dict[str, int]:
+    px = font_file_glyph_px(data)
+    out: dict[str, int] = {}
+    raw = data.get("glyphs")
+    if isinstance(raw, list):
+        for entry in raw:
+            if not isinstance(entry, dict):
+                continue
+            ch = str(entry.get("ch", entry.get("char", "")))
+            if len(ch) != 1:
+                continue
+            try:
+                adv = int(entry.get("advance", px))
+            except (TypeError, ValueError):
+                adv = px
+            out[ch] = max(1, min(255, adv))
+    return out
+
+
+def shrink_font_json_for_export(data: dict[str, Any]) -> dict[str, Any]:
+    fid = str(data.get("id", "")).strip()
+    px, lh, bl = font_metrics_from_data(data)
+    return {
+        "format_version": int(data.get("format_version", FONT_JSON_VERSION)),
+        "kind": FONT_JSON_KIND,
+        "id": fid,
+        "palette": str(data.get("palette", "")).strip(),
+        "glyph_px": px,
+        "line_height": lh,
+        "baseline": bl,
+        "charset": font_charset_from_data(data),
+        "glyphs": data.get("glyphs") if isinstance(data.get("glyphs"), list) else [],
+    }
+
+
+def render_font_preview_rgba(
+    text: str,
+    *,
+    glyphs: dict[str, list[list[int]]],
+    palette_rgb: list[tuple[float, float, float]],
+    glyph_px: int,
+    line_height: int,
+    advances: dict[str, int] | None = None,
+    canvas_fill_rgb: tuple[float, float, float] = (0.55, 0.55, 0.58),
+    missing_ch: str = " ",
+) -> tuple[list[float], int, int]:
+    """
+    Compone una linea de texto para vista previa (fila 0 = arriba).
+    Devuelve (rgba, ancho, alto).
+    """
+    from turtlestudio.palette_policy import resolve_palette_color
+    from turtlestudio.sprite_ref_image import _solid_fill_rgba_float01
+
+    px = normalize_glyph_px(glyph_px)
+    lh = max(px, int(line_height))
+    adv_map = advances or {}
+    miss = missing_ch if len(missing_ch) == 1 else " "
+
+    total_w = 0
+    for ch in text:
+        c = ch if len(ch) == 1 else miss
+        total_w += adv_map.get(c, px)
+    if total_w < 1:
+        total_w = px
+    if not text:
+        total_w = px
+
+    fill = (
+        max(0.0, min(1.0, float(canvas_fill_rgb[0]))),
+        max(0.0, min(1.0, float(canvas_fill_rgb[1]))),
+        max(0.0, min(1.0, float(canvas_fill_rgb[2]))),
+    )
+    out = _solid_fill_rgba_float01(total_w, lh, fill)
+    y0 = lh - px
+    x = 0
+    for ch in text:
+        c = ch if len(ch) == 1 else miss
+        rows = glyphs.get(c)
+        if not isinstance(rows, list):
+            rows = glyphs.get(miss)
+        if not isinstance(rows, list):
+            rows = empty_glyph_rows(px, fill_index=1)
+        adv = adv_map.get(c, px)
+        for py in range(px):
+            row = rows[py] if py < len(rows) else []
+            dst_y = y0 + py
+            if dst_y < 0 or dst_y >= lh:
+                continue
+            for lx in range(px):
+                if lx >= len(row):
+                    continue
+                try:
+                    idx = int(row[lx])
+                except (TypeError, ValueError):
+                    idx = 0
+                col = resolve_palette_color(idx, palette_rgb)
+                if col is None:
+                    continue
+                i = (dst_y * total_w + (x + lx)) * 4
+                if i + 3 >= len(out):
+                    continue
+                out[i] = col[0]
+                out[i + 1] = col[1]
+                out[i + 2] = col[2]
+                out[i + 3] = 1.0
+        x += adv
+    return out, total_w, lh
+
+
 def write_font_json(
     project_root: Path,
     font_id: str,

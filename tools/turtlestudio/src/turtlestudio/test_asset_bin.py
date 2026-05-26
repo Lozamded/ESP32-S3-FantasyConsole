@@ -6,9 +6,18 @@ import sys
 from pathlib import Path
 
 from turtlestudio.asset_bin_decode import (
+    decode_font_blob,
     decode_indexed_blob,
     decode_sprite_tsp_frames,
     decode_tileset_blob,
+)
+from turtlestudio.fonts import (
+    font_charset_from_data,
+    font_metrics_from_data,
+    parse_font_advances,
+    parse_font_glyphs,
+    read_font_file,
+    shrink_font_json_for_export,
 )
 from turtlestudio.backgrounds import (
     parse_background_palette_rows,
@@ -114,6 +123,39 @@ def test_demo1_build(project_root: Path) -> list[str]:
                     break
         except ValueError as e:
             errors.append(f"{tts.name}: {e}")
+
+    for tfn in (build / "fonts").glob("*.tfn"):
+        stem = tfn.stem
+        try:
+            src = shrink_font_json_for_export(read_font_file(project_root, stem))
+            charset = font_charset_from_data(src)
+            expect = parse_font_glyphs(src, fill_index=1)
+            expect_adv = parse_font_advances(src)
+            got = decode_font_blob(tfn.read_bytes())
+            if got is None:
+                errors.append(f"{tfn.name}: decode fallo")
+                continue
+            got_px, got_lh, got_bl, got_adv, got_glyphs = got
+            exp_px, exp_lh, exp_bl = font_metrics_from_data(src)
+            if got_px != exp_px:
+                errors.append(f"{tfn.name}: glyph_px distinto al JSON")
+            if got_lh != exp_lh or got_bl != exp_bl:
+                errors.append(f"{tfn.name}: metricas distintas al JSON")
+            chars = [c for c in charset if len(c) == 1]
+            if len(got_glyphs) != len(chars):
+                errors.append(f"{tfn.name}: numero de glifos distinto al JSON")
+                continue
+            for i, ch in enumerate(chars):
+                if got_adv[i] != expect_adv.get(ch, exp_px):
+                    errors.append(f"{tfn.name}: advance de {ch!r} distinto")
+                    break
+                a = got_glyphs[i]
+                b = expect.get(ch)
+                if b is None or not _rows_equal(a, b):
+                    errors.append(f"{tfn.name}: glifo {ch!r} distinto al JSON")
+                    break
+        except ValueError as e:
+            errors.append(f"{tfn.name}: {e}")
 
     return errors
 

@@ -64,10 +64,15 @@ def verify_package_dir(package_dir: Path) -> list[str]:
                 raw = p.read_bytes()
                 if len(raw) < 10 or raw[:4] != b"TTS\x00":
                     errors.append(f"{rel}: magic .tts invalido")
+            if p.suffix.lower() == ".tfn":
+                raw = p.read_bytes()
+                if len(raw) < 14 or raw[:4] != b"TFN\x00":
+                    errors.append(f"{rel}: magic .tfn invalido")
 
     check_refs("backgrounds")
     check_refs("sprites")
     check_refs("tilesets")
+    check_refs("fonts")
     check_refs("objects")
 
     sprites = bundle.get("sprites")

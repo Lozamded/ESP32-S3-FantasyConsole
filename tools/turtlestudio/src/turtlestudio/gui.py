@@ -50,8 +50,11 @@ from turtlestudio.fonts import (
     glyph_px_label,
     latin_charset_labels,
     list_font_json_stems,
+    font_metrics_from_data,
+    parse_font_advances,
     parse_font_glyphs,
     read_font_file,
+    render_font_preview_rgba,
     save_font_json,
     write_font_json,
 )
@@ -817,6 +820,14 @@ _FONT_EDITOR_TEX_TAG = "ts_font_edit_texture"
 _FONT_EDITOR_IMG_TAG = "ts_font_edit_image"
 _FONT_EDITOR_SCALE_DEFAULT = 12
 _FONT_EDITOR_CANVAS_BG_DEFAULT = (140, 140, 150, 255)
+_FONT_PREVIEW_TEX_TAG = "ts_font_preview_tex"
+_FONT_PREVIEW_IMG_TAG = "ts_font_preview_image"
+_FONT_PREVIEW_TEX_MAX_W = 520
+_FONT_PREVIEW_TEX_H = 64
+_FONT_PREVIEW_SCALE_DEFAULT = 2
+_FONT_ATLAS_TEX_TAG = "ts_font_atlas_tex"
+_FONT_ATLAS_IMG_TAG = "ts_font_atlas_img"
+_FONT_ATLAS_SCALE_DEFAULT = 2
 _SCENE_TILE_GRID_RGBA = (0.75, 0.82, 1.0, 0.72)
 _SCENE_TILE_GRID_HOVER_RGBA = (1.0, 0.9, 0.2, 0.88)
 _SCENE_TILE_BRUSH_PICKER_SCALE = 3
@@ -1634,6 +1645,12 @@ def run_gui() -> int:
             _FONT_EDITOR_CANVAS_BG_DEFAULT[1] / 255.0,
             _FONT_EDITOR_CANVAS_BG_DEFAULT[2] / 255.0,
         ),
+        "font_line_height": DEFAULT_GLYPH_PX,
+        "font_baseline": DEFAULT_GLYPH_PX,
+        "font_advances": {},
+        "font_ref_source": None,
+        "font_ref_path": "",
+        "font_atlas_cell": None,
     }
 
     def _scene_obj_dict_from_any(x: object) -> dict[str, Any] | None:
@@ -3379,6 +3396,12 @@ def run_gui() -> int:
             "ts_font_editor_scale",
             "ts_btn_font_fill",
             "ts_btn_font_clear",
+            "ts_font_preview_text",
+            "ts_font_preview_scale",
+            "ts_btn_font_ref_import",
+            "ts_btn_font_ref_clear",
+            "ts_btn_font_ref_convert",
+            "ts_font_atlas_scale",
         ):
             if dpg.does_item_exist(tag):
                 dpg.configure_item(tag, enabled=enabled)
@@ -3599,6 +3622,7 @@ def run_gui() -> int:
             _sync_scene_widgets_after_project_load()
             _refresh_font_file_list()
             _refresh_font_palette_combo()
+            _refresh_font_preview_texture()
         else:
             state["bg_palette_rgb"] = []
             state["bg_palette_hexes"] = []
@@ -3624,9 +3648,18 @@ def run_gui() -> int:
             state["font_glyph_px"] = DEFAULT_GLYPH_PX
             state["font_palette_rgb"] = []
             state["font_palette_hexes"] = []
+            state["font_line_height"] = DEFAULT_GLYPH_PX
+            state["font_baseline"] = DEFAULT_GLYPH_PX
+            state["font_advances"] = {}
+            state["font_ref_source"] = None
+            state["font_ref_path"] = ""
+            state["font_atlas_cell"] = None
+            _update_font_ref_path_label()
             _refresh_font_file_list()
             _refresh_font_palette_combo()
             _refresh_font_edit_texture()
+            _refresh_font_preview_texture()
+            _refresh_font_atlas_texture()
             _destroy_scene_tile_brush_picker_assets()
             if dpg.does_item_exist("ts_scene_tile_brush_group"):
                 dpg.delete_item("ts_scene_tile_brush_group", children_only=True)
@@ -4956,6 +4989,339 @@ def run_gui() -> int:
             paint_alpha=1.0,
         )
         _apply_font_edit_rgba(px, px, base)
+        _refresh_font_preview_texture()
+
+    def _font_preview_text_from_widget() -> str:
+        if dpg.does_item_exist("ts_font_preview_text"):
+            return str(dpg.get_value("ts_font_preview_text") or "")
+        return "Hello World!"
+
+    def _font_preview_display_scale() -> int:
+        if not dpg.does_item_exist("ts_font_preview_scale"):
+            return _FONT_PREVIEW_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_font_preview_scale"))
+        except (TypeError, ValueError):
+            v = _FONT_PREVIEW_SCALE_DEFAULT
+        return max(1, min(8, v))
+
+    def _sync_font_preview_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_FONT_PREVIEW_IMG_TAG):
+            return
+        uv = _tileset_editor_uv_max(dw, dh)
+        dpg.configure_item(
+            _FONT_PREVIEW_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_FONT_PREVIEW_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _refresh_font_preview_texture() -> None:
+        if not dpg.does_item_exist(_FONT_PREVIEW_TEX_TAG):
+            return
+        _font_flush_active_glyph()
+        rgbs = state.get("font_palette_rgb")
+        glyphs = state.get("font_glyphs_pixels")
+        if not isinstance(rgbs, list) or not rgbs or not isinstance(glyphs, dict):
+            sc0 = _font_preview_display_scale()
+            _sync_font_preview_image_widget(64 * sc0, 16 * sc0)
+            return
+        px = _font_glyph_px_from_widgets()
+        try:
+            lh = int(state.get("font_line_height", px))
+        except (TypeError, ValueError):
+            lh = px
+        adv = state.get("font_advances")
+        adv_map = adv if isinstance(adv, dict) else {}
+        text = _font_preview_text_from_widget()
+        rgba, pw, ph = render_font_preview_rgba(
+            text,
+            glyphs=glyphs,
+            palette_rgb=rgbs,
+            glyph_px=px,
+            line_height=max(px, lh),
+            advances=adv_map,
+            canvas_fill_rgb=_font_canvas_fill_rgb01(),
+        )
+        if pw <= 0 or ph <= 0 or len(rgba) != pw * ph * 4:
+            return
+        sc = _font_preview_display_scale()
+        cap_w = max(1, _FONT_PREVIEW_TEX_MAX_W // pw) if pw > 0 else sc
+        sc = max(1, min(sc, cap_w))
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, pw, ph, sc)
+        if dw > _FONT_PREVIEW_TEX_MAX_W or dh > _FONT_PREVIEW_TEX_H:
+            dw = min(dw, _FONT_PREVIEW_TEX_MAX_W)
+            dh = min(dh, _FONT_PREVIEW_TEX_H)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(
+            disp_rgba, dw, dh, tex_w=dw, tex_h=dh
+        )
+        dpg.set_value(_FONT_PREVIEW_TEX_TAG, tex_rgba)
+        _sync_font_preview_image_widget(dw, dh)
+
+    def on_font_preview_text_change(_sender: object, _app_data: object) -> None:
+        _refresh_font_preview_texture()
+
+    def on_font_preview_scale_change(_sender: object, _app_data: object) -> None:
+        _refresh_font_preview_texture()
+
+    def _font_atlas_display_scale() -> int:
+        if not dpg.does_item_exist("ts_font_atlas_scale"):
+            return _FONT_ATLAS_SCALE_DEFAULT
+        try:
+            v = int(dpg.get_value("ts_font_atlas_scale"))
+        except (TypeError, ValueError):
+            v = _FONT_ATLAS_SCALE_DEFAULT
+        return max(1, min(16, v))
+
+    def _font_atlas_effective_scale(sw: int, sh: int) -> int:
+        sc = _font_atlas_display_scale()
+        if sw <= 0 or sh <= 0:
+            return sc
+        cap = min(_SPRITE_EDITOR_TEX_MAX // sw, _SPRITE_EDITOR_TEX_MAX // sh)
+        return max(1, min(sc, cap))
+
+    def _sync_font_atlas_image_widget(dw: int, dh: int) -> None:
+        if not dpg.does_item_exist(_FONT_ATLAS_IMG_TAG):
+            return
+        uv = _tileset_atlas_uv_max(dw, dh)
+        dpg.configure_item(
+            _FONT_ATLAS_IMG_TAG,
+            width=max(1, dw),
+            height=max(1, dh),
+            texture_tag=_FONT_ATLAS_TEX_TAG,
+            uv_min=(0.0, 0.0),
+            uv_max=uv,
+        )
+
+    def _apply_font_atlas_rgba(sw: int, sh: int, rgba: list[float]) -> None:
+        if sw <= 0 or sh <= 0 or not dpg.does_item_exist(_FONT_ATLAS_TEX_TAG):
+            return
+        if len(rgba) != sw * sh * 4:
+            return
+        sc = _font_atlas_effective_scale(sw, sh)
+        disp_rgba, dw, dh = _scale_rgba_nearest(rgba, sw, sh, sc)
+        if dw > _SPRITE_EDITOR_TEX_MAX or dh > _SPRITE_EDITOR_TEX_MAX:
+            dw = min(dw, _SPRITE_EDITOR_TEX_MAX)
+            dh = min(dh, _SPRITE_EDITOR_TEX_MAX)
+            disp_rgba = disp_rgba[: dw * dh * 4]
+        tex_rgba = _pack_sprite_rgba_into_tex_buffer(disp_rgba, dw, dh)
+        dpg.set_value(_FONT_ATLAS_TEX_TAG, tex_rgba)
+        _sync_font_atlas_image_widget(dw, dh)
+
+    def _update_font_ref_path_label() -> None:
+        if not dpg.does_item_exist("ts_font_ref_path_label"):
+            return
+        p = str(state.get("font_ref_path") or "").strip()
+        if not p:
+            dpg.set_value("ts_font_ref_path_label", "(sin imagen importada)")
+            return
+        dpg.set_value("ts_font_ref_path_label", f"Imagen: {p}")
+
+    def _update_font_atlas_info_label() -> None:
+        if not dpg.does_item_exist("ts_font_atlas_info"):
+            return
+        src = state.get("font_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_font_atlas_info",
+                "Importa una imagen con rejilla del tamano de glifo elegido.",
+            )
+            return
+        sw, sh, _rgba = src
+        px = _font_glyph_px_from_widgets()
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        cell = state.get("font_atlas_cell")
+        sel = ""
+        if isinstance(cell, tuple) and len(cell) == 2:
+            gx, gy = int(cell[0]), int(cell[1])
+            ch = _font_active_char()
+            sel = (
+                f" Celda ({gx}, {gy}) → «{font_char_label(ch)}» al convertir."
+            )
+        dpg.set_value(
+            "ts_font_atlas_info",
+            f"Rejilla {cols}×{rows} celdas ({px}×{px} px). Imagen {sw}×{sh} px.{sel}",
+        )
+
+    def _refresh_font_atlas_texture() -> None:
+        if not dpg.does_item_exist(_FONT_ATLAS_TEX_TAG):
+            return
+        src = state.get("font_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            sc0 = _font_atlas_effective_scale(64, 64)
+            _sync_font_atlas_image_widget(64 * sc0, 64 * sc0)
+            _update_font_atlas_info_label()
+            return
+        sw, sh, rgba = src
+        if sw <= 0 or sh <= 0 or len(rgba) < sw * sh * 4:
+            _update_font_atlas_info_label()
+            return
+        px = _font_glyph_px_from_widgets()
+        cell = state.get("font_atlas_cell")
+        sel = cell if isinstance(cell, tuple) and len(cell) == 2 else None
+        base = list(rgba[: sw * sh * 4])
+        _draw_tileset_atlas_grid_overlay(base, sw, sh, px, sel_cell=sel)
+        _apply_font_atlas_rgba(sw, sh, base)
+        _update_font_atlas_info_label()
+
+    def _font_show_atlas_cell_rgb_preview(gx: int, gy: int) -> None:
+        src = state.get("font_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return
+        px = _font_glyph_px_from_widgets()
+        rgba, pw, ph = crop_ref_tile_rgba(src, gx, gy, px)
+        _apply_font_edit_rgba(pw, ph, rgba)
+
+    def _font_atlas_cell_from_mouse() -> tuple[int, int] | None:
+        src = state.get("font_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            return None
+        if not dpg.does_item_exist(_FONT_ATLAS_IMG_TAG):
+            return None
+        sw, sh, _rgba = src
+        px = _font_glyph_px_from_widgets()
+        sc = _font_atlas_effective_scale(sw, sh)
+        mx, my = dpg.get_mouse_pos(local=False)
+        min_x, min_y = dpg.get_item_rect_min(_FONT_ATLAS_IMG_TAG)
+        rx = float(mx - min_x)
+        ry = float(my - min_y)
+        dw, dh = sw * sc, sh * sc
+        if rx < 0 or ry < 0 or rx >= dw or ry >= dh:
+            return None
+        lx = min(sw - 1, int(rx) // sc)
+        ly = min(sh - 1, int(ry) // sc)
+        gx = lx // px
+        gy = ly // px
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        if gx < 0 or gy < 0 or gx >= cols or gy >= rows:
+            return None
+        return gx, gy
+
+    def _load_font_ref_from_path(path: str) -> None:
+        try:
+            sw, sh, rgba = load_image_rgba_float01(path)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Fuentes imagen: {e}\n",
+            )
+            return
+        state["font_ref_source"] = (sw, sh, rgba)
+        state["font_ref_path"] = str(Path(path).expanduser())
+        state["font_atlas_cell"] = None
+        _update_font_ref_path_label()
+        px = _font_glyph_px_from_widgets()
+        cols, rows = ref_grid_dimensions(sw, sh, px)
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fuentes: imagen {sw}×{sh} px, rejilla {cols}×{rows} ({px}×{px}). "
+            "No se guarda en el .json de la fuente.\n",
+        )
+        _refresh_font_atlas_texture()
+
+    def on_font_ref_import_click(_sender: object, _app_data: object) -> None:
+        if dpg.does_item_exist("ts_font_ref_file_dialog"):
+            dpg.show_item("ts_font_ref_file_dialog")
+
+    def on_font_ref_file_picked(_sender: object, app_data: object) -> None:
+        if not isinstance(app_data, dict):
+            return
+        path = ""
+        fp = app_data.get("file_path_name")
+        if isinstance(fp, str) and fp.strip():
+            path = fp.strip()
+        else:
+            selections = app_data.get("selections")
+            if isinstance(selections, dict) and selections:
+                path = str(next(iter(selections.values()))).strip()
+        if path:
+            _load_font_ref_from_path(path)
+
+    def on_font_ref_clear_click(_sender: object, _app_data: object) -> None:
+        state["font_ref_source"] = None
+        state["font_ref_path"] = ""
+        state["font_atlas_cell"] = None
+        _update_font_ref_path_label()
+        _refresh_font_atlas_texture()
+        _refresh_font_edit_texture()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + "Fuentes: imagen de hoja quitada.\n",
+        )
+
+    def on_font_ref_convert_click(_sender: object, _app_data: object) -> None:
+        src = state.get("font_ref_source")
+        if not isinstance(src, tuple) or len(src) != 3:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fuentes: importa una imagen antes de convertir.\n",
+            )
+            return
+        cell = state.get("font_atlas_cell")
+        if not isinstance(cell, tuple) or len(cell) != 2:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fuentes: haz clic en una celda de la rejilla.\n",
+            )
+            return
+        gx, gy = int(cell[0]), int(cell[1])
+        rgbs = state.get("font_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            if isinstance(state.get("project_root"), Path):
+                _font_palette_reload_core(append_log=False)
+            rgbs = state.get("font_palette_rgb")
+        if not isinstance(rgbs, list) or not rgbs:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Fuentes: carga la paleta antes de convertir.\n",
+            )
+            return
+        px = _font_glyph_px_from_widgets()
+        try:
+            rows = convert_ref_tile_to_palette_rows(src, gx, gy, px, rgbs)
+        except ValueError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Fuentes convertir: {e}\n",
+            )
+            return
+        if not rows:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Fuentes convertir: celda vacia.\n",
+            )
+            return
+        _font_flush_active_glyph()
+        state["font_pixel_rows"] = rows
+        _font_flush_active_glyph()
+        _refresh_font_edit_texture()
+        ch = _font_active_char()
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "")
+            + f"Fuentes: celda ({gx}, {gy}) convertida al caracter «{font_char_label(ch)}».\n",
+        )
+
+    def on_font_atlas_click(_sender: object, _app_data: object) -> None:
+        cell = _font_atlas_cell_from_mouse()
+        if cell is None:
+            return
+        state["font_atlas_cell"] = cell
+        _refresh_font_atlas_texture()
+        _font_show_atlas_cell_rgb_preview(cell[0], cell[1])
+
+    def on_font_atlas_preview_change(_sender: object, _app_data: object) -> None:
+        _refresh_font_atlas_texture()
+        cell = state.get("font_atlas_cell")
+        if isinstance(cell, tuple) and len(cell) == 2:
+            _font_show_atlas_cell_rgb_preview(int(cell[0]), int(cell[1]))
 
     def _font_edit_paint_at_mouse(*, erase: bool = False) -> bool:
         rows = state.get("font_pixel_rows")
@@ -5027,6 +5393,10 @@ def run_gui() -> int:
         if dpg.does_item_exist("ts_font_glyph_px_combo"):
             dpg.set_value("ts_font_glyph_px_combo", glyph_px_label(px_file))
         state["font_glyph_px"] = px_file
+        px_m, lh_m, bl_m = font_metrics_from_data(data)
+        state["font_line_height"] = lh_m
+        state["font_baseline"] = bl_m
+        state["font_advances"] = parse_font_advances(data)
         glyphs = parse_font_glyphs(data, fill_index=1)
         state["font_glyphs_pixels"] = glyphs
         ch = _font_active_char()
@@ -5037,6 +5407,7 @@ def run_gui() -> int:
         _font_palette_reload_core(append_log=False)
         _set_font_brush_index(1)
         _refresh_font_edit_texture()
+        _refresh_font_atlas_texture()
         dpg.set_value(
             "ts_log",
             (dpg.get_value("ts_log") or "")
@@ -5054,6 +5425,7 @@ def run_gui() -> int:
         state["font_active_char"] = ch
         _font_load_active_glyph_into_editor()
         _refresh_font_edit_texture()
+        _refresh_font_preview_texture()
 
     def on_font_glyph_px_change(_sender: object, _app_data: object) -> None:
         old_px = int(state.get("font_glyph_px", DEFAULT_GLYPH_PX))
@@ -5065,15 +5437,21 @@ def run_gui() -> int:
                 dpg.set_value("ts_font_glyph_px_combo", lbl)
         if old_px != px:
             _font_resize_all_glyphs(px)
+            state["font_line_height"] = max(px, int(state.get("font_line_height", px)))
+            state["font_baseline"] = min(px, int(state.get("font_baseline", px)))
+        _refresh_font_atlas_texture()
         _refresh_font_edit_texture()
+        _refresh_font_preview_texture()
 
     def on_font_palette_combo_change(_sender: object, _app_data: object) -> None:
         _font_palette_reload_core(append_log=False)
         _refresh_font_edit_texture()
+        _refresh_font_preview_texture()
 
     def on_font_palette_reload_click(_sender: object, _app_data: object) -> None:
         _font_palette_reload_core(append_log=True)
         _refresh_font_edit_texture()
+        _refresh_font_preview_texture()
 
     def on_font_create(_sender: object, _app_data: object) -> None:
         root = state.get("project_root")
@@ -5099,11 +5477,15 @@ def run_gui() -> int:
             return
         state["font_glyphs_pixels"] = glyphs
         state["font_active_char"] = "A"
+        state["font_line_height"] = px
+        state["font_baseline"] = px
+        state["font_advances"] = {ch: px for ch in LATIN_CHARSET}
         _font_load_active_glyph_into_editor()
         _font_palette_reload_core(append_log=False)
         _refresh_font_file_list()
         if dpg.does_item_exist("ts_font_list"):
             dpg.set_value("ts_font_list", fid)
+        _refresh_font_preview_texture()
         dpg.set_value(
             "ts_log",
             (dpg.get_value("ts_log") or "") + f"Fuentes: creada objects/Fonts/{fid}.json\n",
@@ -5635,6 +6017,30 @@ def run_gui() -> int:
             ),
             tag=_FONT_EDITOR_TEX_TAG,
         )
+        dpg.add_dynamic_texture(
+            width=_FONT_PREVIEW_TEX_MAX_W,
+            height=_FONT_PREVIEW_TEX_H,
+            default_value=_solid_rgba_float(
+                _FONT_PREVIEW_TEX_MAX_W,
+                _FONT_PREVIEW_TEX_H,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_FONT_PREVIEW_TEX_TAG,
+        )
+        dpg.add_dynamic_texture(
+            width=_SPRITE_EDITOR_TEX_MAX,
+            height=_SPRITE_EDITOR_TEX_MAX,
+            default_value=_solid_rgba_float(
+                _SPRITE_EDITOR_TEX_MAX,
+                _SPRITE_EDITOR_TEX_MAX,
+                0.12,
+                0.12,
+                0.15,
+            ),
+            tag=_FONT_ATLAS_TEX_TAG,
+        )
 
     def on_load_lua_from_file(_sender: object, _app_data: object) -> None:
         p_s = str(dpg.get_value("ts_import_lua_path")).strip()
@@ -5677,6 +6083,7 @@ def run_gui() -> int:
             _commit_scene_background_for_scene_id(active)
             _commit_tile_layers_for_scene_id(active)
             _commit_scene_runtime_for_scene_id(active)
+            _font_flush_active_glyph()
         out_s = dpg.get_value("ts_out_path").strip()
         pal_s = dpg.get_value("ts_pal_path").strip()
         entry_s = str(dpg.get_value("ts_entry")).strip().replace("\\", "/")
@@ -8797,7 +9204,7 @@ def run_gui() -> int:
             with dpg.tab(label="Fuentes"):
                 dpg.add_text(
                     "Fuentes en `objects/Fonts/<id>.json`: glifos cuadrados (multiplos de 4 px), "
-                    "indices de paleta como sprites. Alfabeto latino basico en el selector.",
+                    "indices de paleta como sprites. Importa una hoja de glifos o pinta celda a celda.",
                     wrap=520,
                 )
                 dpg.add_spacer(height=6)
@@ -8887,68 +9294,180 @@ def run_gui() -> int:
                         horizontal_spacing=3,
                     )
                 dpg.add_separator()
-                dpg.add_text("Glifo activo", color=(180, 200, 230, 255))
+                dpg.add_text("Vista previa", color=(180, 200, 230, 255))
+                dpg.add_input_text(
+                    tag="ts_font_preview_text",
+                    label="Texto de prueba",
+                    width=400,
+                    default_value="Hello World!",
+                    callback=on_font_preview_text_change,
+                    enabled=False,
+                )
                 with dpg.group(horizontal=True):
                     dpg.add_slider_int(
-                        tag="ts_font_editor_scale",
-                        label="Zoom",
+                        tag="ts_font_preview_scale",
+                        label="Zoom previa",
                         width=180,
-                        default_value=_FONT_EDITOR_SCALE_DEFAULT,
+                        default_value=_FONT_PREVIEW_SCALE_DEFAULT,
                         min_value=1,
-                        max_value=16,
-                        callback=on_font_editor_preview_change,
+                        max_value=8,
+                        callback=on_font_preview_scale_change,
                         enabled=False,
-                    )
-                    dpg.add_button(
-                        tag="ts_btn_font_fill",
-                        label="Rellenar",
-                        width=100,
-                        callback=on_font_fill_glyph,
-                        enabled=False,
-                    )
-                    dpg.add_button(
-                        tag="ts_btn_font_clear",
-                        label="Borrar",
-                        width=100,
-                        callback=on_font_clear_glyph,
-                        enabled=False,
-                    )
-                dpg.add_text(
-                    "Clic izquierdo o arrastrar: pintar. Clic derecho: transparente (indice 31).",
-                    wrap=520,
-                )
-                with dpg.item_handler_registry(tag="ts_font_edit_click_reg"):
-                    dpg.add_item_clicked_handler(
-                        button=dpg.mvMouseButton_Left,
-                        callback=on_font_edit_canvas_click,
-                    )
-                    dpg.add_item_clicked_handler(
-                        button=dpg.mvMouseButton_Right,
-                        callback=on_font_edit_canvas_erase_click,
                     )
                 with dpg.child_window(
-                    tag="ts_font_edit_viewport",
+                    tag="ts_font_preview_viewport",
                     border=True,
-                    width=360,
-                    height=280,
+                    width=520,
+                    height=56,
                     horizontal_scrollbar=True,
                 ):
                     dpg.add_image(
-                        _FONT_EDITOR_TEX_TAG,
-                        tag=_FONT_EDITOR_IMG_TAG,
-                        width=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
-                        height=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
+                        _FONT_PREVIEW_TEX_TAG,
+                        tag=_FONT_PREVIEW_IMG_TAG,
+                        width=128,
+                        height=32,
                         uv_min=(0.0, 0.0),
-                        uv_max=(0.25, 0.25),
+                        uv_max=(0.25, 0.12),
                     )
-                dpg.bind_item_handler_registry(
-                    _FONT_EDITOR_IMG_TAG, "ts_font_edit_click_reg"
+                dpg.add_separator()
+                dpg.add_text(
+                    "Hoja de glifos: importa una imagen alineada a la rejilla del tamano de glifo. "
+                    "Clic en una celda para previsualizarla; «Convertir celda» la asigna al caracter activo.",
+                    wrap=520,
+                    color=(180, 200, 230, 255),
                 )
+                with dpg.group(horizontal=True):
+                    dpg.add_button(
+                        tag="ts_btn_font_ref_import",
+                        label="Importar imagen…",
+                        width=150,
+                        callback=on_font_ref_import_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_font_ref_clear",
+                        label="Quitar imagen",
+                        width=120,
+                        callback=on_font_ref_clear_click,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_font_ref_convert",
+                        label="Convertir celda → caracter",
+                        width=220,
+                        callback=on_font_ref_convert_click,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    tag="ts_font_ref_path_label",
+                    default_value="(sin imagen importada)",
+                    color=(160, 180, 210, 255),
+                    wrap=520,
+                )
+                dpg.add_text(
+                    tag="ts_font_atlas_info",
+                    default_value="Importa una imagen; la rejilla usa el tamano de glifo elegido.",
+                    wrap=520,
+                    color=(160, 180, 210, 255),
+                )
+                with dpg.item_handler_registry(tag="ts_font_atlas_click_reg"):
+                    dpg.add_item_clicked_handler(
+                        button=dpg.mvMouseButton_Left,
+                        callback=on_font_atlas_click,
+                    )
+                with dpg.group(horizontal=True):
+                    with dpg.group():
+                        dpg.add_slider_int(
+                            tag="ts_font_atlas_scale",
+                            label="Zoom hoja",
+                            width=180,
+                            default_value=_FONT_ATLAS_SCALE_DEFAULT,
+                            min_value=1,
+                            max_value=16,
+                            callback=on_font_atlas_preview_change,
+                            enabled=False,
+                        )
+                        with dpg.child_window(
+                            tag="ts_font_atlas_viewport",
+                            border=True,
+                            width=360,
+                            height=280,
+                            horizontal_scrollbar=True,
+                        ):
+                            dpg.add_image(
+                                _FONT_ATLAS_TEX_TAG,
+                                tag=_FONT_ATLAS_IMG_TAG,
+                                width=64,
+                                height=64,
+                                uv_min=(0.0, 0.0),
+                                uv_max=(0.25, 0.25),
+                            )
+                        dpg.bind_item_handler_registry(
+                            _FONT_ATLAS_IMG_TAG, "ts_font_atlas_click_reg"
+                        )
+                    with dpg.group():
+                        dpg.add_text("Glifo activo", color=(180, 200, 230, 255))
+                        with dpg.group(horizontal=True):
+                            dpg.add_slider_int(
+                                tag="ts_font_editor_scale",
+                                label="Zoom glifo",
+                                width=180,
+                                default_value=_FONT_EDITOR_SCALE_DEFAULT,
+                                min_value=1,
+                                max_value=16,
+                                callback=on_font_editor_preview_change,
+                                enabled=False,
+                            )
+                            dpg.add_button(
+                                tag="ts_btn_font_fill",
+                                label="Rellenar",
+                                width=100,
+                                callback=on_font_fill_glyph,
+                                enabled=False,
+                            )
+                            dpg.add_button(
+                                tag="ts_btn_font_clear",
+                                label="Borrar",
+                                width=100,
+                                callback=on_font_clear_glyph,
+                                enabled=False,
+                            )
+                        dpg.add_text(
+                            "Clic izquierdo o arrastrar: pintar. Clic derecho: transparente (31).",
+                            wrap=360,
+                        )
+                        with dpg.item_handler_registry(tag="ts_font_edit_click_reg"):
+                            dpg.add_item_clicked_handler(
+                                button=dpg.mvMouseButton_Left,
+                                callback=on_font_edit_canvas_click,
+                            )
+                            dpg.add_item_clicked_handler(
+                                button=dpg.mvMouseButton_Right,
+                                callback=on_font_edit_canvas_erase_click,
+                            )
+                        with dpg.child_window(
+                            tag="ts_font_edit_viewport",
+                            border=True,
+                            width=360,
+                            height=280,
+                            horizontal_scrollbar=True,
+                        ):
+                            dpg.add_image(
+                                _FONT_EDITOR_TEX_TAG,
+                                tag=_FONT_EDITOR_IMG_TAG,
+                                width=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
+                                height=DEFAULT_GLYPH_PX * _FONT_EDITOR_SCALE_DEFAULT,
+                                uv_min=(0.0, 0.0),
+                                uv_max=(0.25, 0.25),
+                            )
+                        dpg.bind_item_handler_registry(
+                            _FONT_EDITOR_IMG_TAG, "ts_font_edit_click_reg"
+                        )
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
                     "Exporta un paquete SD: main.turtlecart + backgrounds/*.tbg, sprites/*.tsp, "
-                    "tiles/*.tts, objects/*.json (binario en SD; el proyecto sigue en JSON). "
+                    "tiles/*.tts, fonts/*.tfn, objects/*.json (binario en SD; el proyecto sigue en JSON). "
                     "Copia la carpeta entera a la raiz de la microSD.",
                     wrap=520,
                 )
@@ -9785,6 +10304,21 @@ def run_gui() -> int:
         show=False,
         callback=on_tileset_ref_file_picked,
         tag="ts_tileset_ref_file_dialog",
+        width=700,
+        height=400,
+        modal=True,
+    ):
+        dpg.add_file_extension(".png", color=(150, 255, 150, 255))
+        dpg.add_file_extension(".jpg")
+        dpg.add_file_extension(".jpeg")
+        dpg.add_file_extension(".webp")
+        dpg.add_file_extension(".bmp")
+
+    with dpg.file_dialog(
+        directory_selector=False,
+        show=False,
+        callback=on_font_ref_file_picked,
+        tag="ts_font_ref_file_dialog",
         width=700,
         height=400,
         modal=True,

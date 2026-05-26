@@ -15,8 +15,10 @@ from turtlestudio.palette_policy import clamp_pixel_storage_index
 TBG_MAGIC = b"TBG\0"
 TSP_MAGIC = b"TSP\0"
 TTS_MAGIC = b"TTS\0"
+TFN_MAGIC = b"TFN\0"
 BIN_VERSION = 0
 TTS_HEADER_SIZE = 10
+TFN_HEADER_SIZE = 14
 
 MODE_SOLID = 0
 MODE_RAW = 1
@@ -143,6 +145,44 @@ def tileset_json_to_tts(data: dict[str, Any]) -> bytes:
     for rows in tiles:
         inner = encode_indexed_rows(px, px, rows)
         chunk = TSP_MAGIC + inner[4:]
+        out.extend(struct.pack("<I", len(chunk)))
+        out.extend(chunk)
+    return bytes(out)
+
+
+def font_json_to_tfn(data: dict[str, Any]) -> bytes:
+    """
+    Fuente completa: cabecera TFN + N bloques (u8 advance + u32 tamano + mini-blob TSP).
+    Orden de glifos = `charset` del JSON.
+    """
+    from turtlestudio.fonts import (
+        font_charset_from_data,
+        font_metrics_from_data,
+        parse_font_advances,
+        parse_font_glyphs,
+    )
+
+    px, lh, bl = font_metrics_from_data(data)
+    charset = font_charset_from_data(data)
+    glyphs = parse_font_glyphs(data, fill_index=1)
+    advances = parse_font_advances(data)
+    chars = [c for c in charset if len(c) == 1]
+    out = bytearray(
+        TFN_MAGIC
+        + bytes([BIN_VERSION, 0])
+        + _u16_le(px)
+        + _u16_le(lh)
+        + _u16_le(bl)
+        + _u16_le(len(chars))
+    )
+    for ch in chars:
+        adv = max(1, min(255, int(advances.get(ch, px))))
+        rows = glyphs.get(ch)
+        if not isinstance(rows, list):
+            rows = [[1] * px for _ in range(px)]
+        inner = encode_indexed_rows(px, px, rows)
+        chunk = TSP_MAGIC + inner[4:]
+        out.append(adv & 0xFF)
         out.extend(struct.pack("<I", len(chunk)))
         out.extend(chunk)
     return bytes(out)
