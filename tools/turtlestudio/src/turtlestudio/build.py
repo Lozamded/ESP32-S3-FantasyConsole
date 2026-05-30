@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ FONT_REF_KIND = "turtlestudio.font_ref"
 DEFAULT_PACKAGE_DIR_NAME = "build"
 DEFAULT_CART_FILENAME = "main.turtlecart"
 SD_DEPLOY_README_NAME = "COPIAR_A_SD.txt"
+LUA_SCRIPT_EXPORT_WARN_BYTES = 32 * 1024
 
 _CART_VERSION = "0"
 _END_MARKER = "---END---"
@@ -211,6 +213,7 @@ class CartExportPackage:
     embedded: tuple[tuple[str, str], ...]
     # str = JSON texto (objects); bytes = binario .tbg / .tsp / .tts para ESP32
     sidecar: tuple[tuple[str, str | bytes], ...]
+    lua_export_notes: tuple[str, ...] = ()
 
 
 def _asset_json_utf8_size(data: dict[str, Any]) -> int:
@@ -303,7 +306,11 @@ def collect_studio_bundle_files(
         tileset_json_to_tts,
     )
     from turtlestudio.backgrounds import read_background_file, shrink_background_json_for_export
-    from turtlestudio.objects import object_sprite_ids_for_bundle, read_object_file
+    from turtlestudio.objects import (
+        list_object_json_stems,
+        object_sprite_ids_for_bundle,
+        read_object_file,
+    )
     from turtlestudio.sprites import read_sprite_file
     from turtlestudio.fonts import (
         list_font_json_stems,
@@ -323,7 +330,7 @@ def collect_studio_bundle_files(
     ti = clamp_transparent_index(transparent_index)
     tile_px = _manifest_tile_px(root)
 
-    oids: set[str] = set()
+    oids_in_scenes: set[str] = set()
     bg_stems: set[str] = set()
     tile_stems: set[str] = collect_tileset_stems_from_scenes(scenes)
     for row in scenes:
@@ -339,10 +346,13 @@ def collect_studio_bundle_files(
                 else:
                     continue
                 if oid:
-                    oids.add(oid)
+                    oids_in_scenes.add(oid)
         b = str(row.get("background", "")).strip()
         if b:
             bg_stems.add(b)
+
+    # Todos los JSON en objects/Objects/ van al paquete SD (no solo los colocados en escena).
+    oids: set[str] = set(list_object_json_stems(root)) | oids_in_scenes
 
     sidecar: list[tuple[str, str | bytes]] = []
     sids: set[str] = set()
@@ -362,6 +372,8 @@ def collect_studio_bundle_files(
             (orel, json.dumps(odata, ensure_ascii=False, separators=(",", ":")) + "\n")
         )
 
+    from turtlestudio.sprites import parse_sprite_origin, sprite_pixel_dimensions
+
     sprites_map: dict[str, Any] = {}
     for sid in sorted(sids):
         try:
@@ -371,7 +383,12 @@ def collect_studio_bundle_files(
             continue
         rel = f"sprites/{sid}.tsp"
         if should_externalize_sprite(data):
-            sprites_map[sid] = _asset_ref_entry(sid, rel, SPRITE_REF_KIND)
+            _, pw, ph = sprite_pixel_dimensions(data)
+            ox, oy = parse_sprite_origin(data, pw=pw, ph=ph)
+            ref = _asset_ref_entry(sid, rel, SPRITE_REF_KIND)
+            ref["origin_x"] = ox
+            ref["origin_y"] = oy
+            sprites_map[sid] = ref
             sidecar.append((rel, sprite_json_to_tsp(data)))
         else:
             sprites_map[sid] = data
@@ -451,7 +468,96 @@ def collect_studio_bundle_files(
     bundle_rel = "studio/project_bundle.json"
     bundle_text = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False) + "\n"
     sidecar.append((bundle_rel, bundle_text))
-    return CartExportPackage(embedded=(), sidecar=tuple(sidecar))
+
+    lua_notes = append_lua_scripts_sidecar(
+        root,
+        sidecar,
+        entry_relpath=entry,
+        scenes=scenes,
+        object_ids=oids,
+    )
+
+    return CartExportPackage(
+        embedded=(),
+        sidecar=tuple(sidecar),
+        lua_export_notes=tuple(lua_notes),
+    )
+
+
+def _read_lua_file_normalized(root: Path, rel: str) -> str | None:
+    path = root / rel
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    except OSError:
+        return None
+
+
+def append_lua_scripts_sidecar(
+    project_root: Path,
+    sidecar: list[tuple[str, str | bytes]],
+    *,
+    entry_relpath: str,
+    scenes: list[dict[str, Any]],
+    object_ids: set[str],
+) -> list[str]:
+    """
+    Anade scripts/*.lua al sidecar: ENTRY, un Lua por escena (stem) y por objeto con campo script.
+    Devuelve avisos (p. ej. archivo grande o referenciado pero ausente).
+    """
+    from turtlestudio.objects import parse_object_script, read_object_file
+    from turtlestudio.project import object_lua_relpath, scene_lua_relpath, validate_scene_script_stem
+
+    root = project_root.expanduser().resolve()
+    notes: list[str] = []
+    script_seen: set[str] = set()
+
+    def add_script(rel: str, *, required: bool = False) -> None:
+        rel = _normalize_entry_path(rel)
+        if rel in script_seen:
+            return
+        body = _read_lua_file_normalized(root, rel)
+        if body is None:
+            if required:
+                notes.append(f"  Falta {rel} (requerido para export)")
+            return
+        script_seen.add(rel)
+        sidecar.append((rel, body))
+        nbytes = len(body.encode("utf-8"))
+        if nbytes > LUA_SCRIPT_EXPORT_WARN_BYTES:
+            notes.append(
+                f"  Aviso: {rel} es grande ({nbytes} bytes; umbral "
+                f"{LUA_SCRIPT_EXPORT_WARN_BYTES // 1024} KiB)"
+            )
+
+    entry = _normalize_entry_path(entry_relpath)
+    if not entry.lower().endswith(".lua"):
+        entry = f"{entry}.lua"
+    add_script(entry, required=False)
+
+    for row in scenes:
+        if not isinstance(row, dict):
+            continue
+        sid = str(row.get("id", "")).strip() or DEFAULT_EXPORT_INITIAL_SCENE_ID
+        try:
+            stem = validate_scene_script_stem(row.get("script"), fallback_scene_id=sid)
+        except ValueError:
+            notes.append(f"  Escena {sid!r}: script stem invalido (omitido)")
+            continue
+        add_script(scene_lua_relpath(stem), required=False)
+
+    for oid in sorted(object_ids):
+        try:
+            odata = read_object_file(root, oid)
+        except ValueError:
+            continue
+        stem = parse_object_script(odata)
+        if not stem:
+            continue
+        add_script(object_lua_relpath(stem), required=False)
+
+    return notes
 
 
 def resolve_package_cart_path(
@@ -474,6 +580,45 @@ def package_dir_from_cart_path(cart_path: Path) -> Path:
     return cart_path.parent
 
 
+_UNSAFE_CLEAN_ROOTS = (
+    Path("/"),
+    Path.home(),
+)
+
+
+def export_package_dir(user_path: Path | str) -> Path:
+    """Carpeta del paquete SD (padre de main.turtlecart)."""
+    return package_dir_from_cart_path(resolve_package_cart_path(user_path))
+
+
+def clean_export_package_dir(
+    user_path: Path | str,
+    *,
+    project_root: Path | None = None,
+) -> Path:
+    """
+    Borra y recrea la carpeta de exportacion (p. ej. build/) para evitar restos de exports viejos.
+    """
+    package_dir = export_package_dir(user_path).expanduser().resolve()
+    for unsafe in _UNSAFE_CLEAN_ROOTS:
+        if package_dir == unsafe.resolve():
+            raise ValueError(f"No se puede limpiar una ruta del sistema: {package_dir}")
+    if len(package_dir.parts) < 2:
+        raise ValueError(f"Ruta de exportacion demasiado corta para limpiar: {package_dir}")
+    if project_root is not None:
+        proot = project_root.expanduser().resolve()
+        if package_dir == proot:
+            raise ValueError(
+                "La carpeta de exportacion no puede ser la raiz del proyecto; usa p. ej. build/"
+            )
+    if package_dir.is_file():
+        raise ValueError(f"La ruta de exportacion es un archivo, no una carpeta: {package_dir}")
+    if package_dir.is_dir():
+        shutil.rmtree(package_dir)
+    package_dir.mkdir(parents=True, exist_ok=True)
+    return package_dir
+
+
 def _sd_deploy_readme_text(*, cart_name: str, sidecar_rels: Sequence[str]) -> str:
     lines = [
         "Paquete TurtleCart para microSD (FantasyConsole / TurtleReader)",
@@ -487,8 +632,8 @@ def _sd_deploy_readme_text(*, cart_name: str, sidecar_rels: Sequence[str]) -> st
     lines.extend(
         [
             "",
-            "No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos referenciados",
-            "estan en backgrounds/, sprites/, tiles/, fonts/, objects/.",
+            "No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos/scripts referenciados",
+            "estan en backgrounds/, sprites/, tiles/, fonts/, objects/, scripts/.",
             "",
             "Generado por TurtleStudio.",
         ]
@@ -520,7 +665,13 @@ def format_cart_package_log(result: CartPackageWriteResult, *, initial_scene: st
             key = p.parent.name if p.parent != result.package_dir else "."
             by_dir.setdefault(key, []).append(p)
         lines.append(f"  Assets en carpetas ({len(result.sidecar_paths)} archivos):")
+        if "scripts" in by_dir:
+            lines.append(
+                f"    scripts/ ({len(by_dir['scripts'])} Lua: ENTRY, escenas y objetos con \"script\")"
+            )
         for folder in sorted(by_dir.keys()):
+            if folder == "scripts":
+                continue
             files = by_dir[folder]
             lines.append(f"    {folder}/ ({len(files)})")
             for p in sorted(files)[:8]:
@@ -531,8 +682,26 @@ def format_cart_package_log(result: CartPackageWriteResult, *, initial_scene: st
         lines.append(f"  Instrucciones: {result.deploy_readme_path.name}")
     lines.append("  -> Copia la carpeta entera a la raiz de la microSD.")
     if result.lua_path is not None:
-        lines.append(f"  Lua volcado: {result.lua_path.relative_to(result.package_dir)}")
+        lines.append(f"  Lua ENTRY (extra): {result.lua_path.relative_to(result.package_dir)}")
     return "\n".join(lines) + "\n"
+
+
+def merge_entry_lua_into_sidecar(
+    sidecar: Sequence[tuple[str, str | bytes]] | None,
+    *,
+    entry_relpath: str,
+    entry_body: str,
+) -> list[tuple[str, str | bytes]]:
+    """Sustituye o anade el ENTRY embebido en el cartucho tambien como scripts/<...>.lua en SD."""
+    entry = _normalize_entry_path(entry_relpath)
+    if not entry.lower().endswith(".lua"):
+        entry = f"{entry}.lua"
+    body = entry_body.replace("\r\n", "\n").replace("\r", "\n")
+    out: list[tuple[str, str | bytes]] = [
+        (rel, payload) for rel, payload in (sidecar or ()) if _normalize_entry_path(rel) != entry
+    ]
+    out.append((entry, body))
+    return out
 
 
 def write_cart_package(

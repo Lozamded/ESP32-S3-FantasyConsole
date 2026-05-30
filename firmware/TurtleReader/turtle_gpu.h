@@ -69,7 +69,20 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
  */
 void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h, const uint8_t* rows_top_first,
                                    int row_stride, uint8_t transparent_index);
+/** Igual que blit_indexed_scene pero espejo horizontal alrededor del ancla (origin_x, origin_y). */
+void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
+                                          const uint8_t* rows_top_first, int row_stride,
+                                          uint8_t transparent_index, int origin_x, int origin_y,
+                                          bool flip_h);
 void turtle_gpu_flip(void);
+
+/** Marca region sucia (coords escena: esquina inf-izq del blit, Y arriba). */
+void turtle_gpu_dirty_reset(void);
+void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h);
+/** Restaura solo la union de rects sucios desde la capa estatica. */
+void turtle_gpu_restore_static_dirty(void);
+/** Proximo flip envia framebuffer completo (tras cls, snapshot, ENTRY). */
+void turtle_gpu_request_full_flip(void);
 
 /** Copia el framebuffer actual a capa estatica (fondo + tiles sin sprites). */
 void turtle_gpu_snapshot_static(void);

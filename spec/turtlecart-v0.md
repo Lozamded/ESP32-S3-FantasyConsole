@@ -27,7 +27,7 @@ print("hola")
 
 `PALETTE:` es **opcional**. Si falta, el firmware usa una paleta por defecto.
 
-En TurtleStudio el arranque se edita como `scripts/global.lua` en el proyecto y se exporta convencionalmente al cartucho inicial **`main.turtlecart`**: el `ENTRY:` en el archivo es la ruta del bloque embebido de ese script (p. ej. `scripts/global.lua`). Opcionalmente el mismo cartucho incluye `studio/project_bundle.json` con escenas, objetos y sprites (ver **`spec/sprite-v0.md`**); **no** incluye por defecto los Lua de cada escena (pueden ir en otros archivos).
+En TurtleStudio el arranque se edita como `scripts/global.lua` (`entry` en `turtlestudio.json`) y se embebe en **`main.turtlecart`** (`ENTRY:`). El paquete SD exportado incluye ademas **`scripts/*.lua`** (ENTRY, escenas y objetos con `"script"`); ver **`spec/lua/`**. El bundle `studio/project_bundle.json` referencia escenas, objetos y sprites (ver **`spec/sprite-v0.md`**).
 
 ## Reglas v0
 
@@ -59,11 +59,8 @@ El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scen
 - Aplicar paleta opcional antes de ejecutar el script.
 - Extraer el archivo indicado en `ENTRY` (p. ej. `scripts/global.lua`).
 - Opcional: si existe el archivo embebido `studio/project_bundle.json`, el firmware puede **dibujar en C++** la escena cuyo `id` coincide con **`INITIAL_SCENE:`** (fondo `background_index`, asset opcional `background`, objetos con sprites; ver **`spec/sprite-v0.md`**) antes de ejecutar el `ENTRY`.
-- **Paquete en SD (recomendado):** TurtleStudio exporta una **carpeta** (p. ej. `build/`) con `main.turtlecart`, `backgrounds/*.tbg`, `sprites/*.tsp`, `objects/*.json` y `COPIAR_A_SD.txt`. El proyecto en PC sigue en JSON; solo la SD usa binario (ver **`spec/asset-bin-v0.md`**). Copia **toda la carpeta** a la raiz de la microSD.
-- Ejecutar ese script en **Lua 5.4** en el firmware con API minima:
-  - `print` → Serial
-  - `cls(color)`, `pix(x,y,color)` (framebuffer), **`spix(sx,sy,color)`** (escena: abajo-izquierda, Y arriba), `flip()` → framebuffer 264×198 (**32 indices** de color)
-  - `W`, `H`, `COLORS` en Lua (`COLORS` == 32)
+- **Paquete en SD (recomendado):** TurtleStudio exporta una **carpeta** (p. ej. `build/`) con `main.turtlecart`, `backgrounds/*.tbg`, `sprites/*.tsp`, `objects/*.json`, opcionalmente **`scripts/*.lua`** (logica por objeto; ver **`spec/lua/object-script-v0.md`**) y `COPIAR_A_SD.txt`. El proyecto en PC sigue en JSON; solo la SD usa binario (ver **`spec/asset-bin-v0.md`**). Copia **toda la carpeta** a la raiz de la microSD.
+- Ejecutar ese script en **Lua 5.4** en el firmware con API documentada en **`spec/lua/entry-v0.md`** (`print`, `cls`, `pix`, `spix`, `flip`, `W`, `H`, `COLORS`, `btn`/`btnp` con limitaciones de arranque).
 
 ## Fuera de alcance en v0
 

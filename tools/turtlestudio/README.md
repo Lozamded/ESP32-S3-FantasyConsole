@@ -39,11 +39,12 @@ PYTHONPATH=src python3 -m turtlestudio gui
 - Espacio de escena y coordenadas: ver `spec/scene-v0.md` (264×198, origen abajo-izquierda, Y hacia arriba).
 - Formato cartucho: `spec/turtlecart-v0.md`.
 - Sprites y celdas (`cell_px` default **4**): `spec/sprite-v0.md`. Indice de paleta **31** = transparente (no seleccionable como pincel/fondo).
-- Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` y su texto forma el **ENTRY** dentro del cartucho inicial **`main.turtlecart`** (salida por defecto `build/main.turtlecart`). El cart embebe un **bundle delgado** (`studio/project_bundle.json`). En el proyecto los assets son **JSON**; al exportar el paquete SD se generan **`backgrounds/*.tbg`** y **`sprites/*.tsp`** (binario, ver `spec/asset-bin-v0.md`) y **`objects/*.json`**. Copia **`build/`** entera a la SD. Los Lua por escena no van en el cart principal. La primera escena suele ser **`intro`**; el id **`main` esta reservado** (nombre del cartucho).
+- Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` (`entry` en `turtlestudio.json`) y forma el **ENTRY** embebido en **`main.turtlecart`**. Al exportar el paquete SD tambien se copia a **`scripts/`** junto con los Lua de escenas y de objetos con `"script"`. El cart embebe un **bundle delgado** (`studio/project_bundle.json`). Assets graficos: **`backgrounds/*.tbg`**, **`sprites/*.tsp`**, etc. (ver `spec/asset-bin-v0.md`). Copia **`build/`** entera a la SD.
+- **Objetos** (`objects/Objects/<id>.json`): campo opcional **`script`** (stem → `scripts/<stem>.lua`). Ver `spec/lua/object-script-v0.md`.
 
 ## Comando `gui` (Dear PyGui)
 
-Ventana minima: panel izquierdo (rutas de salida del `.turtlecart`, ENTRY, paleta opcional, **Importar** un `.lua` desde disco al editor, **Exportar**). Panel derecho: canvas 264×198 ×2 (**Mostrar rejilla**, combo **Color de fondo** + muestrario) y un **editor de Lua** con plantilla por defecto. **Exportar paquete SD** escribe la carpeta indicada (p. ej. `build/`) con `main.turtlecart`, `backgrounds/`, `sprites/`, `objects/` y `COPIAR_A_SD.txt`. Opcional: **Incluir ENTRY en scripts/** del paquete. El comando `build` por CLI sigue siendo un solo `.turtlecart` (sin paquete de proyecto).
+Ventana minima: panel izquierdo (carpeta de export, escena inicial, paleta opcional, **Exportar**). Panel derecho: canvas y editor Lua (ENTRY = `scripts/global.lua` del proyecto). **Exportar paquete SD** escribe `build/` con cartucho, assets binarios, `objects/`, `scripts/` y `COPIAR_A_SD.txt`.
 
 ```bash
 cd tools/turtlestudio

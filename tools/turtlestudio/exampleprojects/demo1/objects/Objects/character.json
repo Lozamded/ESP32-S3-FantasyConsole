@@ -4,6 +4,7 @@
   "id": "character",
   "name": "character",
   "sprite_id": "character_idle",
+  "script": "character",
   "animations": [
     {
       "name": "walk",
@@ -20,6 +21,10 @@
     {
       "name": "damage",
       "sprite_id": "character_damage"
+    },
+    {
+      "name": "idle",
+      "sprite_id": "character_idle"
     }
   ],
   "collision": {

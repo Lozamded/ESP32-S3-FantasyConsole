@@ -5,6 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(ESP32) && TURTLE_USE_DISPLAY
+#include <esp_heap_caps.h>
+#endif
+
 extern "C" {
 #include <lua.h>
 #include <lauxlib.h>
@@ -18,6 +22,51 @@ static uint8_t s_fb[kW * kH];
 static uint8_t s_static_fb[kW * kH];
 static bool s_has_static = false;
 static uint16_t s_palette[kNColors];
+
+static bool s_dirty_valid = false;
+static bool s_force_full_flip = true;
+static int s_dirty_x0 = 0;
+static int s_dirty_y0 = 0;
+static int s_dirty_x1 = 0;
+static int s_dirty_y1 = 0;
+
+static void dirty_mark_fb_clamped(int x0, int y0, int x1, int y1) {
+  if (x0 < 0) {
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    y0 = 0;
+  }
+  if (x1 >= kW) {
+    x1 = kW - 1;
+  }
+  if (y1 >= kH) {
+    y1 = kH - 1;
+  }
+  if (x0 > x1 || y0 > y1) {
+    return;
+  }
+  if (!s_dirty_valid) {
+    s_dirty_x0 = x0;
+    s_dirty_y0 = y0;
+    s_dirty_x1 = x1;
+    s_dirty_y1 = y1;
+    s_dirty_valid = true;
+    return;
+  }
+  if (x0 < s_dirty_x0) {
+    s_dirty_x0 = x0;
+  }
+  if (y0 < s_dirty_y0) {
+    s_dirty_y0 = y0;
+  }
+  if (x1 > s_dirty_x1) {
+    s_dirty_x1 = x1;
+  }
+  if (y1 > s_dirty_y1) {
+    s_dirty_y1 = y1;
+  }
+}
 
 static constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
   return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
@@ -173,6 +222,10 @@ class TurtleDisplay : public lgfx::LGFX_Device {
 
 static TurtleDisplay s_display;
 static bool s_display_ok = false;
+#if TURTLE_USE_DISPLAY
+static uint16_t* s_panel_rgb = nullptr;
+static size_t s_panel_rgb_cap = 0;
+#endif
 
 static void turtle_display_begin(void) {
   s_display.init();
@@ -184,7 +237,33 @@ static void turtle_display_begin(void) {
   s_display_ok = true;
 }
 
-static void turtle_fb_flush_to_display(void) {
+static bool ensure_panel_rgb_buffer(size_t need_pixels) {
+  if (s_panel_rgb && s_panel_rgb_cap >= need_pixels) {
+    return true;
+  }
+  if (s_panel_rgb) {
+    free(s_panel_rgb);
+    s_panel_rgb = nullptr;
+    s_panel_rgb_cap = 0;
+  }
+#if defined(ESP32)
+  s_panel_rgb = static_cast<uint16_t*>(
+      heap_caps_malloc(need_pixels * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!s_panel_rgb) {
+    s_panel_rgb = static_cast<uint16_t*>(
+        heap_caps_malloc(need_pixels * sizeof(uint16_t), MALLOC_CAP_8BIT));
+  }
+#else
+  s_panel_rgb = static_cast<uint16_t*>(malloc(need_pixels * sizeof(uint16_t)));
+#endif
+  if (!s_panel_rgb) {
+    return false;
+  }
+  s_panel_rgb_cap = need_pixels;
+  return true;
+}
+
+static void turtle_fb_flush_full_to_display(void) {
   if (!s_display_ok) {
     return;
   }
@@ -196,16 +275,103 @@ static void turtle_fb_flush_to_display(void) {
     return;
   }
 
-  uint16_t line[480];
+  const size_t need = static_cast<size_t>(panelW) * static_cast<size_t>(panelH);
+  if (!ensure_panel_rgb_buffer(need)) {
+    uint16_t line[480];
+    for (int py = 0; py < panelH; py++) {
+      const int ly = (py * kH) / panelH;
+      const uint8_t* row = &s_fb[ly * kW];
+      for (int px = 0; px < panelW; px++) {
+        const int lx = (px * kW) / panelW;
+        line[px] = s_palette[row[lx]];
+      }
+      s_display.pushImage(0, py, panelW, 1, line);
+    }
+    return;
+  }
+
   for (int py = 0; py < panelH; py++) {
     const int ly = (py * kH) / panelH;
     const uint8_t* row = &s_fb[ly * kW];
+    uint16_t* dst = &s_panel_rgb[static_cast<size_t>(py) * static_cast<size_t>(panelW)];
     for (int px = 0; px < panelW; px++) {
       const int lx = (px * kW) / panelW;
-      line[px] = s_palette[row[lx]];
+      dst[px] = s_palette[row[lx]];
     }
-    s_display.pushImage(0, py, panelW, 1, line);
   }
+
+  s_display.startWrite();
+  s_display.pushImage(0, 0, panelW, panelH, s_panel_rgb);
+  s_display.endWrite();
+}
+
+static void turtle_fb_flush_dirty_to_display(void) {
+  if (!s_display_ok || !s_dirty_valid) {
+    return;
+  }
+
+  const int panelW = s_display.width();
+  const int panelH = s_display.height();
+  if (panelW <= 0 || panelH <= 0) {
+    return;
+  }
+
+  const int xfb0 = s_dirty_x0;
+  const int yfb0 = s_dirty_y0;
+  const int xfb1 = s_dirty_x1;
+  const int yfb1 = s_dirty_y1;
+
+  int py0 = (yfb0 * panelH) / kH;
+  int py1 = ((yfb1 + 1) * panelH - 1) / kH;
+  if (py0 < 0) {
+    py0 = 0;
+  }
+  if (py1 >= panelH) {
+    py1 = panelH - 1;
+  }
+
+  uint16_t line[480];
+
+  s_display.startWrite();
+  for (int py = py0; py <= py1; ++py) {
+    const int ly = (py * kH) / panelH;
+    if (ly < yfb0 || ly > yfb1) {
+      continue;
+    }
+    const uint8_t* row = &s_fb[ly * kW];
+
+    int px0 = (xfb0 * panelW) / kW;
+    int px1 = ((xfb1 + 1) * panelW - 1) / kW;
+    if (px0 < 0) {
+      px0 = 0;
+    }
+    if (px1 >= panelW) {
+      px1 = panelW - 1;
+    }
+    const int pw = px1 - px0 + 1;
+    if (pw <= 0 || pw > static_cast<int>(sizeof(line) / sizeof(line[0]))) {
+      continue;
+    }
+
+    for (int i = 0; i < pw; ++i) {
+      const int px = px0 + i;
+      const int lx = (px * kW) / panelW;
+      line[i] = s_palette[row[lx]];
+    }
+    s_display.pushImage(px0, py, pw, 1, line);
+  }
+  s_display.endWrite();
+}
+
+static void turtle_fb_flush_to_display(void) {
+  if (s_force_full_flip || !s_dirty_valid) {
+    turtle_fb_flush_full_to_display();
+    s_force_full_flip = false;
+    s_dirty_valid = false;
+    return;
+  }
+  turtle_fb_flush_dirty_to_display();
+  s_dirty_valid = false;
 }
 
 #else
@@ -242,6 +408,7 @@ static uint8_t clamp_color_index(uint8_t ci) {
 
 void turtle_gpu_cls(uint8_t color_index) {
   memset(s_fb, clamp_color_index(color_index), sizeof(s_fb));
+  turtle_gpu_request_full_flip();
 }
 
 void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index) {
@@ -284,13 +451,79 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
   }
 }
 
+void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
+                                          const uint8_t* rows_top_first, int row_stride,
+                                          uint8_t transparent_index, int origin_x, int origin_y,
+                                          bool flip_h) {
+  if (w <= 0 || h <= 0 || !rows_top_first || row_stride <= 0) {
+    return;
+  }
+  const uint8_t tr = clamp_color_index(transparent_index);
+  const int blit_y = anchor_y - origin_y;
+  (void)origin_y;
+  for (int py = 0; py < h; ++py) {
+    const int sy = blit_y + (h - 1 - py);
+    const int yfb = (kH - 1) - sy;
+    if (yfb < 0 || yfb >= kH) {
+      continue;
+    }
+    const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
+    for (int lx = 0; lx < w; ++lx) {
+      const int src_lx = flip_h ? (w - 1 - lx) : lx;
+      const uint8_t ci = row[src_lx];
+      if (ci == tr) {
+        continue;
+      }
+      const int sx = anchor_x + (flip_h ? (origin_x - lx) : (lx - origin_x));
+      plot_fb(sx, yfb, clamp_color_index(ci));
+    }
+  }
+}
+
 void turtle_gpu_flip(void) {
   turtle_fb_flush_to_display();
+}
+
+void turtle_gpu_dirty_reset(void) {
+  s_dirty_valid = false;
+}
+
+void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const int sx0 = x0 - 2;
+  const int sx1 = x0 + w + 1;
+  const int sy0 = y0 - 2;
+  const int sy1 = y0 + h + 1;
+  const int yfb0 = (kH - 1) - sy1;
+  const int yfb1 = (kH - 1) - sy0;
+  dirty_mark_fb_clamped(sx0, yfb0, sx1, yfb1);
+}
+
+void turtle_gpu_restore_static_dirty(void) {
+  if (!s_has_static || !s_dirty_valid) {
+    return;
+  }
+  const int x0 = s_dirty_x0;
+  const int y0 = s_dirty_y0;
+  const int x1 = s_dirty_x1;
+  const int y1 = s_dirty_y1;
+  for (int y = y0; y <= y1; ++y) {
+    memcpy(&s_fb[y * kW + x0], &s_static_fb[y * kW + x0],
+           static_cast<size_t>(x1 - x0 + 1));
+  }
+}
+
+void turtle_gpu_request_full_flip(void) {
+  s_force_full_flip = true;
+  s_dirty_valid = false;
 }
 
 void turtle_gpu_snapshot_static(void) {
   memcpy(s_static_fb, s_fb, sizeof(s_fb));
   s_has_static = true;
+  turtle_gpu_request_full_flip();
 }
 
 void turtle_gpu_restore_static(void) {

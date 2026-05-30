@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 from typing import Any, TypedDict
 
+from turtlestudio.project import validate_lua_script_stem
 from turtlestudio.sprites import (
     normalize_palette_rel,
     palette_paths_equivalent,
@@ -116,6 +117,24 @@ def normalize_object_animations(
                 f"demasiadas animaciones (max {MAX_OBJECT_ANIMATIONS})"
             )
     return out
+
+
+def parse_object_script(data: dict[str, Any]) -> str | None:
+    """Stem scripts/<stem>.lua en el JSON del objeto; None si no hay script."""
+    raw = data.get("script")
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    try:
+        return validate_lua_script_stem(raw.strip())
+    except ValueError:
+        return None
+
+
+def normalize_object_script(raw: Any) -> str | None:
+    """Valida stem de script de objeto; None = sin script asociado."""
+    if not isinstance(raw, str) or not raw.strip():
+        return None
+    return validate_lua_script_stem(raw.strip())
 
 
 def object_sprite_ids_for_bundle(od: dict[str, Any]) -> list[str]:
@@ -363,6 +382,7 @@ def object_payload(
     sprite_id: str,
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
+    script: str | None = None,
 ) -> dict[str, object]:
     oid = validate_object_id(object_id)
     display = name.strip() or oid
@@ -373,6 +393,8 @@ def object_payload(
         "name": display,
         "sprite_id": sprite_id,
     }
+    if script:
+        payload["script"] = script
     anims = animations or []
     if anims:
         payload["animations"] = [
@@ -408,11 +430,13 @@ def write_object_json(
     sprite_id: str,
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
+    script: str | None = None,
 ) -> Path:
     oid = validate_object_id(object_id)
     sprite_ok = validate_sprite_ref(project_root, sprite_id)
     anims_ok = normalize_object_animations(project_root, animations)
     coll_ok = normalize_object_collision(collision)
+    script_ok = normalize_object_script(script)
     d = objects_dir(project_root)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{oid}.json"
@@ -424,6 +448,7 @@ def write_object_json(
         sprite_id=sprite_ok,
         animations=anims_ok,
         collision=coll_ok,
+        script=script_ok,
     )
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -440,11 +465,13 @@ def save_object_json(
     sprite_id: str,
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
+    script: str | None = None,
 ) -> Path:
     oid = validate_object_id(object_id)
     sprite_ok = validate_sprite_ref(project_root, sprite_id)
     anims_ok = normalize_object_animations(project_root, animations)
     coll_ok = normalize_object_collision(collision)
+    script_ok = normalize_object_script(script)
     d = objects_dir(project_root)
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{oid}.json"
@@ -454,6 +481,7 @@ def save_object_json(
         sprite_id=sprite_ok,
         animations=anims_ok,
         collision=coll_ok,
+        script=script_ok,
     )
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

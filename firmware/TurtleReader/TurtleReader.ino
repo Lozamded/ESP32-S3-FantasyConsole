@@ -5,6 +5,7 @@
 
 #include "turtle_cart.h"
 #include "turtle_gpu.h"
+#include "turtle_input.h"
 #include "turtle_scene.h"
 
 extern "C" {
@@ -74,6 +75,7 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_setglobal(L, "print");
 
   turtle_gpu_register_lua(L);
+  turtle_input_register_lua(L);
 
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {
@@ -231,6 +233,8 @@ void setup() {
   Serial.println("== TurtleReader + Lua + GPU (264x198, 32 col) ==");
 
   turtle_gpu_init();
+  turtle_input_init();
+  Serial.println("Entrada: 8 botones (0-3 dir, 4-7 A-D); ajusta TURTLE_BTN_PIN_* en turtle_input.h");
 #if !TURTLE_USE_DISPLAY
   Serial.println("Pantalla: desactivada (TURTLE_USE_DISPLAY=0). cls/pix/flip solo en RAM.");
 #endif
@@ -243,7 +247,9 @@ void setup() {
   Serial.println("microSD montada");
   Serial.println(
       "Formato paquete: main.turtlecart + studio/project_bundle.json + backgrounds/ + "
-      "sprites/ + objects/ en raiz SD.");
+      "sprites/ + objects/ + scripts/ en raiz SD.");
+  Serial.println(
+      "Lua: ENTRY (cartucho, 1x) + scripts/<stem>.lua por objeto (cada frame, ver spec/lua/firmware-bridge-v0.md)");
 
   if (loadCartRunLua("/main.turtlecart")) {
     drawInitialSceneFromBundle();
@@ -262,6 +268,8 @@ void setup() {
 }
 
 void loop() {
+  turtle_input_poll();
+
   if (!g_runtime_active || !g_bundle.data || g_bundle.len == 0) {
     delay(50);
     return;
@@ -281,7 +289,10 @@ void loop() {
     delay(1);
     return;
   }
-  accum %= frame_ms;
+  accum -= frame_ms;
+  if (accum > frame_ms) {
+    accum %= frame_ms;
+  }
 
   turtle_scene_runtime_tick(frame_ms);
   turtle_gpu_flip();

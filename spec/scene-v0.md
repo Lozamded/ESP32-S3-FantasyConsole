@@ -81,3 +81,4 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 1. Tratar **264×198** como tamano unico de escena logica (hasta nueva spec).
 2. Emitir posiciones y disenos pensando **Y hacia arriba** y **(0,0) abajo-izquierda**.
 3. Si el generador emite Lua que llama al `pix()` actual del firmware, aplicar la conversion `yfb = 197 - sy` (o `H-1` con `H=198`) al generar coordenadas.
+4. Los scripts de objeto usan **`move(dx, dy)`** y **`posx()` / `posy()`** directamente en espacio escena; ver **`spec/lua/object-script-v0.md`**.

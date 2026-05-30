@@ -56,6 +56,15 @@ _STARTER_SCENE_INTRO_LUA = f"""-- Script de la primera escena (scripts/{DEFAULT_
 -- Titulo, logo, menu, etc. El ENTRY del cartucho es scripts/global.lua (solo en proyecto TurtleStudio).
 """
 
+_STARTER_OBJECT_LUA = """-- Script del objeto «{object_label}» (scripts/{stem}.lua)
+-- Editalo en tu editor; en objects/Objects/{object_id}.json enlaza con "script": "{stem}".
+
+function _update(dt)
+  -- Logica del objeto (dt en segundos). Input: btn(i), btnp(i).
+  -- El runtime puede aplicar movimiento en C++ ademas de este script.
+end
+"""
+
 
 def manifest_path(project_root: Path) -> Path:
     return project_root / MANIFEST_NAME
@@ -211,15 +220,22 @@ def assert_scene_id_allowed(sid: str) -> str:
     return s
 
 
+def validate_lua_script_stem(raw: str) -> str:
+    """Stem de archivo bajo scripts/<stem>.lua (escenas, objetos, etc.)."""
+    stem = raw.strip()
+    if not stem:
+        raise ValueError("script stem vacio")
+    if not _SCENE_ID_RE.match(stem):
+        raise ValueError(
+            f"script invalido {stem!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
+        )
+    return stem
+
+
 def validate_scene_script_stem(raw: Any, *, fallback_scene_id: str) -> str:
     """Stem del archivo scripts/<stem>.lua; mismas reglas que id de escena."""
     if isinstance(raw, str) and raw.strip():
-        stem = raw.strip()
-        if not _SCENE_ID_RE.match(stem):
-            raise ValueError(
-                f"script invalido {stem!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
-            )
-        return stem
+        return validate_lua_script_stem(raw.strip())
     sid = fallback_scene_id.strip()
     if not _SCENE_ID_RE.match(sid):
         raise ValueError(f"id de escena invalido para script por defecto: {sid!r}")
@@ -227,8 +243,44 @@ def validate_scene_script_stem(raw: Any, *, fallback_scene_id: str) -> str:
 
 
 def scene_lua_relpath(stem: str) -> str:
-    s = validate_scene_script_stem(stem, fallback_scene_id=stem)
+    s = validate_lua_script_stem(stem)
     return f"scripts/{s}.lua"
+
+
+def object_lua_relpath(stem: str) -> str:
+    """Ruta relativa POSIX del Lua de un objeto (misma convencion que escena)."""
+    return scene_lua_relpath(stem)
+
+
+def list_script_lua_stems(project_root: Path) -> list[str]:
+    """Stems de scripts/*.lua en el proyecto (sin extension)."""
+    d = project_root / "scripts"
+    if not d.is_dir():
+        return []
+    return sorted(p.stem for p in d.glob("*.lua") if p.is_file())
+
+
+def ensure_object_script_file(
+    project_root: Path,
+    stem: str,
+    *,
+    object_id: str | None = None,
+    overwrite: bool = False,
+) -> tuple[Path, bool]:
+    """
+    Crea scripts/<stem>.lua si no existe (salvo overwrite=True).
+    Devuelve (ruta absoluta, creado_nuevo).
+    """
+    s = validate_lua_script_stem(stem)
+    rel = object_lua_relpath(s)
+    path = _safe_lua_write_relpath(project_root, rel)
+    if path.is_file() and not overwrite:
+        return path, False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    oid = (object_id or s).strip() or s
+    body = _STARTER_OBJECT_LUA.format(stem=s, object_id=oid, object_label=oid)
+    path.write_text(body, encoding="utf-8", newline="\n")
+    return path, True
 
 
 def ordered_lua_relpaths_for_project(entry: str, scenes: list[dict[str, Any]]) -> tuple[str, ...]:

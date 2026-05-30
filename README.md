@@ -14,6 +14,7 @@ Primer objetivo del proyecto:
   - extrae el script indicado en `ENTRY`,
   - **ejecuta Lua 5.4** con `print` a Serial,
   - API de consola: **`cls(i)`**, **`pix(x,y,i)`** (raster), **`spix(sx,sy,i)`** (escena, ver `spec/scene-v0.md`), **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (264x198, 32 indices de color).
+  - **Entrada**: **`btn(i)`** / **`btnp(i)`** — 8 pulsadores (4 direccion + 4 accion); pines en `turtle_input.h` (`spec/input-v0.md`).
 - **Paleta por juego**: bloque opcional **`PALETTE:`** en el `.turtlecart` con lineas **`#RRGGBB`** (lista larga permitida; el firmware usa las primeras 32 entradas validas). Sin bloque, paleta Genesis-like por defecto.
 - **Sin tope de tamano de cartucho en spec**: lo limitan SD y el desarrollador; el runtime actual solo interpreta el formato v0.
 
@@ -36,6 +37,7 @@ Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rell
 - `tools/turtlestudio/`: **TurtleStudio** (Python) — CLI y utilidades para armar `.turtlecart`.
 - `spec/scene-v0.md`: escena canonica (264×198) y sistema de coordenadas.
 - `spec/turtlecart-v0.md`: especificacion inicial.
+- `spec/lua/`: scripts Lua — `entry-v0.md` (ENTRY / `global.lua`), `object-script-v0.md` (`_update`, `move`, `btn`).
 - `cart/demo.turtlecart`: cartucho de prueba (fallback en firmware si falta `main.turtlecart` en la SD).
 - `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).
 - `firmware/TurtleReader/`: firmware principal (`TurtleReader.ino` + `turtle_gpu.*`).
@@ -57,7 +59,7 @@ PYTHONPATH=src python3 src/turtlestudio/verify_package.py /ruta/a/build
 PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /ruta/al/proyecto
 ```
 
-Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_asset_bin.cpp`, `turtle_tileset.cpp`).
+Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_cart.cpp`, `turtle_input.cpp`, `turtle_asset_bin.cpp`, `turtle_tileset.cpp`, `turtle_scene.cpp`, `turtle_gpu.cpp`).
 
 Tras cargar el cartucho, el firmware puede animar sprites en `loop()` (fondo + tiles en capa estatica; solo se redibujan sprites). En TurtleStudio: pestana **Tiles** → `target_fps` / `default_anim_fps` (se exportan en el bundle).
 

@@ -23,9 +23,11 @@ from turtlestudio.backgrounds import (
     write_solid_background_json,
 )
 from turtlestudio.build import (
+    clean_export_package_dir,
     collect_studio_bundle_files,
     format_cart_package_log,
     load_palette_rgb01_for_preview,
+    merge_entry_lua_into_sidecar,
     normalize_export_initial_scene,
     write_cart_package,
 )
@@ -87,6 +89,7 @@ from turtlestudio.project import (
     create_project,
     default_background_layers,
     firmware_background_index_from_layers,
+    ensure_object_script_file,
     load_project,
     ordered_lua_relpaths_for_project,
     parse_background_layers,
@@ -117,8 +120,10 @@ from turtlestudio.objects import (
     list_object_json_stems,
     normalize_object_animations,
     normalize_object_collision,
+    normalize_object_script,
     parse_object_animations,
     parse_object_collision,
+    parse_object_script,
     read_object_file,
     save_object_json,
     validate_animation_name,
@@ -3312,6 +3317,8 @@ def run_gui() -> int:
             "ts_obj_id",
             "ts_obj_name",
             "ts_obj_sprite_combo",
+            "ts_obj_script",
+            "ts_btn_obj_script_create",
             "ts_obj_coll_shape",
             "ts_obj_coll_x0",
             "ts_obj_coll_y0",
@@ -3605,6 +3612,8 @@ def run_gui() -> int:
                 dpg.set_value("ts_sprite_ref_path_label", "(sin referencia)")
             dpg.set_value("ts_obj_id", "")
             dpg.set_value("ts_obj_name", "")
+            if dpg.does_item_exist("ts_obj_script"):
+                dpg.set_value("ts_obj_script", "")
             state["obj_animations"] = []
             _rebuild_obj_anim_listbox()
             if dpg.does_item_exist("ts_export_initial_scene"):
@@ -6061,16 +6070,15 @@ def run_gui() -> int:
         lua_m = state.get("lua_sources")
         if rel_ed and isinstance(lua_m, dict):
             lua_m[rel_ed] = text
-        if not str(dpg.get_value("ts_entry")).strip():
-            pr = state.get("project_root")
-            if isinstance(pr, Path):
-                try:
-                    rel_try = p.resolve().relative_to(pr.resolve())
-                    dpg.set_value("ts_entry", rel_try.as_posix())
-                except ValueError:
-                    dpg.set_value("ts_entry", p.name)
-            else:
-                dpg.set_value("ts_entry", p.name)
+        pr = state.get("project_root")
+        if isinstance(pr, Path):
+            try:
+                rel_try = p.resolve().relative_to(pr.resolve()).as_posix()
+                state["lua_edit_rel"] = rel_try
+                if isinstance(lua_m, dict):
+                    lua_m[rel_try] = text
+            except ValueError:
+                pass
         dpg.set_value("ts_log", f"Cargado en editor: {p} ({len(text)} caracteres)\n")
 
     def on_export(_sender: object, _app_data: object) -> None:
@@ -6086,8 +6094,7 @@ def run_gui() -> int:
             _font_flush_active_glyph()
         out_s = dpg.get_value("ts_out_path").strip()
         pal_s = dpg.get_value("ts_pal_path").strip()
-        entry_s = str(dpg.get_value("ts_entry")).strip().replace("\\", "/")
-        write_lua = bool(dpg.get_value("ts_write_lua_file"))
+        entry_s = str(state.get("project_entry") or DEFAULT_ENTRY).strip().replace("\\", "/")
 
         if not out_s:
             dpg.set_value("ts_log", "Indica la carpeta del paquete SD (p. ej. build).\n")
@@ -6138,7 +6145,8 @@ def run_gui() -> int:
             return
 
         embedded: list[tuple[str, str]] | None = None
-        sidecar: list[tuple[str, str]] | None = None
+        sidecar: list[tuple[str, str | bytes]] | None = None
+        script_notes: list[str] = []
         if isinstance(root, Path):
             scenes = state.get("scenes")
             if not isinstance(scenes, list):
@@ -6152,7 +6160,8 @@ def run_gui() -> int:
                     entry_relpath=entry,
                 )
                 embedded = list(pkg.embedded)
-                sidecar = list(pkg.sidecar) if pkg.sidecar else None
+                sidecar = list(pkg.sidecar) if pkg.sidecar else []
+                script_notes = [n for n in pkg.lua_export_notes if n]
             except ValueError as e:
                 dpg.set_value(
                     "ts_log",
@@ -6161,21 +6170,47 @@ def run_gui() -> int:
                 )
                 return
 
+        sidecar = merge_entry_lua_into_sidecar(
+            sidecar,
+            entry_relpath=entry,
+            entry_body=body,
+        )
+
+        clean_before = bool(
+            dpg.get_value("ts_export_clean_dir")
+            if dpg.does_item_exist("ts_export_clean_dir")
+            else False
+        )
+        if clean_before:
+            try:
+                cleaned = clean_export_package_dir(
+                    out,
+                    project_root=root if isinstance(root, Path) else None,
+                )
+            except ValueError as e:
+                dpg.set_value("ts_log", f"Exportar (limpiar): {e}\n")
+                return
+            except OSError as e:
+                dpg.set_value("ts_log", f"Exportar (limpiar): no se pudo borrar la carpeta: {e}\n")
+                return
+
         try:
             result = write_cart_package(
                 out,
                 entry_relpath=entry,
                 main_lua_body=body,
                 palette_path=pal,
-                write_lua_file=write_lua,
+                write_lua_file=False,
                 embedded_files=embedded,
                 sidecar_files=sidecar,
                 initial_scene=initial_scene_s,
             )
-            dpg.set_value(
-                "ts_log",
-                format_cart_package_log(result, initial_scene=initial_scene_s),
-            )
+            log = format_cart_package_log(result, initial_scene=initial_scene_s)
+            if clean_before:
+                log = f"Carpeta limpiada: {cleaned}\n" + log
+            if script_notes:
+                log = log.rstrip() + "\nScripts:\n" + "\n".join(script_notes) + "\n"
+            dpg.set_value("ts_log", log)
             dpg.set_value("ts_out_path", str(result.package_dir))
         except ValueError as e:
             dpg.set_value("ts_log", f"Error: {e}\n")
@@ -7606,6 +7641,9 @@ def run_gui() -> int:
         oid = str(data.get("id", stem)).strip() or stem
         dpg.set_value("ts_obj_id", oid)
         dpg.set_value("ts_obj_name", str(data.get("name", oid)).strip() or oid)
+        if dpg.does_item_exist("ts_obj_script"):
+            script_stem = parse_object_script(data)
+            dpg.set_value("ts_obj_script", script_stem if script_stem else "")
         sp = str(data.get("sprite_id", "")).strip()
         _refresh_obj_sprite_combo()
         items = dpg.get_item_configuration("ts_obj_sprite_combo").get("items") or []
@@ -7725,6 +7763,73 @@ def run_gui() -> int:
             _set_object_collision_widgets(coll)
         else:
             _sync_object_collision_shape_ui()
+
+    def _read_object_script_from_widget() -> str | None:
+        if not dpg.does_item_exist("ts_obj_script"):
+            return None
+        s = str(dpg.get_value("ts_obj_script")).strip()
+        if not s:
+            return None
+        return s
+
+    def _object_script_stem_for_create() -> str | None:
+        stem = _read_object_script_from_widget()
+        if stem:
+            return stem
+        oid = str(dpg.get_value("ts_obj_id")).strip() if dpg.does_item_exist("ts_obj_id") else ""
+        return oid if oid else None
+
+    def on_object_script_create(_sender: object, _app_data: object) -> None:
+        root = state.get("project_root")
+        if not isinstance(root, Path):
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + "Objetos: abre o crea un proyecto primero.\n",
+            )
+            return
+        raw_stem = _object_script_stem_for_create()
+        if not raw_stem:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "")
+                + "Objetos: indica un stem en «Script Lua» o un ID de objeto.\n",
+            )
+            return
+        try:
+            stem = normalize_object_script(raw_stem)
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
+            return
+        if stem is None:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + "Objetos: stem invalido.\n")
+            return
+        oid = str(dpg.get_value("ts_obj_id")).strip() if dpg.does_item_exist("ts_obj_id") else stem
+        try:
+            path, created = ensure_object_script_file(
+                root, stem, object_id=oid or stem, overwrite=False
+            )
+        except ValueError as e:
+            dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
+            return
+        except OSError as e:
+            dpg.set_value(
+                "ts_log",
+                (dpg.get_value("ts_log") or "") + f"Objetos: no se pudo crear script: {e}\n",
+            )
+            return
+        rel = path.relative_to(root).as_posix()
+        if dpg.does_item_exist("ts_obj_script"):
+            dpg.set_value("ts_obj_script", stem)
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError:
+            body = f"-- {rel}\n"
+        _ensure_lua_slot(rel, body)
+        if created:
+            msg = f"Objetos: creado {rel} (plantilla _update). Editalo fuera del estudio.\n"
+        else:
+            msg = f"Objetos: ya existia {rel} (no se sobrescribio).\n"
+        dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + msg)
 
     def _read_object_collision_from_widgets() -> dict[str, Any]:
         def _iv(tag: str) -> int:
@@ -8027,6 +8132,7 @@ def run_gui() -> int:
         anims = _read_obj_animations_from_state()
         try:
             coll = normalize_object_collision(_read_object_collision_from_widgets())
+            script_stem = normalize_object_script(_read_object_script_from_widget())
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
             return
@@ -8038,6 +8144,7 @@ def run_gui() -> int:
                 sprite_id=sp,
                 animations=anims,
                 collision=coll,
+                script=script_stem,
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
@@ -8052,7 +8159,13 @@ def run_gui() -> int:
         _refresh_object_file_list()
         if dpg.does_item_exist("ts_obj_list"):
             dpg.set_value("ts_obj_list", oid)
-        dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: creado {rel}\n")
+        script_note = (
+            f" script→scripts/{script_stem}.lua" if script_stem else ""
+        )
+        dpg.set_value(
+            "ts_log",
+            (dpg.get_value("ts_log") or "") + f"Objetos: creado {rel}{script_note}\n",
+        )
         _load_object_into_form(oid)
         _refresh_scene_object_lists()
         refresh_canvas_texture()
@@ -8078,6 +8191,7 @@ def run_gui() -> int:
         anims = _read_obj_animations_from_state()
         try:
             coll = normalize_object_collision(_read_object_collision_from_widgets())
+            script_stem = normalize_object_script(_read_object_script_from_widget())
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
             return
@@ -8089,6 +8203,7 @@ def run_gui() -> int:
                 sprite_id=sp,
                 animations=anims,
                 collision=coll,
+                script=script_stem,
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Objetos: {e}\n")
@@ -8103,13 +8218,16 @@ def run_gui() -> int:
         _refresh_object_file_list()
         if dpg.does_item_exist("ts_obj_list"):
             dpg.set_value("ts_obj_list", oid)
+        script_note = (
+            f" script→scripts/{script_stem}.lua" if script_stem else ""
+        )
         if prev_stem and prev_stem != oid:
             log_line = (
-                f"Objetos: guardado {rel}. Sigue existiendo {prev_stem}.json "
+                f"Objetos: guardado {rel}{script_note}. Sigue existiendo {prev_stem}.json "
                 "(borralo si renombraste el ID).\n"
             )
         else:
-            log_line = f"Objetos: guardado {rel}\n"
+            log_line = f"Objetos: guardado {rel}{script_note}\n"
         dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + log_line)
         _refresh_scene_object_lists()
         refresh_canvas_texture()
@@ -8140,7 +8258,7 @@ def run_gui() -> int:
             return
         _apply_project_scenes_from_info(pinfo)
         _load_project_lua_buffers(pr)
-        dpg.set_value("ts_entry", pinfo.entry)
+        state["project_entry"] = pinfo.entry
         if pinfo.default_palette:
             dpg.set_value("ts_pal_path", str((pr / pinfo.default_palette).resolve()))
         else:
@@ -8162,7 +8280,7 @@ def run_gui() -> int:
         state["project_root"] = info.root
         _apply_project_scenes_from_info(info)
         _load_project_lua_buffers(info.root)
-        dpg.set_value("ts_entry", info.entry)
+        state["project_entry"] = info.entry
         dpg.set_value("ts_out_path", str(info.root / "build"))
         enter_main_editor(
             log_append=(
@@ -8180,7 +8298,6 @@ def run_gui() -> int:
         state["lua_edit_rel"] = ""
         state["project_entry"] = DEFAULT_ENTRY
         dpg.set_value("ts_lua_source", _DEFAULT_LUA)
-        dpg.set_value("ts_entry", DEFAULT_ENTRY)
         dpg.set_value("ts_pal_path", "")
         dpg.set_value("ts_out_path", "build")
         enter_main_editor(log_append="Modo sin proyecto (solo editor y export manual).\n")
@@ -8669,7 +8786,7 @@ def run_gui() -> int:
                             dpg.add_separator()
                             dpg.add_text(
                                 "Scripts Lua: global = ENTRY en main.turtlecart; cada escena tiene su stem "
-                                "(arriba). Los Lua de escena no se meten en main.turtlecart al exportar. "
+                                "(arriba). Los Lua de escena van a scripts/ en el paquete SD (no embebidos en main.turtlecart). "
                                 "El desplegable elige que archivo editas.",
                                 wrap=400,
                             )
@@ -9466,9 +9583,10 @@ def run_gui() -> int:
 
             with dpg.tab(label="Exportar"):
                 dpg.add_text(
-                    "Exporta un paquete SD: main.turtlecart + backgrounds/*.tbg, sprites/*.tsp, "
-                    "tiles/*.tts, fonts/*.tfn, objects/*.json (binario en SD; el proyecto sigue en JSON). "
-                    "Copia la carpeta entera a la raiz de la microSD.",
+                    "Exporta un paquete SD: main.turtlecart + backgrounds/, sprites/, tiles/, "
+                    "fonts/, objects/ y scripts/ (ENTRY embebido en el cart + Lua de escenas y "
+                    "objetos con \"script\"). El ENTRY del proyecto es scripts/global.lua "
+                    "(turtlestudio.json). Copia la carpeta entera a la raiz de la microSD.",
                     wrap=520,
                 )
                 dpg.add_spacer(height=6)
@@ -9480,18 +9598,10 @@ def run_gui() -> int:
                     hint="p. ej. build o ruta absoluta; se crea main.turtlecart dentro",
                     use_internal_label=False,
                 )
-                dpg.add_input_text(
-                    tag="ts_entry",
-                    label="ENTRY (ruta en el cartucho)",
-                    width=480,
-                    default_value="scripts/global.lua",
-                    hint="p. ej. scripts/global.lua",
-                    use_internal_label=False,
-                )
                 dpg.add_checkbox(
-                    tag="ts_write_lua_file",
-                    label="Incluir ENTRY en scripts/ del paquete (opcional, depuracion)",
-                    default_value=False,
+                    tag="ts_export_clean_dir",
+                    label="Limpiar carpeta de exportacion antes de exportar (p. ej. build/)",
+                    default_value=True,
                     use_internal_label=False,
                 )
                 dpg.add_input_text(
@@ -9503,8 +9613,8 @@ def run_gui() -> int:
                     use_internal_label=False,
                 )
                 dpg.add_text(
-                    "Con proyecto abierto: bundle delgado en el cart + JSON en carpetas. "
-                    "Los Lua de escena no van en el paquete (siguen en el proyecto). "
+                    "Con proyecto abierto: bundle delgado en el cartucho y assets en sidecar. "
+                    "Edita el ENTRY en la pestana Lua (scripts/global.lua). "
                     "Se genera COPIAR_A_SD.txt con la lista de archivos.",
                     wrap=520,
                 )
@@ -9944,8 +10054,8 @@ def run_gui() -> int:
 
             with dpg.tab(label="Objetos"):
                 dpg.add_text(
-                    "Definiciones en objects/Objects/: vincula un nombre de objeto con un sprite "
-                    "(stem en objects/Sprites/*.json). Mas adelante: scripts, capas, etc.",
+                    "Definiciones en objects/Objects/: sprite por defecto y, opcionalmente, un script "
+                    "Lua (stem → scripts/<stem>.lua; editalo con tu editor favorito).",
                     wrap=520,
                 )
                 dpg.add_spacer(height=6)
@@ -9986,6 +10096,28 @@ def run_gui() -> int:
                     default_value="(abre un proyecto)",
                     enabled=False,
                     callback=on_object_sprite_combo_change,
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_input_text(
+                        tag="ts_obj_script",
+                        label="Script Lua (stem, opcional)",
+                        width=300,
+                        hint="character → scripts/character.lua",
+                        default_value="",
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_obj_script_create",
+                        label="Crear .lua en scripts/",
+                        width=160,
+                        callback=on_object_script_create,
+                        enabled=False,
+                    )
+                dpg.add_text(
+                    "Deja vacio si no hay script. «Crear .lua» usa el stem (o el ID del objeto si "
+                    "el campo esta vacio); edita el archivo en tu editor favorito.",
+                    wrap=520,
+                    color=(160, 180, 210, 255),
                 )
                 dpg.add_separator()
                 dpg.add_text(
