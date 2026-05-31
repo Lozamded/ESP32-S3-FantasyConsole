@@ -1094,14 +1094,12 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
   return true;
 }
 
-/** Rectangulo en escena que cubre todos los pixeles del sprite (depende de flip_h). */
+/** Rectangulo en escena que cubre todos los pixeles del sprite (ancla + origin). */
 static void actor_sprite_scene_bounds(const SceneActor* a, int* out_x0, int* out_y0, int* out_w,
                                       int* out_h) {
-  const int sx_min = a->x - (a->flip_h ? (a->pw - 1 - a->origin_x) : a->origin_x);
-  const int sx_max = a->x + (a->flip_h ? a->origin_x : (a->pw - 1 - a->origin_x));
-  *out_x0 = sx_min;
+  *out_x0 = a->x - a->origin_x;
   *out_y0 = a->y - a->origin_y;
-  *out_w = sx_max - sx_min + 1;
+  *out_w = a->pw;
   *out_h = a->ph;
 }
 

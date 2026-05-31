@@ -469,12 +469,12 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
     }
     const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
     for (int lx = 0; lx < w; ++lx) {
-      const int src_lx = flip_h ? (w - 1 - lx) : lx;
-      const uint8_t ci = row[src_lx];
+      const uint8_t ci = row[lx];
       if (ci == tr) {
         continue;
       }
-      const int sx = anchor_x + (flip_h ? (origin_x - lx) : (lx - origin_x));
+      const int sx =
+          flip_h ? (anchor_x + origin_x - lx) : (anchor_x + lx - origin_x);
       plot_fb(sx, yfb, clamp_color_index(ci));
     }
   }

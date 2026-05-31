@@ -63,11 +63,15 @@ function _update(dt)
 
   update_facing(mx)
 
+  -- Consumir btnp siempre: si solo se llama en suelo, un salto en el aire queda
+  -- latched y dispara al aterrizar.
+  local jump = btnp(BTN_A)
+
   if on_ground() then
     if vy < 0 then
       vy = 0
     end
-    if btnp(BTN_A) then
+    if jump then
       vy = jump_speed
     end
   else
