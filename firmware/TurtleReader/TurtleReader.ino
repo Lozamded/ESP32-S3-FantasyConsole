@@ -3,6 +3,10 @@
 #include <SD.h>
 #include <string.h>
 
+#if defined(ESP32) || defined(ESP_PLATFORM)
+#include <esp_heap_caps.h>
+#endif
+
 #include "turtle_cart.h"
 #include "turtle_gpu.h"
 #include "turtle_input.h"
@@ -14,13 +18,32 @@ extern "C" {
 #include <lualib.h>
 }
 
-// microSD (SPI). Ajusta a tu cableado.
-static const int SD_SCK_PIN = 36; //azul
-static const int SD_MISO_PIN = 37; //morado
-static const int SD_MOSI_PIN = 38; //gris
-static const int SD_CS_PIN = 39; //blanco
+// microSD (FSPI). No uses GPIO 33-37 con PSRAM OPI (N16R8).
+// 19/20 = USB nativo en muchas placas S3: OK si programas por UART (no USB CDC en 19/20).
+// Pantalla = 8-13, botones = 4-7 y 15-18 (ver turtle_gpu.h / turtle_input.h).
+static const int SD_SCK_PIN = 19; //azul
+static const int SD_MISO_PIN = 20; //morado
+static const int SD_MOSI_PIN = 21; //gris
+static const int SD_CS_PIN = 47; //blanco
 
 SPIClass sdSPI(FSPI);
+
+#if defined(ESP32) || defined(ESP_PLATFORM)
+static void log_heap_caps(const char* tag) {
+  const size_t dram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+  const size_t psram = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+  const size_t psram_largest = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+  Serial.printf("[%s] DRAM libre ~%u, PSRAM libre ~%u, bloque max PSRAM ~%u",
+                tag, static_cast<unsigned>(dram), static_cast<unsigned>(psram),
+                static_cast<unsigned>(psram_largest));
+  if (ESP.getPsramSize() > 0) {
+    Serial.printf(", PSRAM total %u", static_cast<unsigned>(ESP.getPsramSize()));
+  } else {
+    Serial.print(", PSRAM no detectada (Tools > PSRAM?)");
+  }
+  Serial.println();
+}
+#endif
 
 static bool mountSd(uint32_t frequencyHz) {
   sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
@@ -231,6 +254,9 @@ void setup() {
 
   Serial.println();
   Serial.println("== TurtleReader + Lua + GPU (264x198, 32 col) ==");
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  log_heap_caps("boot");
+#endif
 
   turtle_gpu_init();
   turtle_input_init();
@@ -252,6 +278,9 @@ void setup() {
       "Lua: ENTRY (cartucho, 1x) + scripts/<stem>.lua por objeto (cada frame, ver spec/lua/firmware-bridge-v0.md)");
 
   if (loadCartRunLua("/main.turtlecart")) {
+#if defined(ESP32) || defined(ESP_PLATFORM)
+    log_heap_caps("tras cart+bundle");
+#endif
     drawInitialSceneFromBundle();
     Serial.println("Listo.");
     return;
@@ -268,9 +297,8 @@ void setup() {
 }
 
 void loop() {
-  turtle_input_poll();
-
   if (!g_runtime_active || !g_bundle.data || g_bundle.len == 0) {
+    turtle_input_poll();
     delay(50);
     return;
   }
@@ -294,6 +322,7 @@ void loop() {
     accum %= frame_ms;
   }
 
+  turtle_input_poll();
   turtle_scene_runtime_tick(frame_ms);
   turtle_gpu_flip();
 }

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from turtlestudio.palette_policy import TRANSPARENT_PALETTE_INDEX, resolve_palette_color
-from turtlestudio.project import SCENE_PIXEL_H, SCENE_PIXEL_W
+from turtlestudio.project import SCENE_PIXEL_H, SCENE_PIXEL_W, scene_world_pixel_size
 from turtlestudio.sprites import normalize_palette_rel, palette_paths_equivalent
 from turtlestudio.tiles import (
     list_tileset_json_stems,
@@ -26,18 +26,27 @@ class SceneTileLayer:
     cells: tuple[tuple[int, ...], ...]
 
 
-def scene_tile_grid_dimensions(tile_px: int) -> tuple[int, int]:
+def scene_tile_grid_dimensions(
+    tile_px: int,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[int, int]:
     """(columnas, filas); fila 0 = arriba de la escena."""
     px = normalize_tile_px(tile_px)
-    return (max(1, SCENE_PIXEL_W // px), max(1, SCENE_PIXEL_H // px))
+    ww = max(SCENE_PIXEL_W, int(world_w))
+    wh = max(SCENE_PIXEL_H, int(world_h))
+    return (max(1, ww // px), max(1, wh // px))
 
 
 def empty_tile_cells(
     tile_px: int,
     *,
     fill: int = EMPTY_TILE_CELL,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
 ) -> list[list[int]]:
-    cols, rows = scene_tile_grid_dimensions(tile_px)
+    cols, rows = scene_tile_grid_dimensions(tile_px, world_w=world_w, world_h=world_h)
     fi = max(0, min(255, int(fill)))
     return [[fi for _ in range(cols)] for _ in range(rows)]
 
@@ -66,8 +75,14 @@ def _normalize_cells_matrix(
     return out
 
 
-def parse_tile_layers(raw: Any, *, tile_px: int) -> tuple[SceneTileLayer, ...]:
-    cols, rows = scene_tile_grid_dimensions(tile_px)
+def parse_tile_layers(
+    raw: Any,
+    *,
+    tile_px: int,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[SceneTileLayer, ...]:
+    cols, rows = scene_tile_grid_dimensions(tile_px, world_w=world_w, world_h=world_h)
     if not isinstance(raw, list):
         return default_tile_layers(tile_px)
     out: list[SceneTileLayer] = []
@@ -96,8 +111,13 @@ def parse_tile_layers(raw: Any, *, tile_px: int) -> tuple[SceneTileLayer, ...]:
     return tuple(out)
 
 
-def default_tile_layers(tile_px: int) -> tuple[SceneTileLayer, ...]:
-    empty = empty_tile_cells(tile_px)
+def default_tile_layers(
+    tile_px: int,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[SceneTileLayer, ...]:
+    empty = empty_tile_cells(tile_px, world_w=world_w, world_h=world_h)
     imm = tuple(tuple(r) for r in empty)
     return tuple(SceneTileLayer(False, "", imm) for _ in range(TILE_LAYER_COUNT))
 
@@ -118,12 +138,18 @@ def resize_tile_layer_cells(
     *,
     old_tile_px: int,
     new_tile_px: int,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
 ) -> list[list[int]]:
     if old_tile_px == new_tile_px:
         return cells
-    oc, orow = scene_tile_grid_dimensions(old_tile_px)
-    nc, nrow = scene_tile_grid_dimensions(new_tile_px)
-    out = empty_tile_cells(new_tile_px)
+    oc, orow = scene_tile_grid_dimensions(
+        old_tile_px, world_w=world_w, world_h=world_h
+    )
+    nc, nrow = scene_tile_grid_dimensions(
+        new_tile_px, world_w=world_w, world_h=world_h
+    )
+    out = empty_tile_cells(new_tile_px, world_w=world_w, world_h=world_h)
     for gy in range(min(orow, nrow)):
         for gx in range(min(oc, nc)):
             if gy < len(cells) and gx < len(cells[gy]):
@@ -148,12 +174,12 @@ def scene_cell_framebuffer_rect(
     Rectangulo inclusivo en framebuffer para celda (gx, gy).
     gy=0 es la fila superior de la escena. Devuelve (x0, y0_fb, x1, y1_fb).
     """
-    cols, rows = scene_tile_grid_dimensions(tile_px)
+    cols, rows = scene_tile_grid_dimensions(tile_px, world_w=fb_w, world_h=fb_h)
     px = normalize_tile_px(tile_px)
     sx0 = gx * px
     sx1 = min(fb_w - 1, sx0 + px - 1)
     sy_bottom = (rows - 1 - gy) * px
-    sy_top = min(SCENE_PIXEL_H - 1, sy_bottom + px - 1)
+    sy_top = min(fb_h - 1, sy_bottom + px - 1)
     y1_fb = scene_y_to_framebuffer_y(sy_bottom, fb_h=fb_h)
     y0_fb = scene_y_to_framebuffer_y(sy_top, fb_h=fb_h)
     return sx0, y0_fb, sx1, y1_fb
@@ -175,6 +201,72 @@ def _blend_rgba_pixel_inplace(
     rgba[i + 3] = max(rgba[i + 3], a)
 
 
+def draw_scene_step_bounds_on_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    *,
+    step_w: int = SCENE_PIXEL_W,
+    step_h: int = SCENE_PIXEL_H,
+    line_rgba: tuple[float, float, float, float] = (0.42, 0.48, 0.62, 0.9),
+) -> None:
+    """Lineas cada viewport (paso) cuando el mundo es mas grande que una pantalla."""
+    if fw <= step_w and fh <= step_h:
+        return
+    if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
+        return
+    lr, lg, lb, la = line_rgba
+    sw = max(1, int(step_w))
+    sh = max(1, int(step_h))
+    for sx in range(sw, fw, sw):
+        xi = min(fw - 1, sx)
+        for y_fb in range(fh):
+            _blend_rgba_pixel_inplace(rgba, (y_fb * fw + xi) * 4, lr, lg, lb, la)
+    for sy in range(sh, fh, sh):
+        y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
+        if 0 <= y_fb < fh:
+            row_base = y_fb * fw * 4
+            for x in range(fw):
+                _blend_rgba_pixel_inplace(rgba, row_base + x * 4, lr, lg, lb, la)
+
+
+def draw_scene_tile_hover_on_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    tile_px: int,
+    hover_cell: tuple[int, int],
+    *,
+    hover_rgba: tuple[float, float, float, float] = (1.0, 0.9, 0.2, 0.88),
+) -> None:
+    """Solo resalta la celda bajo el cursor (barato en mundos grandes)."""
+    if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
+        return
+    gx, gy = hover_cell
+    x0, y0_fb, x1, y1_fb = scene_cell_framebuffer_rect(
+        gx, gy, tile_px=tile_px, fb_w=fw, fb_h=fh
+    )
+    sr, sg, sb, sa = hover_rgba
+    border = 2
+    for t in range(border):
+        for x in range(x0, x1 + 1):
+            if 0 <= y0_fb + t < fh:
+                _blend_rgba_pixel_inplace(
+                    rgba, ((y0_fb + t) * fw + x) * 4, sr, sg, sb, sa
+                )
+            yb = y1_fb - t
+            if 0 <= yb < fh:
+                _blend_rgba_pixel_inplace(rgba, (yb * fw + x) * 4, sr, sg, sb, sa)
+        for y_fb in range(y0_fb, y1_fb + 1):
+            if 0 <= x0 + t < fw:
+                _blend_rgba_pixel_inplace(
+                    rgba, (y_fb * fw + (x0 + t)) * 4, sr, sg, sb, sa
+                )
+            xb = x1 - t
+            if 0 <= xb < fw:
+                _blend_rgba_pixel_inplace(rgba, (y_fb * fw + xb) * 4, sr, sg, sb, sa)
+
+
 def draw_scene_tile_grid_on_rgba(
     rgba: list[float],
     fw: int,
@@ -184,56 +276,44 @@ def draw_scene_tile_grid_on_rgba(
     hover_cell: tuple[int, int] | None = None,
     grid_rgba: tuple[float, float, float, float] = (0.75, 0.82, 1.0, 0.72),
     hover_rgba: tuple[float, float, float, float] = (1.0, 0.9, 0.2, 0.88),
+    full_grid: bool = True,
 ) -> None:
     """
     Rejilla alineada al tilemap de escena (origen abajo-izquierda, igual que pintar tiles).
+    Con `full_grid=False` solo dibuja el hover (para mundos > 1 pantalla).
     """
     if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
         return
+    if hover_cell is not None and not full_grid:
+        draw_scene_tile_hover_on_rgba(
+            rgba, fw, fh, tile_px, hover_cell, hover_rgba=hover_rgba
+        )
+        return
     px = normalize_tile_px(tile_px)
-    cols, rows = scene_tile_grid_dimensions(px)
+    cols, rows = scene_tile_grid_dimensions(px, world_w=fw, world_h=fh)
     gr, gg, gb, ga = grid_rgba
 
-    for gx in range(cols + 1):
-        xi = min(fw - 1, gx * px) if fw > 0 else 0
-        for y_fb in range(fh):
-            _blend_rgba_pixel_inplace(rgba, (y_fb * fw + xi) * 4, gr, gg, gb, ga)
+    if full_grid:
+        for gx in range(cols + 1):
+            xi = min(fw - 1, gx * px) if fw > 0 else 0
+            for y_fb in range(fh):
+                _blend_rgba_pixel_inplace(rgba, (y_fb * fw + xi) * 4, gr, gg, gb, ga)
 
-    for gy_row in range(rows + 1):
-        sy = gy_row * px
-        if sy >= SCENE_PIXEL_H:
-            break
-        y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
-        if 0 <= y_fb < fh:
-            row_base = y_fb * fw * 4
-            x_end = min(fw, cols * px)
-            for x in range(x_end):
-                _blend_rgba_pixel_inplace(rgba, row_base + x * 4, gr, gg, gb, ga)
+        for gy_row in range(rows + 1):
+            sy = gy_row * px
+            if sy >= fh:
+                break
+            y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
+            if 0 <= y_fb < fh:
+                row_base = y_fb * fw * 4
+                x_end = min(fw, cols * px)
+                for x in range(x_end):
+                    _blend_rgba_pixel_inplace(rgba, row_base + x * 4, gr, gg, gb, ga)
 
     if hover_cell is not None:
-        gx, gy = hover_cell
-        x0, y0_fb, x1, y1_fb = scene_cell_framebuffer_rect(
-            gx, gy, tile_px=tile_px, fb_w=fw, fb_h=fh
+        draw_scene_tile_hover_on_rgba(
+            rgba, fw, fh, tile_px, hover_cell, hover_rgba=hover_rgba
         )
-        sr, sg, sb, sa = hover_rgba
-        border = 2
-        for t in range(border):
-            for x in range(x0, x1 + 1):
-                if 0 <= y0_fb + t < fh:
-                    _blend_rgba_pixel_inplace(
-                        rgba, ((y0_fb + t) * fw + x) * 4, sr, sg, sb, sa
-                    )
-                yb = y1_fb - t
-                if 0 <= yb < fh:
-                    _blend_rgba_pixel_inplace(rgba, (yb * fw + x) * 4, sr, sg, sb, sa)
-            for y_fb in range(y0_fb, y1_fb + 1):
-                if 0 <= x0 + t < fw:
-                    _blend_rgba_pixel_inplace(
-                        rgba, (y_fb * fw + (x0 + t)) * 4, sr, sg, sb, sa
-                    )
-                xb = x1 - t
-                if 0 <= xb < fw:
-                    _blend_rgba_pixel_inplace(rgba, (y_fb * fw + xb) * 4, sr, sg, sb, sa)
 
 
 def scene_coords_to_cell(
@@ -241,10 +321,16 @@ def scene_coords_to_cell(
     sy: int,
     *,
     tile_px: int,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
 ) -> tuple[int, int] | None:
-    cols, rows = scene_tile_grid_dimensions(tile_px)
+    cols, rows = scene_tile_grid_dimensions(
+        tile_px, world_w=world_w, world_h=world_h
+    )
     px = normalize_tile_px(tile_px)
-    if sx < 0 or sy < 0 or sx >= SCENE_PIXEL_W or sy >= SCENE_PIXEL_H:
+    ww = max(SCENE_PIXEL_W, int(world_w))
+    wh = max(SCENE_PIXEL_H, int(world_h))
+    if sx < 0 or sy < 0 or sx >= ww or sy >= wh:
         return None
     gx = sx // px
     gy_bottom = sy // px
@@ -315,8 +401,12 @@ def validate_tile_layers_for_save(
     *,
     scene_palette_rel: str,
     tile_px: int,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
 ) -> list[dict[str, Any]]:
-    layers = parse_tile_layers(raw_layers, tile_px=tile_px)
+    layers = parse_tile_layers(
+        raw_layers, tile_px=tile_px, world_w=world_w, world_h=world_h
+    )
     out_layers: list[SceneTileLayer] = []
     for ly in layers:
         ts = ly.tileset.strip()
@@ -384,7 +474,7 @@ def paint_tile_layers_on_rgba(
 
     root = Path(project_root)
     px = normalize_tile_px(tile_px)
-    cols, rows = scene_tile_grid_dimensions(px)
+    cols, rows = scene_tile_grid_dimensions(px, world_w=fw, world_h=fh)
     cache = tile_cache if tile_cache is not None else {}
 
     for ly in layers:

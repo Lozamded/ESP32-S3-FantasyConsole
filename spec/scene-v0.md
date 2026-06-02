@@ -4,8 +4,15 @@ Documento **pre-paso 1**: define el espacio logico en el que un cartucho `.turtl
 
 ## Escena basica (canonica)
 
-- **Tamano fijo** de la escena de juego: **264 × 198** unidades (píxeles logicos).
-- Una escena ocupa un rectangulo alineado a los ejes; no hay “letterbox” dentro de la escena: el rectangulo completo es el mundo del juego para esta consola.
+- **Vista (viewport)** en consola: **264 × 198** píxeles logicos (lo que muestra el panel).
+- **Mundo** opcionalmente mas grande: en el manifest de escena, `world_steps_x` y `world_steps_y` (enteros **1..2**) multiplican la vista. Ejemplo: `world_steps_x: 2` → ancho **528** (dos “pantallas” horizontales). Por defecto ambos son **1** (mundo = vista).
+- El **firmware** recorta al viewport con camara configurable (`camera` en manifest / `scenes/<id>.json`):
+  - **`mode`**: `follow` (por defecto) o `fixed`.
+  - **`target`**: id de objeto a seguir (vacio = `character`, luego `player`, luego el primero de `objects`).
+  - **`x`, `y`**: esquina inferior izquierda del viewport en espacio escena (`fixed`, o posicion inicial en `follow`).
+  - **`margin_x`, `margin_y`**: distancia en pixeles al borde del viewport antes de desplazar la camara (solo `follow`).
+- TurtleStudio dibuja un **marco naranja** del tamano de pantalla en el canvas cuando el mundo es mayor que la vista.
+- Una escena ocupa un rectangulo alineado a los ejes; no hay “letterbox” dentro del viewport.
 
 ## Sistema de coordenadas (espacio escena)
 
@@ -78,7 +85,7 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 
 ## Resumen para compiladores / generadores
 
-1. Tratar **264×198** como tamano unico de escena logica (hasta nueva spec).
+1. Tratar **264×198** como tamano de **vista**; mundo = pasos × vista (v0: pasos 1 o 2 por eje).
 2. Emitir posiciones y disenos pensando **Y hacia arriba** y **(0,0) abajo-izquierda**.
 3. Si el generador emite Lua que llama al `pix()` actual del firmware, aplicar la conversion `yfb = 197 - sy` (o `H-1` con `H=198`) al generar coordenadas.
 4. Los scripts de objeto usan **`move(dx, dy)`** y **`posx()` / `posy()`** directamente en espacio escena; ver **`spec/lua/object-script-v0.md`**.

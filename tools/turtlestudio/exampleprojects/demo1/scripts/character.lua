@@ -1,13 +1,18 @@
--- Plataformero: movimiento, salto, animaciones, flip (spec/lua/physics-v0.md, animation-v0.md)
 
-local walk_speed = 65
-local jump_speed = 240
+local walk_speed = 75
+local jump_speed = 164
 local gravity = 364
 local BTN_LEFT, BTN_RIGHT, BTN_A = 0, 1, 4
 local rem_x = 0.0
 local vy = 0.0
 local cur_anim = ""
 local facing_left = false
+local jumping = false
+local jump_hold_time = 0.0
+local max_jump_hold = 0.18  -- segundos hasta salto "grande"
+local low_gravity_factor = 0.4  -- gravedad reducida mientras mantienes A
+local coyote_time_max = 0.08
+local coyote_time = 0.0
 
 local function dir_axis(neg_btn, pos_btn)
   local v = 0
@@ -63,19 +68,45 @@ function _update(dt)
 
   update_facing(mx)
 
-  -- Consumir btnp siempre: si solo se llama en suelo, un salto en el aire queda
-  -- latched y dispara al aterrizar.
-  local jump = btnp(BTN_A)
+  -- Consumir btnp siempre (evita saltos "latched").
+  local jump_pressed = btnp(BTN_A)
+  local jump_held = btn(BTN_A)
+  local grounded = on_ground()
 
-  if on_ground() then
+  if grounded then
+    coyote_time = coyote_time_max
+  else
+    coyote_time = math.max(0.0, coyote_time - dt)
+  end
+
+  if grounded then
+    jumping = false
+    jump_hold_time = 0.0
     if vy < 0 then
       vy = 0
     end
-    if jump then
+    if jump_pressed then
       vy = jump_speed
+      jumping = true
+      jump_hold_time = 0.0
+      coyote_time = 0.0
     end
   else
-    vy = vy - gravity * dt
+    if jump_pressed and coyote_time > 0.0 then
+      vy = jump_speed
+      jumping = true
+      jump_hold_time = 0.0
+      coyote_time = 0.0
+    end
+    if jumping and vy > 0 and jump_held and jump_hold_time < max_jump_hold then
+      -- Mientras mantienes A y sigues subiendo: gravedad reducida -> salto mas alto.
+      vy = vy - gravity * low_gravity_factor * dt
+      jump_hold_time = jump_hold_time + dt
+    else
+      -- Sueltas A pronto o ya llegaste al tope: gravedad normal, salto corto.
+      jumping = false
+      vy = vy - gravity * dt
+    end
   end
 
   local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))

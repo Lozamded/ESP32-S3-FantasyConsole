@@ -29,6 +29,8 @@ static int s_dirty_x0 = 0;
 static int s_dirty_y0 = 0;
 static int s_dirty_x1 = 0;
 static int s_dirty_y1 = 0;
+static int s_cam_x = 0;
+static int s_cam_y = 0;
 
 static void dirty_mark_fb_clamped(int x0, int y0, int x1, int y1) {
   if (x0 < 0) {
@@ -321,6 +323,15 @@ static void turtle_fb_flush_dirty_to_display(void) {
   const int xfb1 = s_dirty_x1;
   const int yfb1 = s_dirty_y1;
 
+  int px0 = (xfb0 * panelW) / kW;
+  int px1 = ((xfb1 + 1) * panelW - 1) / kW;
+  if (px0 < 0) {
+    px0 = 0;
+  }
+  if (px1 >= panelW) {
+    px1 = panelW - 1;
+  }
+
   int py0 = (yfb0 * panelH) / kH;
   int py1 = ((yfb1 + 1) * panelH - 1) / kH;
   if (py0 < 0) {
@@ -340,14 +351,6 @@ static void turtle_fb_flush_dirty_to_display(void) {
     }
     const uint8_t* row = &s_fb[ly * kW];
 
-    int px0 = (xfb0 * panelW) / kW;
-    int px1 = ((xfb1 + 1) * panelW - 1) / kW;
-    if (px0 < 0) {
-      px0 = 0;
-    }
-    if (px1 >= panelW) {
-      px1 = panelW - 1;
-    }
     const int pw = px1 - px0 + 1;
     if (pw <= 0 || pw > static_cast<int>(sizeof(line) / sizeof(line[0]))) {
       continue;
@@ -355,7 +358,12 @@ static void turtle_fb_flush_dirty_to_display(void) {
 
     for (int i = 0; i < pw; ++i) {
       const int px = px0 + i;
-      const int lx = (px * kW) / panelW;
+      int lx = (px * kW) / panelW;
+      if (lx < xfb0) {
+        lx = xfb0;
+      } else if (lx > xfb1) {
+        lx = xfb1;
+      }
       line[i] = s_palette[row[lx]];
     }
     s_display.pushImage(px0, py, pw, 1, line);
@@ -364,10 +372,14 @@ static void turtle_fb_flush_dirty_to_display(void) {
 }
 
 static void turtle_fb_flush_to_display(void) {
-  if (s_force_full_flip || !s_dirty_valid) {
+  if (s_force_full_flip) {
     turtle_fb_flush_full_to_display();
     s_force_full_flip = false;
     s_dirty_valid = false;
+    return;
+  }
+  if (!s_dirty_valid) {
+    turtle_fb_flush_full_to_display();
     return;
   }
   turtle_fb_flush_dirty_to_display();
@@ -399,6 +411,20 @@ static void plot_fb(int xfb, int yfb, uint8_t ci) {
   s_fb[yfb * kW + xfb] = ci;
 }
 
+void turtle_gpu_set_camera(int cam_x, int cam_y) {
+  s_cam_x = cam_x;
+  s_cam_y = cam_y;
+}
+
+void turtle_gpu_get_camera(int* cam_x, int* cam_y) {
+  if (cam_x) {
+    *cam_x = s_cam_x;
+  }
+  if (cam_y) {
+    *cam_y = s_cam_y;
+  }
+}
+
 static uint8_t clamp_color_index(uint8_t ci) {
   if (ci >= kNColors) {
     return static_cast<uint8_t>(kNColors - 1);
@@ -417,12 +443,17 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
   }
   const uint8_t ci = clamp_color_index(color_index);
   for (int sy = y0; sy < y0 + h; ++sy) {
-    const int yfb = (kH - 1) - sy;
+    const int vy = sy - s_cam_y;
+    const int yfb = (kH - 1) - vy;
     if (yfb < 0 || yfb >= kH) {
       continue;
     }
     for (int sx = x0; sx < x0 + w; ++sx) {
-      plot_fb(sx, yfb, ci);
+      const int vx = sx - s_cam_x;
+      if (vx < 0 || vx >= kW) {
+        continue;
+      }
+      plot_fb(vx, yfb, ci);
     }
   }
 }
@@ -436,7 +467,8 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
   const uint8_t tr = clamp_color_index(transparent_index);
   for (int py = 0; py < h; ++py) {
     const int sy = y0 + (h - 1 - py);
-    const int yfb = (kH - 1) - sy;
+    const int vy = sy - s_cam_y;
+    const int yfb = (kH - 1) - vy;
     if (yfb < 0 || yfb >= kH) {
       continue;
     }
@@ -446,7 +478,11 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
       if (ci == tr) {
         continue;
       }
-      plot_fb(x0 + lx, yfb, clamp_color_index(ci));
+      const int vx = x0 + lx - s_cam_x;
+      if (vx < 0 || vx >= kW) {
+        continue;
+      }
+      plot_fb(vx, yfb, clamp_color_index(ci));
     }
   }
 }
@@ -463,7 +499,8 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
   (void)origin_y;
   for (int py = 0; py < h; ++py) {
     const int sy = blit_y + (h - 1 - py);
-    const int yfb = (kH - 1) - sy;
+    const int vy = sy - s_cam_y;
+    const int yfb = (kH - 1) - vy;
     if (yfb < 0 || yfb >= kH) {
       continue;
     }
@@ -475,7 +512,11 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
       }
       const int sx =
           flip_h ? (anchor_x + origin_x - lx) : (anchor_x + lx - origin_x);
-      plot_fb(sx, yfb, clamp_color_index(ci));
+      const int vx = sx - s_cam_x;
+      if (vx < 0 || vx >= kW) {
+        continue;
+      }
+      plot_fb(vx, yfb, clamp_color_index(ci));
     }
   }
 }
@@ -492,13 +533,41 @@ void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h) {
   if (w <= 0 || h <= 0) {
     return;
   }
-  const int sx0 = x0 - 2;
-  const int sx1 = x0 + w + 1;
-  const int sy0 = y0 - 2;
-  const int sy1 = y0 + h + 1;
+  /* Margen extra: borrado prev_blit + holgura por mapeo fb 264 -> panel ~320. */
+  const int sx0 = x0 - 4;
+  const int sx1 = x0 + w + 3;
+  const int sy0 = y0 - 4;
+  const int sy1 = y0 + h + 3;
   const int yfb0 = (kH - 1) - sy1;
   const int yfb1 = (kH - 1) - sy0;
   dirty_mark_fb_clamped(sx0, yfb0, sx1, yfb1);
+}
+
+/** Ensancha la region sucia 1 px en fb (errores de redondeo al escalar al panel). */
+void turtle_gpu_dirty_slack_for_scale(void) {
+  if (!s_dirty_valid) {
+    return;
+  }
+  if (s_dirty_x0 > 0) {
+    --s_dirty_x0;
+  }
+  if (s_dirty_x1 < kW - 1) {
+    ++s_dirty_x1;
+  }
+  if (s_dirty_y0 > 0) {
+    --s_dirty_y0;
+  }
+  if (s_dirty_y1 < kH - 1) {
+    ++s_dirty_y1;
+  }
+}
+
+bool turtle_gpu_dirty_valid(void) {
+  return s_dirty_valid;
+}
+
+void turtle_gpu_dirty_mark_fb_full(void) {
+  dirty_mark_fb_clamped(0, 0, kW - 1, kH - 1);
 }
 
 void turtle_gpu_restore_static_dirty(void) {

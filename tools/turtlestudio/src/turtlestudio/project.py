@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from turtlestudio.scene_camera import SceneCameraConfig
 
 MANIFEST_NAME = "turtlestudio.json"
 FORMAT_VERSION = 1
@@ -77,8 +80,36 @@ def is_project_dir(project_root: Path) -> bool:
 # Tamano logico escena / vista previa canvas (spec/scene-v0.md)
 SCENE_PIXEL_W = 264
 SCENE_PIXEL_H = 198
+# Vista en consola (camara); el mundo puede ser un multiplo (pasos).
+VIEWPORT_PIXEL_W = SCENE_PIXEL_W
+VIEWPORT_PIXEL_H = SCENE_PIXEL_H
+WORLD_STEPS_MIN = 1
+WORLD_STEPS_MAX = 2  # alineado con BACKGROUND_PARALLAX_FACTOR
 
 BACKGROUND_LAYER_COUNT = 4
+
+
+def _default_scene_camera() -> SceneCameraConfig:
+    from turtlestudio.scene_camera import SceneCameraConfig
+
+    return SceneCameraConfig()
+
+
+def clamp_world_steps(v: object, *, default: int = 1) -> int:
+    try:
+        n = int(v)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        n = default
+    return max(WORLD_STEPS_MIN, min(WORLD_STEPS_MAX, n))
+
+
+def scene_world_pixel_size(
+    steps_x: int,
+    steps_y: int,
+) -> tuple[int, int]:
+    sx = clamp_world_steps(steps_x)
+    sy = clamp_world_steps(steps_y)
+    return SCENE_PIXEL_W * sx, SCENE_PIXEL_H * sy
 
 
 @dataclass(frozen=True)
@@ -107,14 +138,27 @@ class SceneObjectPlacement:
     y: int
 
 
-def _clamp_scene_xy(x: int, y: int) -> tuple[int, int]:
+def _clamp_scene_xy(
+    x: int,
+    y: int,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[int, int]:
+    ww = max(SCENE_PIXEL_W, int(world_w))
+    wh = max(SCENE_PIXEL_H, int(world_h))
     return (
-        max(0, min(SCENE_PIXEL_W - 1, x)),
-        max(0, min(SCENE_PIXEL_H - 1, y)),
+        max(0, min(ww - 1, x)),
+        max(0, min(wh - 1, y)),
     )
 
 
-def _parse_one_scene_object(raw: Any) -> SceneObjectPlacement | None:
+def _parse_one_scene_object(
+    raw: Any,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> SceneObjectPlacement | None:
     from turtlestudio.objects import validate_object_id
 
     if isinstance(raw, str):
@@ -133,17 +177,22 @@ def _parse_one_scene_object(raw: Any) -> SceneObjectPlacement | None:
             yi = int(raw.get("y", 0))
         except (TypeError, ValueError):
             xi, yi = 0, 0
-        xi, yi = _clamp_scene_xy(xi, yi)
+        xi, yi = _clamp_scene_xy(xi, yi, world_w=world_w, world_h=world_h)
         return SceneObjectPlacement(id=oid, x=xi, y=yi)
     return None
 
 
-def parse_scene_objects_raw(raw: Any) -> tuple[SceneObjectPlacement, ...]:
+def parse_scene_objects_raw(
+    raw: Any,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[SceneObjectPlacement, ...]:
     if not isinstance(raw, list):
         return ()
     out: list[SceneObjectPlacement] = []
     for item in raw:
-        p = _parse_one_scene_object(item)
+        p = _parse_one_scene_object(item, world_w=world_w, world_h=world_h)
         if p is not None:
             out.append(p)
     return tuple(out)
@@ -153,11 +202,14 @@ def normalize_scene_objects_for_save(
     root: Path,
     scene_palette_rel: str,
     raw_objs: list[Any],
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
 ) -> list[dict[str, Any]]:
     from turtlestudio.objects import list_object_ids_for_scene_palette
     from turtlestudio.sprites import normalize_palette_rel as normpal
 
-    placements = parse_scene_objects_raw(raw_objs)
+    placements = parse_scene_objects_raw(raw_objs, world_w=world_w, world_h=world_h)
     allowed = set(list_object_ids_for_scene_palette(root, scene_palette_rel))
     sp = normpal(scene_palette_rel)
     out: list[dict[str, Any]] = []
@@ -183,6 +235,10 @@ class SceneEntry:
     background: str = ""
     # Hasta 4 capas de tilemap (rejilla segun `tiles.tile_px` del manifest).
     tile_layers: tuple[Any, ...] = ()
+    # Mundo = VIEWPORT * pasos (1 = 264×198; 2 = 528×396).
+    world_steps_x: int = 1
+    world_steps_y: int = 1
+    camera: SceneCameraConfig = field(default_factory=_default_scene_camera)
     # Opcional: override por escena (si falta, usa target_fps/default_anim_fps del proyecto).
     target_fps: int | None = None
     default_anim_fps: int | None = None
@@ -480,10 +536,13 @@ def _parse_scenes_from_manifest(
                 n_colors=n_pal,
             )
             bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
+            wsx = clamp_world_steps(item.get("world_steps_x", 1))
+            wsy = clamp_world_steps(item.get("world_steps_y", 1))
+            ww, wh = scene_world_pixel_size(wsx, wsy)
             raw_objs = item.get("objects", [])
             if not isinstance(raw_objs, list):
                 raw_objs = []
-            o_placements = parse_scene_objects_raw(raw_objs)
+            o_placements = parse_scene_objects_raw(raw_objs, world_w=ww, world_h=wh)
             stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
 
             bg_asset = parse_scene_background_stem(
@@ -491,7 +550,12 @@ def _parse_scenes_from_manifest(
                 item.get("background", item.get("background_id", "")),
                 scene_palette_rel=pal,
             )
-            tile_ly = parse_tile_layers(item.get("tile_layers"), tile_px=tile_px)
+            tile_ly = parse_tile_layers(
+                item.get("tile_layers"),
+                tile_px=tile_px,
+                world_w=ww,
+                world_h=wh,
+            )
             from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
 
             scene_tf: int | None = None
@@ -500,6 +564,9 @@ def _parse_scenes_from_manifest(
             scene_af: int | None = None
             if "default_anim_fps" in item:
                 scene_af = clamp_default_anim_fps(item.get("default_anim_fps"))
+            from turtlestudio.scene_camera import parse_scene_camera_from_row
+
+            cam = parse_scene_camera_from_row(item)
             parsed.append(
                 SceneEntry(
                     id=sid,
@@ -510,8 +577,11 @@ def _parse_scenes_from_manifest(
                     background_layers=layers,
                     background=bg_asset,
                     tile_layers=tile_ly,
+                    world_steps_x=wsx,
+                    world_steps_y=wsy,
                     target_fps=scene_tf,
                     default_anim_fps=scene_af,
+                    camera=cam,
                 )
             )
         scenes_list = parsed
@@ -646,6 +716,17 @@ def _write_mirror_scene_json_files(
             payload["target_fps"] = int(row["target_fps"])
         if "default_anim_fps" in row:
             payload["default_anim_fps"] = int(row["default_anim_fps"])
+        if int(row.get("world_steps_x", 1)) != 1:
+            payload["world_steps_x"] = int(row["world_steps_x"])
+        if int(row.get("world_steps_y", 1)) != 1:
+            payload["world_steps_y"] = int(row["world_steps_y"])
+        from turtlestudio.scene_camera import parse_scene_camera_from_row, scene_camera_to_json
+
+        cam_raw = row.get("camera")
+        if isinstance(cam_raw, dict):
+            payload["camera"] = cam_raw
+        elif isinstance(row.get("camera_mode"), str):
+            payload["camera"] = scene_camera_to_json(parse_scene_camera_from_row(row))
         path.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -836,22 +917,29 @@ def _normalize_scenes_for_save(
         raw_objs = item.get("objects", [])
         if not isinstance(raw_objs, list):
             raw_objs = []
-        try:
-            objs_ok = normalize_scene_objects_for_save(root, pal, raw_objs)
-        except ValueError as e:
-            raise ValueError(f"Escena {sid!r}: {e}") from e
         stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
         bg_saved = validate_scene_background_for_save(
             root,
             item.get("background", item.get("background_id", "")),
             scene_palette_rel=pal,
         )
+        wsx = clamp_world_steps(item.get("world_steps_x", 1))
+        wsy = clamp_world_steps(item.get("world_steps_y", 1))
+        ww, wh = scene_world_pixel_size(wsx, wsy)
         tile_saved = validate_tile_layers_for_save(
             root,
             item.get("tile_layers"),
             scene_palette_rel=pal,
             tile_px=tile_px,
+            world_w=ww,
+            world_h=wh,
         )
+        try:
+            objs_ok = normalize_scene_objects_for_save(
+                root, pal, raw_objs, world_w=ww, world_h=wh
+            )
+        except ValueError as e:
+            raise ValueError(f"Escena {sid!r}: {e}") from e
         row_out: dict[str, Any] = {
             "id": sid,
             "palette": pal,
@@ -861,6 +949,8 @@ def _normalize_scenes_for_save(
             "script": stem,
             "objects": objs_ok,
             "tile_layers": tile_saved,
+            "world_steps_x": wsx,
+            "world_steps_y": wsy,
         }
         from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
 
@@ -868,6 +958,21 @@ def _normalize_scenes_for_save(
             row_out["target_fps"] = clamp_target_fps(item.get("target_fps"))
         if "default_anim_fps" in item:
             row_out["default_anim_fps"] = clamp_default_anim_fps(item.get("default_anim_fps"))
+        from turtlestudio.scene_camera import parse_scene_camera_from_row, scene_camera_to_json
+
+        cam_row = parse_scene_camera_from_row(item)
+        row_out["camera"] = scene_camera_to_json(cam_row)
+        row_out.update(
+            {
+                "camera_mode": cam_row.mode,
+                "camera_x": cam_row.x,
+                "camera_y": cam_row.y,
+                "camera_margin_x": cam_row.margin_x,
+                "camera_margin_y": cam_row.margin_y,
+            }
+        )
+        if cam_row.target.strip():
+            row_out["camera_target"] = cam_row.target.strip()
         out.append(row_out)
     if active_scene.strip() not in seen:
         raise ValueError(f"active_scene {active_scene!r} no coincide con ninguna escena.")

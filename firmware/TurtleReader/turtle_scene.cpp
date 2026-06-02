@@ -23,12 +23,15 @@ constexpr int kDefaultCellPx = 4;
 constexpr int kDefaultTransparentIndex = 31;
 constexpr int kMaxSpriteW = 128;
 constexpr int kMaxSpriteH = 128;
-/** Escena canonica (spec/scene-v0.md); fondos indexed_pixels a pantalla completa. */
+/** Escena canonica (spec/scene-v0.md); viewport = kSceneW x kSceneH. */
 constexpr int kSceneW = 264;
 constexpr int kSceneH = 198;
+constexpr int kMaxWorldSteps = 2;
+constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;
+constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;
 constexpr int kMaxTileLayers = 4;
-constexpr int kMaxTileCols = 17;
-constexpr int kMaxTileRows = 13;
+constexpr int kMaxTileCols = 34;  /* kMaxWorldW / 16 */
+constexpr int kMaxTileRows = 25;  /* kMaxWorldH / 16 */
 
 struct TileLayer {
   bool enabled;
@@ -74,7 +77,13 @@ struct SceneActor {
 };
 
 static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
+/** Decode temporal (fondos <= 1 pantalla); mundos grandes usan s_world_bg en PSRAM. */
 static uint8_t s_scene_pixels[kSceneW * kSceneH];
+/** Fondo indexado del mundo completo (scroll); se pinta por ventana con la camara. */
+static uint8_t* s_world_bg = nullptr;
+static int s_world_bg_w = 0;
+static int s_world_bg_h = 0;
+static bool s_world_static_ready = false;
 /** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
 static Placement s_placements[kMaxPlacements];
 static TileLayer s_tile_layers[kMaxTileLayers];
@@ -85,12 +94,23 @@ static int s_player_actor = -1;
 static int s_lua_actor_target = -1;
 static const char* s_runtime_json = nullptr;
 static const char* s_runtime_json_end = nullptr;
+static const char* s_runtime_sc_start = nullptr;
+static const char* s_runtime_sc_end = nullptr;
 static uint8_t s_runtime_transp = 31;
 static bool s_runtime_active = false;
 static int s_target_fps = 30;
 static int s_default_anim_fps = 8;
 static int s_runtime_tile_px = 16;
 static int s_runtime_tile_layer_count = 0;
+static int s_world_w = kSceneW;
+static int s_world_h = kSceneH;
+static int s_cam_x = 0;
+static int s_cam_y = 0;
+static bool s_camera_fixed = false;
+static char s_camera_target[48];
+static int s_camera_margin_x = 64;
+static int s_camera_margin_y = 48;
+static int s_runtime_bg = 0;
 static char s_seen_asset_paths[24][112];
 static int s_seen_asset_paths_count = 0;
 
@@ -113,6 +133,41 @@ struct SpriteBlobCacheEntry {
 
 static SpriteBlobCacheEntry s_sprite_cache[kMaxSpriteCache];
 static int s_sprite_cache_count = 0;
+
+static constexpr size_t kScenePixelsMaxBytes =
+    static_cast<size_t>(kMaxWorldW) * static_cast<size_t>(kMaxWorldH);
+static constexpr size_t kScenePixelsViewportBytes =
+    static_cast<size_t>(kSceneW) * static_cast<size_t>(kSceneH);
+
+static void world_bg_release(void) {
+  if (!s_world_bg) {
+    s_world_bg_w = 0;
+    s_world_bg_h = 0;
+    return;
+  }
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  heap_caps_free(s_world_bg);
+#else
+  free(s_world_bg);
+#endif
+  s_world_bg = nullptr;
+  s_world_bg_w = 0;
+  s_world_bg_h = 0;
+}
+
+static void scene_asset_buffers_release(void) {
+  s_world_static_ready = false;
+  world_bg_release();
+}
+
+static void world_buffer_put_scene_pixel(int sx, int sy, uint8_t ci) {
+  if (!s_world_bg || sx < 0 || sy < 0 || sx >= s_world_bg_w || sy >= s_world_bg_h) {
+    return;
+  }
+  const int ty = (s_world_bg_h - 1) - sy;
+  s_world_bg[static_cast<size_t>(ty) * static_cast<size_t>(s_world_bg_w) +
+              static_cast<size_t>(sx)] = ci;
+}
 
 static void sprite_cache_free_entry(SpriteBlobCacheEntry* e) {
   if (!e || !e->data) {
@@ -138,6 +193,7 @@ static void sprite_cache_clear_all(void) {
     s_sprite_cache[i].id[0] = '\0';
   }
   s_sprite_cache_count = 0;
+  scene_asset_buffers_release();
 }
 
 static bool sprite_cache_find(const char* sprite_id, const char** inner, const char** inner_end) {
@@ -857,27 +913,53 @@ static bool fill_pixels_from_asset_buffer(const char* inner, size_t len, int pw,
   return parse_palette_rows_image(inner, inner + len, pw, ph, out, stride);
 }
 
+static bool decode_indexed_asset_to_buffer(const char* inner, const char* inner_end,
+                                           const char* label, int pw, int ph,
+                                           uint8_t* out, int stride) {
+  if (pw <= 0 || ph <= 0 || !out || stride < pw) {
+    return false;
+  }
+  const size_t need = static_cast<size_t>(pw) * static_cast<size_t>(ph);
+  memset(out, 0, need);
+  const size_t blob_len = (inner_end > inner) ? static_cast<size_t>(inner_end - inner) : 0;
+  if (!fill_pixels_from_asset_buffer(inner, blob_len, pw, ph, out, stride, 0)) {
+    Serial.printf("turtle_scene: pixels invalidos en %s\n", label);
+    return false;
+  }
+  return true;
+}
+
 static bool draw_indexed_asset_at_origin(const char* inner, const char* inner_end, const char* label,
                                          int pw, int ph, uint8_t transparent_index) {
   if (pw <= 0 || ph <= 0) {
     return false;
   }
-  if (pw > kSceneW || ph > kSceneH) {
-    Serial.printf("turtle_scene: %s %dx%d > escena %dx%d\n", label, pw, ph, kSceneW, kSceneH);
+  if (pw > s_world_w || ph > s_world_h) {
+    Serial.printf("turtle_scene: %s %dx%d > mundo %dx%d\n", label, pw, ph, s_world_w, s_world_h);
     return false;
   }
   const size_t need = static_cast<size_t>(pw) * static_cast<size_t>(ph);
-  if (need > sizeof(s_scene_pixels)) {
+  if (need > kScenePixelsViewportBytes) {
+    Serial.printf(
+        "turtle_scene: %s %dx%d demasiado grande para decode puntual (max %dx%d); usa cache de "
+        "fondo\n",
+        label, pw, ph, kSceneW, kSceneH);
     return false;
   }
-  memset(s_scene_pixels, 0, need);
-  const size_t blob_len = (inner_end > inner) ? static_cast<size_t>(inner_end - inner) : 0;
-  if (!fill_pixels_from_asset_buffer(inner, blob_len, pw, ph, s_scene_pixels, pw, 0)) {
-    Serial.printf("turtle_scene: pixels invalidos en %s\n", label);
+  if (!decode_indexed_asset_to_buffer(inner, inner_end, label, pw, ph, s_scene_pixels, pw)) {
     return false;
   }
   turtle_gpu_blit_indexed_scene(0, 0, pw, ph, s_scene_pixels, pw, transparent_index);
   return true;
+}
+
+static void paint_cached_world_background(uint8_t transparent_index) {
+  if (!s_world_bg || s_world_bg_w <= 0 || s_world_bg_h <= 0) {
+    return;
+  }
+  /* Buffer is addressed from world origin (0,0). Camera clips in blit (vx = sx - cam). */
+  turtle_gpu_blit_indexed_scene(0, 0, s_world_bg_w, s_world_bg_h, s_world_bg, s_world_bg_w,
+                                transparent_index);
 }
 
 static bool draw_solid_asset_at_origin(const char* inner, const char* inner_end, const char* label,
@@ -899,11 +981,11 @@ static bool draw_solid_asset_at_origin(const char* inner, const char* inner_end,
   if (ph < 1) {
     ph = kSceneH;
   }
-  if (pw > kSceneW) {
-    pw = kSceneW;
+  if (pw > s_world_w) {
+    pw = s_world_w;
   }
-  if (ph > kSceneH) {
-    ph = kSceneH;
+  if (ph > s_world_h) {
+    ph = s_world_h;
   }
   turtle_gpu_fill_rect_scene(0, 0, pw, ph, static_cast<uint8_t>(pci));
   return true;
@@ -1164,13 +1246,209 @@ static bool json_extract_bool_for_key(const char* s, const char* e, const char* 
   return false;
 }
 
+static bool scene_uses_scrolling(void) {
+  return s_world_w > kSceneW || s_world_h > kSceneH;
+}
+
+static void parse_scene_world(const char* sc_start, const char* sc_end) {
+  s_world_w = kSceneW;
+  s_world_h = kSceneH;
+  int sx = 1;
+  int sy = 1;
+  if (json_extract_int_for_key(sc_start, sc_end, "world_steps_x", &sx)) {
+    if (sx < 1) {
+      sx = 1;
+    }
+    if (sx > kMaxWorldSteps) {
+      sx = kMaxWorldSteps;
+    }
+  }
+  if (json_extract_int_for_key(sc_start, sc_end, "world_steps_y", &sy)) {
+    if (sy < 1) {
+      sy = 1;
+    }
+    if (sy > kMaxWorldSteps) {
+      sy = kMaxWorldSteps;
+    }
+  }
+  s_world_w = kSceneW * sx;
+  s_world_h = kSceneH * sy;
+}
+
+static int clamp_camera_margin(int margin, int viewport_size) {
+  const int cap = (viewport_size - 1) / 2;
+  if (margin < 0) {
+    return 0;
+  }
+  if (margin > cap) {
+    return cap;
+  }
+  return margin;
+}
+
+static void clamp_camera_to_world(int* cx, int* cy) {
+  const int max_x = s_world_w - kSceneW;
+  const int max_y = s_world_h - kSceneH;
+  if (*cx < 0) {
+    *cx = 0;
+  } else if (*cx > max_x) {
+    *cx = max_x;
+  }
+  if (*cy < 0) {
+    *cy = 0;
+  } else if (*cy > max_y) {
+    *cy = max_y;
+  }
+}
+
+static bool find_scene_nested_object(const char* sc_start, const char* sc_end, const char* key,
+                                     const char** out_inner, const char** out_inner_end) {
+  char pattern[40];
+  snprintf(pattern, sizeof pattern, "\"%s\"", key);
+  const char* p = strstr_bounded(sc_start, sc_end, pattern);
+  if (!p) {
+    return false;
+  }
+  p += strlen(pattern);
+  while (p < sc_end && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= sc_end || *p != ':') {
+    return false;
+  }
+  ++p;
+  while (p < sc_end && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= sc_end || *p != '{') {
+    return false;
+  }
+  const char* ie = json_object_end(p);
+  if (!ie) {
+    return false;
+  }
+  *out_inner = p;
+  *out_inner_end = ie;
+  return true;
+}
+
+static void parse_scene_camera(const char* sc_start, const char* sc_end) {
+  s_camera_fixed = false;
+  s_camera_target[0] = '\0';
+  s_cam_x = 0;
+  s_cam_y = 0;
+  s_camera_margin_x = 64;
+  s_camera_margin_y = 48;
+  const char* cam_s = sc_start;
+  const char* cam_e = sc_end;
+  const char* nested = nullptr;
+  const char* nested_end = nullptr;
+  if (find_scene_nested_object(sc_start, sc_end, "camera", &nested, &nested_end)) {
+    cam_s = nested;
+    cam_e = nested_end;
+  }
+  char mode[16];
+  if (json_extract_string_for_key(cam_s, cam_e, "mode", mode, sizeof mode) ||
+      json_extract_string_for_key(sc_start, sc_end, "camera_mode", mode, sizeof mode)) {
+    if (strcmp(mode, "fixed") == 0) {
+      s_camera_fixed = true;
+    }
+  }
+  if (!json_extract_int_for_key(cam_s, cam_e, "x", &s_cam_x)) {
+    json_extract_int_for_key(sc_start, sc_end, "camera_x", &s_cam_x);
+  }
+  if (!json_extract_int_for_key(cam_s, cam_e, "y", &s_cam_y)) {
+    json_extract_int_for_key(sc_start, sc_end, "camera_y", &s_cam_y);
+  }
+  if (!json_extract_int_for_key(cam_s, cam_e, "margin_x", &s_camera_margin_x)) {
+    json_extract_int_for_key(sc_start, sc_end, "camera_margin_x", &s_camera_margin_x);
+  }
+  if (!json_extract_int_for_key(cam_s, cam_e, "margin_y", &s_camera_margin_y)) {
+    json_extract_int_for_key(sc_start, sc_end, "camera_margin_y", &s_camera_margin_y);
+  }
+  if (!json_extract_string_for_key(cam_s, cam_e, "target", s_camera_target,
+                                   sizeof s_camera_target)) {
+    json_extract_string_for_key(sc_start, sc_end, "camera_target", s_camera_target,
+                                sizeof s_camera_target);
+  }
+  if (s_cam_x < 0) {
+    s_cam_x = 0;
+  }
+  if (s_cam_y < 0) {
+    s_cam_y = 0;
+  }
+  s_camera_margin_x = clamp_camera_margin(s_camera_margin_x, kSceneW);
+  s_camera_margin_y = clamp_camera_margin(s_camera_margin_y, kSceneH);
+  clamp_camera_to_world(&s_cam_x, &s_cam_y);
+}
+
+static void resolve_player_actor_index(void) {
+  s_player_actor = -1;
+  if (s_camera_target[0]) {
+    for (int i = 0; i < s_actor_count; ++i) {
+      if (strcmp(s_actors[i].obj_id, s_camera_target) == 0) {
+        s_player_actor = i;
+        return;
+      }
+    }
+  }
+  for (int i = 0; i < s_actor_count; ++i) {
+    if (strcmp(s_actors[i].obj_id, "player") == 0 ||
+        strcmp(s_actors[i].obj_id, "character") == 0) {
+      s_player_actor = i;
+      return;
+    }
+  }
+  if (s_actor_count > 0) {
+    s_player_actor = 0;
+  }
+}
+
+static void update_camera_follow_player(void) {
+  if (!scene_uses_scrolling()) {
+    s_cam_x = 0;
+    s_cam_y = 0;
+    turtle_gpu_set_camera(0, 0);
+    return;
+  }
+  if (s_camera_fixed) {
+    clamp_camera_to_world(&s_cam_x, &s_cam_y);
+    turtle_gpu_set_camera(s_cam_x, s_cam_y);
+    return;
+  }
+  if (s_player_actor < 0 || s_player_actor >= s_actor_count) {
+    clamp_camera_to_world(&s_cam_x, &s_cam_y);
+    turtle_gpu_set_camera(s_cam_x, s_cam_y);
+    return;
+  }
+  const SceneActor* p = &s_actors[s_player_actor];
+  int cx = s_cam_x;
+  int cy = s_cam_y;
+  const int mx = s_camera_margin_x;
+  const int my = s_camera_margin_y;
+  if (p->x < cx + mx) {
+    cx = p->x - mx;
+  } else if (p->x > cx + (kSceneW - 1) - mx) {
+    cx = p->x - ((kSceneW - 1) - mx);
+  }
+  if (p->y < cy + my) {
+    cy = p->y - my;
+  } else if (p->y > cy + (kSceneH - 1) - my) {
+    cy = p->y - ((kSceneH - 1) - my);
+  }
+  clamp_camera_to_world(&cx, &cy);
+  s_cam_x = cx;
+  s_cam_y = cy;
+  turtle_gpu_set_camera(s_cam_x, s_cam_y);
+}
+
 static void tile_grid_dims(int tile_px, int* cols, int* rows) {
   int px = tile_px;
   if (px < 1) {
     px = 16;
   }
-  int c = kSceneW / px;
-  int r = kSceneH / px;
+  int c = s_world_w / px;
+  int r = s_world_h / px;
   if (c < 1) {
     c = 1;
   }
@@ -1347,6 +1625,239 @@ static bool resolve_tileset_tts(const char* json, const char* json_end, const ch
     return false;
   }
   return turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(sd->buf.data), sd->buf.len, ts);
+}
+
+static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram) {
+  if (need == 0 || need > kScenePixelsMaxBytes) {
+    return nullptr;
+  }
+  if (out_in_psram) {
+    *out_in_psram = 0;
+  }
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  uint8_t* p = static_cast<uint8_t*>(
+      heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (p) {
+    if (out_in_psram) {
+      *out_in_psram = 1;
+    }
+    return p;
+  }
+  p = static_cast<uint8_t*>(
+      heap_caps_malloc(need, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (p) {
+    return p;
+  }
+#else
+  uint8_t* p = static_cast<uint8_t*>(malloc(need));
+  if (p) {
+    return p;
+  }
+#endif
+  return nullptr;
+}
+
+static bool ensure_world_buffer_filled(uint8_t fill_ci) {
+  if (s_world_bg && s_world_bg_w == s_world_w && s_world_bg_h == s_world_h) {
+    return true;
+  }
+  world_bg_release();
+  const size_t need = static_cast<size_t>(s_world_w) * static_cast<size_t>(s_world_h);
+  int in_psram = 0;
+  uint8_t* buf = alloc_scene_pixel_buffer(need, &in_psram);
+  if (!buf) {
+    Serial.printf("turtle_scene: sin RAM para mundo estatico %ux%u (necesita ~%u bytes)\n",
+                  static_cast<unsigned>(s_world_w), static_cast<unsigned>(s_world_h),
+                  static_cast<unsigned>(need));
+#if defined(ESP32) || defined(ESP_PLATFORM)
+    Serial.printf("  PSRAM libre ~%u, bloque max ~%u\n",
+                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+                  static_cast<unsigned>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
+#endif
+    return false;
+  }
+  s_world_bg = buf;
+  s_world_bg_w = s_world_w;
+  s_world_bg_h = s_world_h;
+  memset(s_world_bg, fill_ci, need);
+  Serial.printf("turtle_scene: buffer mundo %dx%d (%s)\n", s_world_bg_w, s_world_bg_h,
+                in_psram ? "PSRAM" : "DRAM");
+  return true;
+}
+
+static bool bake_indexed_background_into_world(const char* json, const char* json_end,
+                                               const char* scene_start,
+                                               const char* scene_end) {
+  char bg_id[48];
+  if (!json_extract_string_for_key(scene_start, scene_end, "background", bg_id, sizeof bg_id)) {
+    return true;
+  }
+  if (!bg_id[0]) {
+    return true;
+  }
+
+  const char* inner = nullptr;
+  const char* inner_end = nullptr;
+  if (!find_background_inner(json, json_end, bg_id, &inner, &inner_end)) {
+    return false;
+  }
+
+  AssetSdLoad sd;
+  const char* asset_inner = inner;
+  const char* asset_inner_end = inner_end;
+  if (!sd.resolve(inner, inner_end, &asset_inner, &asset_inner_end)) {
+    return false;
+  }
+
+  const size_t bg_blob_len =
+      (asset_inner_end > asset_inner) ? static_cast<size_t>(asset_inner_end - asset_inner) : 0;
+
+  int pw = 0;
+  int ph = 0;
+  if (!read_asset_bin_dims(asset_inner, bg_blob_len, &pw, &ph) &&
+      !resolve_pixel_dims_sprite(asset_inner, asset_inner_end, &pw, &ph)) {
+    return false;
+  }
+  if (!render_mode_is_indexed_pixels(asset_inner, asset_inner_end) &&
+      !buffer_is_turtle_asset_bin(asset_inner, bg_blob_len)) {
+    int pci = 0;
+    if (!extract_palette_index_sprite(asset_inner, asset_inner_end, &pci)) {
+      return false;
+    }
+    if (pci < 0) {
+      pci = 0;
+    }
+    if (pci > 31) {
+      pci = 31;
+    }
+    if (pw < 1) {
+      pw = s_world_w;
+    }
+    if (ph < 1) {
+      ph = s_world_h;
+    }
+    if (pw > s_world_w) {
+      pw = s_world_w;
+    }
+    if (ph > s_world_h) {
+      ph = s_world_h;
+    }
+    for (int sy = 0; sy < ph; ++sy) {
+      for (int sx = 0; sx < pw; ++sx) {
+        world_buffer_put_scene_pixel(sx, sy, static_cast<uint8_t>(pci));
+      }
+    }
+    return true;
+  }
+  if (pw <= 0 || ph <= 0) {
+    return false;
+  }
+  if (pw > s_world_bg_w || ph > s_world_bg_h) {
+    Serial.printf("turtle_scene: fondo %dx%d > buffer %dx%d\n", pw, ph, s_world_bg_w, s_world_bg_h);
+    return false;
+  }
+  return decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph, s_world_bg,
+                                        s_world_bg_w);
+}
+
+static void bake_tile_cell_into_world(int gx, int gy, int rows, int px, const uint8_t* tile,
+                                      uint8_t transparent_index) {
+  if (!tile || px <= 0) {
+    return;
+  }
+  const int sy0 = (rows - 1 - gy) * px;
+  for (int tpy = 0; tpy < px; ++tpy) {
+    for (int tpx = 0; tpx < px; ++tpx) {
+      const uint8_t ci = tile[static_cast<size_t>(tpy) * static_cast<size_t>(px) +
+                            static_cast<size_t>(tpx)];
+      if (ci == transparent_index) {
+        continue;
+      }
+      const int sx = gx * px + tpx;
+      const int sy = sy0 + (px - 1 - tpy);
+      world_buffer_put_scene_pixel(sx, sy, ci);
+    }
+  }
+}
+
+static bool bake_tile_layers_into_world(const char* json, const char* json_end,
+                                        const char* scene_start, const char* scene_end,
+                                        uint8_t transparent_index) {
+  int tile_px = s_runtime_tile_px;
+  if (tile_px < 4 || tile_px > 64) {
+    tile_px = 16;
+  }
+  const int nl =
+      parse_tile_layers(scene_start, scene_end, tile_px, s_tile_layers, kMaxTileLayers);
+  s_runtime_tile_layer_count = nl;
+  if (nl <= 0) {
+    return true;
+  }
+
+  int painted = 0;
+  char last_id[48] = "";
+  turtle_tileset_free(&s_tileset_draw);
+  AssetSdLoad sd;
+
+  for (int li = 0; li < nl; ++li) {
+    const TileLayer* ly = &s_tile_layers[li];
+    if (!ly->enabled || !ly->tileset[0]) {
+      continue;
+    }
+    if (strcmp(last_id, ly->tileset) != 0) {
+      turtle_tileset_free(&s_tileset_draw);
+      if (!resolve_tileset_tts(json, json_end, ly->tileset, &sd, &s_tileset_draw)) {
+        last_id[0] = '\0';
+        continue;
+      }
+      snprintf(last_id, sizeof last_id, "%s", ly->tileset);
+    }
+    if (s_tileset_draw.tile_px != static_cast<uint8_t>(tile_px)) {
+      continue;
+    }
+
+    const int cols = ly->cols;
+    const int rows = ly->rows;
+    for (int gy = 0; gy < rows; ++gy) {
+      for (int gx = 0; gx < cols; ++gx) {
+        const int ti = ly->cells[gy][gx];
+        if (ti == static_cast<int>(transparent_index) || ti < 0) {
+          continue;
+        }
+        const uint8_t* tile = turtle_tileset_tile(&s_tileset_draw, ti);
+        if (!tile) {
+          continue;
+        }
+        bake_tile_cell_into_world(gx, gy, rows, tile_px, tile, transparent_index);
+        ++painted;
+      }
+    }
+  }
+  turtle_tileset_free(&s_tileset_draw);
+  if (painted > 0) {
+    Serial.printf("turtle_scene: tiles horneados en buffer mundo (%d celdas)\n", painted);
+  }
+  return true;
+}
+
+static bool prepare_world_static_composite(const char* json, const char* json_end,
+                                           const char* scene_start, const char* scene_end) {
+  s_world_static_ready = false;
+  if (!scene_uses_scrolling()) {
+    return false;
+  }
+  if (!ensure_world_buffer_filled(static_cast<uint8_t>(s_runtime_bg))) {
+    return false;
+  }
+  if (!bake_indexed_background_into_world(json, json_end, scene_start, scene_end)) {
+    Serial.println("turtle_scene: aviso: fondo indexado no horneado");
+  }
+  if (!bake_tile_layers_into_world(json, json_end, scene_start, scene_end, s_runtime_transp)) {
+    Serial.println("turtle_scene: aviso: tiles no horneados");
+  }
+  s_world_static_ready = true;
+  return true;
 }
 
 static void draw_tile_layers_for_scene(const char* json, const char* json_end,
@@ -2030,41 +2541,50 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
   }
 }
 
+static void paint_scene_static_layers(void) {
+  turtle_gpu_set_camera(s_cam_x, s_cam_y);
+  turtle_gpu_cls(static_cast<uint8_t>(s_runtime_bg));
+  if (s_world_static_ready && s_world_bg) {
+    paint_cached_world_background(s_runtime_transp);
+    return;
+  }
+  if (s_world_bg) {
+    paint_cached_world_background(s_runtime_transp);
+  } else if (!draw_background_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
+                                          s_runtime_sc_end, s_runtime_transp)) {
+    Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
+  }
+  draw_tile_layers_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
+                             s_runtime_sc_end, s_runtime_transp);
+}
+
 static void draw_all_actors(void) {
   if (!s_runtime_json || !s_runtime_json_end) {
     return;
   }
 
-  turtle_gpu_dirty_reset();
-  for (int i = 0; i < s_actor_count; ++i) {
-    const SceneActor* a = &s_actors[i];
-    if (a->has_prev_blit && a->prev_blit_w > 0 && a->prev_blit_h > 0) {
-      turtle_gpu_dirty_mark_scene_rect(a->prev_blit_x, a->prev_blit_y, a->prev_blit_w,
-                                       a->prev_blit_h);
-    }
-    if (a->pw > 0 && a->ph > 0) {
-      int bx = 0;
-      int by = 0;
-      int bw = 0;
-      int bh = 0;
-      actor_sprite_scene_bounds(a, &bx, &by, &bw, &bh);
-      turtle_gpu_dirty_mark_scene_rect(bx, by, bw, bh);
-    }
+  update_camera_follow_player();
+
+  if (scene_uses_scrolling()) {
+    paint_scene_static_layers();
+  } else {
+    turtle_gpu_set_camera(0, 0);
+    turtle_gpu_restore_static();
   }
 
-  turtle_gpu_restore_static_dirty();
   for (int i = 0; i < s_actor_count; ++i) {
     if (!draw_actor_runtime(i)) {
       Serial.printf("turtle_scene: no sprite para \"%s\"\n", s_actors[i].obj_id);
     }
   }
+  turtle_gpu_request_full_flip();
 }
 
 static void clamp_actor_pos(SceneActor* a) {
   const int min_x = -a->col_x0;
-  const int max_x = (kSceneW - 1) - a->col_x1;
+  const int max_x = (s_world_w - 1) - a->col_x1;
   const int min_y = -a->col_y0;
-  const int max_y = (kSceneH - 1) - a->col_y1;
+  const int max_y = (s_world_h - 1) - a->col_y1;
   if (a->x < min_x) {
     a->x = min_x;
   } else if (a->x > max_x) {
@@ -2126,6 +2646,8 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     Serial.printf("turtle_scene: escena \"%s\" no encontrada en bundle\n", scene_id);
     return false;
   }
+  parse_scene_world(sc_start, sc_end);
+  parse_scene_camera(sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -2154,6 +2676,7 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     Serial.println("turtle_scene: sin lista objects valida; solo fondo");
   }
 
+  turtle_gpu_set_camera(0, 0);
   turtle_gpu_cls(static_cast<uint8_t>(bg));
 
   if (!draw_background_for_scene(json, json_end, sc_start, sc_end,
@@ -2199,6 +2722,8 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     return false;
   }
   parse_scene_timing(json, json_end, sc_start, sc_end);
+  parse_scene_world(sc_start, sc_end);
+  parse_scene_camera(sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -2210,6 +2735,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   if (bg > 31) {
     bg = 31;
   }
+  s_runtime_bg = bg;
 
   int transp = kDefaultTransparentIndex;
   if (!json_extract_int_for_key(json, json_end, "transparent_index", &transp)) {
@@ -2228,15 +2754,37 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     Serial.println("turtle_scene: sin lista objects valida; solo fondo");
   }
 
-  turtle_gpu_cls(static_cast<uint8_t>(bg));
-  if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
-    Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
-  }
-  draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
-  turtle_gpu_snapshot_static();
-
   s_runtime_json = json;
   s_runtime_json_end = json_end;
+  s_runtime_sc_start = sc_start;
+  s_runtime_sc_end = sc_end;
+  turtle_gpu_set_camera(0, 0);
+  turtle_gpu_cls(static_cast<uint8_t>(bg));
+  {
+    int tile_px = 16;
+    if (!json_extract_int_for_key(json, json_end, "tile_px", &tile_px) || tile_px < 4 ||
+        tile_px > 64) {
+      tile_px = 16;
+    }
+    s_runtime_tile_px = tile_px;
+  }
+  if (scene_uses_scrolling()) {
+    if (!prepare_world_static_composite(json, json_end, sc_start, sc_end)) {
+      Serial.println("turtle_scene: aviso: buffer mundo estatico fallo; reintento por frame");
+      if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
+        Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
+      }
+      draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
+    } else {
+      paint_cached_world_background(s_runtime_transp);
+    }
+  } else {
+    if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
+      Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
+    }
+    draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
+    turtle_gpu_snapshot_static();
+  }
   s_actor_count = 0;
   for (int i = 0; i < kMaxPlacements; ++i) {
     s_actor_draw_cache[i].sprite_id[0] = '\0';
@@ -2245,17 +2793,10 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   }
   for (int i = 0; i < npl && s_actor_count < kMaxPlacements; ++i) {
     if (init_actor_from_placement(json, json_end, &s_placements[i], &s_actors[s_actor_count])) {
-      if (s_player_actor < 0 &&
-          (strcmp(s_actors[s_actor_count].obj_id, "player") == 0 ||
-           strcmp(s_actors[s_actor_count].obj_id, "character") == 0)) {
-        s_player_actor = s_actor_count;
-      }
       ++s_actor_count;
     }
   }
-  if (s_player_actor < 0 && s_actor_count > 0) {
-    s_player_actor = 0;
-  }
+  resolve_player_actor_index();
 
   for (int i = 0; i < s_actor_count; ++i) {
     prewarm_actor_sprites(json, json_end, i);
@@ -2268,9 +2809,10 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   turtle_actor_lua_bind_actors_from_scene();
 
   Serial.printf(
-      "turtle_scene: runtime escena \"%s\" (%d actores), target_fps=%d anim_fps=%d (capa "
-      "estatica OK)\n",
-      scene_id, s_actor_count, s_target_fps, s_default_anim_fps);
+      "turtle_scene: runtime escena \"%s\" mundo %dx%d camara %s (%d actores), target_fps=%d "
+      "anim_fps=%d\n",
+      scene_id, s_world_w, s_world_h, scene_uses_scrolling() ? "scroll" : "fija",
+      s_actor_count, s_target_fps, s_default_anim_fps);
   if (s_player_actor >= 0) {
     Serial.printf("turtle_scene: actor jugador (indice %d) = %s\n", s_player_actor,
                   s_actors[s_player_actor].obj_id);

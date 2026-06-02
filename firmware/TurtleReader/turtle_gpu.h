@@ -76,9 +76,18 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
                                           bool flip_h);
 void turtle_gpu_flip(void);
 
+/** Origen de camara en espacio escena (esquina inf-izq del viewport). Por defecto (0,0). */
+void turtle_gpu_set_camera(int cam_x, int cam_y);
+void turtle_gpu_get_camera(int* cam_x, int* cam_y);
+
 /** Marca region sucia (coords escena: esquina inf-izq del blit, Y arriba). */
 void turtle_gpu_dirty_reset(void);
 void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h);
+/** Ensancha region sucia 1 px (redondeo fb->panel). Llamar tras marcar rects. */
+void turtle_gpu_dirty_slack_for_scale(void);
+bool turtle_gpu_dirty_valid(void);
+/** Marca todo el framebuffer logico como sucio. */
+void turtle_gpu_dirty_mark_fb_full(void);
 /** Restaura solo la union de rects sucios desde la capa estatica. */
 void turtle_gpu_restore_static_dirty(void);
 /** Proximo flip envia framebuffer completo (tras cls, snapshot, ENTRY). */

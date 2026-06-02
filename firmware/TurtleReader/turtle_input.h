@@ -18,8 +18,8 @@ enum TurtleBtn : int {
 };
 
 /*
- * Pines por defecto (ESP32-S3): evitan SD 36-39 y TFT 8-12 del sketch actual.
- * Un extremo del pulsador -> GPIO, otro -> GND (activo en LOW).
+ * Pines por defecto (ESP32-S3 + PSRAM OPI): evitan TFT 8-13 y SD 19/20/21/41.
+ * No uses GPIO 33-37 (bus octal PSRAM). Un extremo del pulsador -> GPIO, otro -> GND (LOW).
  * Cambia con -DTURTLE_BTN_PIN_LEFT=... al compilar o edita aqui.
  */
 #ifndef TURTLE_BTN_PIN_LEFT

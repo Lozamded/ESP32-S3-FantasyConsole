@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,12 @@ from turtlestudio.project import (
     ProjectInfo,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
+    VIEWPORT_PIXEL_H,
+    VIEWPORT_PIXEL_W,
+    WORLD_STEPS_MAX,
+    WORLD_STEPS_MIN,
+    clamp_world_steps,
+    scene_world_pixel_size,
     background_layers_to_json_list,
     create_project,
     default_background_layers,
@@ -98,15 +105,28 @@ from turtlestudio.project import (
     scene_lua_relpath,
     validate_scene_script_stem,
 )
+from turtlestudio.scene_camera import (
+    CAMERA_MODE_FIXED,
+    CAMERA_MODE_FOLLOW,
+    SceneCameraConfig,
+    apply_scene_camera_to_row,
+    draw_scene_camera_viewport_on_rgba,
+    parse_scene_camera_from_row,
+    resolve_scene_camera_viewport,
+    scene_camera_to_json,
+)
 from turtlestudio.scene_tiles import (
     TILE_LAYER_COUNT,
     SceneTileLayer,
     default_tile_layers,
+    draw_scene_step_bounds_on_rgba,
     draw_scene_tile_grid_on_rgba,
+    draw_scene_tile_hover_on_rgba,
     list_tileset_stems_for_palette,
     paint_tile_layers_on_rgba,
     parse_tile_layers,
     resize_tile_layer_cells,
+    scene_cell_framebuffer_rect,
     scene_coords_to_cell,
     set_cell_index,
     tile_layers_to_json_list,
@@ -203,10 +223,13 @@ def _sprite_used_paint_indices(rows: list[list[int]] | None) -> list[int]:
             seen.add(v)
     return sorted(seen)
 # Alto del panel de vista previa (píxeles de pantalla); el zoom grande usa scroll dentro.
-_SCENE_CANVAS_SCALE_MAX = 8
-# Textura fija (tamano max con escala + huecos entre pixeles, como el editor de sprites).
-_SCENE_PREVIEW_TEX_W = _FB_W * _SCENE_CANVAS_SCALE_MAX + max(0, _FB_W - 1)
-_SCENE_PREVIEW_TEX_H = _FB_H * _SCENE_CANVAS_SCALE_MAX + max(0, _FB_H - 1)
+_SCENE_CANVAS_SCALE_MAX = 4
+_SCENE_LARGE_WORLD_SCALE_MAX = 2
+_MAX_WORLD_W = SCENE_PIXEL_W * WORLD_STEPS_MAX
+_MAX_WORLD_H = SCENE_PIXEL_H * WORLD_STEPS_MAX
+# Textura fija (tamano max con escala + huecos); limitada para no subir ~68M floats a DPG.
+_SCENE_PREVIEW_TEX_W = _MAX_WORLD_W * _SCENE_CANVAS_SCALE_MAX + max(0, _MAX_WORLD_W - 1)
+_SCENE_PREVIEW_TEX_H = _MAX_WORLD_H * _SCENE_CANVAS_SCALE_MAX + max(0, _MAX_WORLD_H - 1)
 _SCENE_PREVIEW_TEX_PAD_RGBA = (0.08, 0.08, 0.1, 1.0)
 _SCENE_CANVAS_TEX_TAG = "preview_texture"
 _SCENE_CANVAS_IMG_TAG = "ts_canvas_image"
@@ -219,6 +242,11 @@ _SCENE_CANVAS_VIEWPORT_TAG = "ts_canvas_viewport"
 # Bloque fijo arriba a la derecha (canvas); el Lua va debajo con scroll propio.
 _EDITOR_CANVAS_BLOCK_H = _CANVAS_VIEWPORT_H + 112
 _GRID_STEP = 8
+# Limitar repintado del canvas en hover (evita lag en mundos grandes).
+_SCENE_CANVAS_HOVER_MIN_INTERVAL_S = 1.0 / 24.0
+_SCENE_LARGE_WORLD_HOVER_INTERVAL_S = 1.0 / 8.0
+# Tope de pixeles subidos a DPG por frame (~3.6 MB de floats).
+_SCENE_CANVAS_MAX_UPLOAD_PIXELS = 900_000
 # Panel izquierdo: ancho del child modesto; los controles usan ancho FIJO para que no
 # estiren con el panel y no roben espacio al canvas (Dear PyGui: width=-1 = 100% del padre).
 _LEFT_FORM_WIDTH = 232
@@ -1265,29 +1293,63 @@ def _scene_preview_uv_max(dw: int, dh: int) -> tuple[float, float]:
     return (max(0.0, min(1.0, dw / mx)), max(0.0, min(1.0, dh / my)))
 
 
+def _upload_scene_canvas_texture(
+    state: dict[str, Any],
+    disp_rgba: list[float],
+    dw: int,
+    dh: int,
+) -> None:
+    """Empaqueta dw×dh en textura fija max (DPG no soporta resize seguro en runtime)."""
+    import dearpygui.dearpygui as dpg
+
+    dw = max(1, int(dw))
+    dh = max(1, int(dh))
+    n = dw * dh * 4
+    if len(disp_rgba) < n:
+        return
+    src = disp_rgba if len(disp_rgba) == n else disp_rgba[:n]
+    tex_w = _SCENE_PREVIEW_TEX_W
+    tex_h = _SCENE_PREVIEW_TEX_H
+    full_n = tex_w * tex_h * 4
+    tex_buf = state.get("scene_preview_tex_buffer")
+    if not isinstance(tex_buf, list) or len(tex_buf) != full_n:
+        pad = _SCENE_PREVIEW_TEX_PAD_RGBA
+        tex_buf = [pad[0], pad[1], pad[2], pad[3]] * (tex_w * tex_h)
+        state["scene_preview_tex_buffer"] = tex_buf
+    _blit_scene_preview_to_tex_buffer(tex_buf, src, dw, dh)
+    state["scene_tex_upload_w"] = dw
+    state["scene_tex_upload_h"] = dh
+    if dpg.does_item_exist(_SCENE_CANVAS_TEX_TAG):
+        dpg.set_value(_SCENE_CANVAS_TEX_TAG, tex_buf)
+
+
+def _blit_scene_preview_to_tex_buffer(
+    out: list[float],
+    rgba: list[float],
+    pw: int,
+    ph: int,
+) -> None:
+    """Copia pw×ph al rincón superior izquierdo de `out` (textura fija, sin realloc)."""
+    tex_w = _SCENE_PREVIEW_TEX_W
+    for y in range(ph):
+        src = y * pw * 4
+        dst = y * tex_w * 4
+        row_len = pw * 4
+        out[dst : dst + row_len] = rgba[src : src + row_len]
+
+
 def _pack_scene_preview_rgba_into_tex_buffer(
     rgba: list[float],
     pw: int,
     ph: int,
+    *,
+    out: list[float] | None = None,
 ) -> list[float]:
-    """Copia pw×ph al rincón superior izquierdo de la textura de vista previa de escena."""
-    tex_w, tex_h = _SCENE_PREVIEW_TEX_W, _SCENE_PREVIEW_TEX_H
-    bg = _SCENE_PREVIEW_TEX_PAD_RGBA
-    out = [0.0] * (tex_w * tex_h * 4)
-    for y in range(tex_h):
-        for x in range(tex_w):
-            i = (y * tex_w + x) * 4
-            if x < pw and y < ph:
-                si = (y * pw + x) * 4
-                out[i] = rgba[si]
-                out[i + 1] = rgba[si + 1]
-                out[i + 2] = rgba[si + 2]
-                out[i + 3] = rgba[si + 3]
-            else:
-                out[i] = bg[0]
-                out[i + 1] = bg[1]
-                out[i + 2] = bg[2]
-                out[i + 3] = bg[3]
+    """Compat: empaqueta en buffer persistente si se pasa `out`."""
+    if out is None:
+        pad = _SCENE_PREVIEW_TEX_PAD_RGBA
+        out = [pad[0], pad[1], pad[2], pad[3]] * (_SCENE_PREVIEW_TEX_W * _SCENE_PREVIEW_TEX_H)
+    _blit_scene_preview_to_tex_buffer(out, rgba, pw, ph)
     return out
 
 
@@ -1502,8 +1564,8 @@ def _paint_scene_objects_preview(
             continue
         if not oid:
             continue
-        sx = max(0, min(SCENE_PIXEL_W - 1, sx))
-        sy = max(0, min(SCENE_PIXEL_H - 1, sy))
+        sx = max(0, min(fw - 1, sx))
+        sy = max(0, min(fh - 1, sy))
         info = _resolve_object_sprite_preview(project_root, oid)
         bx, by = sprite_blit_bottom_left(
             sx,
@@ -1565,8 +1627,8 @@ def _paint_placement_crosses_only(
             sy = int(p.get("y", 0))
         except (TypeError, ValueError):
             continue
-        sx = max(0, min(SCENE_PIXEL_W - 1, sx))
-        sy = max(0, min(SCENE_PIXEL_H - 1, sy))
+        sx = max(0, min(fw - 1, sx))
+        sy = max(0, min(fh - 1, sy))
         _draw_anchor_cross_rgba(rgba, fw, fh, sx, sy, cr, cg, cb)
 
 
@@ -1598,6 +1660,20 @@ def run_gui() -> int:
         "scene_tile_hover_cell": None,
         "scene_tile_brush_asset_tags": [],
         "scene_tile_brush_cell_items": [],
+        "scene_canvas_base_cache": None,
+        "scene_canvas_cache_key": None,
+        "scene_tileset_preview_cache": {},
+        "scene_object_preview_cache": {},
+        "scene_preview_tex_buffer": None,
+        "scene_tex_upload_w": 0,
+        "scene_tex_upload_h": 0,
+        "scene_scaled_nohover": None,
+        "scene_scaled_display": None,
+        "scene_scaled_content_key": None,
+        "scene_scaled_dw": 0,
+        "scene_scaled_dh": 0,
+        "scene_scaled_prev_hover": None,
+        "scene_canvas_last_hover_ts": 0.0,
         "sprite_pixel_rows": None,
         "sprite_pixel_stash": None,
         "sprite_frame_pixels": None,
@@ -1671,9 +1747,13 @@ def run_gui() -> int:
     def _clear_scene_tile_hover() -> None:
         state["scene_tile_hover_cell"] = None
 
-    def _texture_px_to_scene_coords(lx: int, ly_top: int) -> tuple[int, int]:
-        sx = max(0, min(_FB_W - 1, lx))
-        sy = (_FB_H - 1) - max(0, min(_FB_H - 1, ly_top))
+    def _texture_px_to_scene_coords(
+        lx: int, ly_top: int, world_w: int, world_h: int
+    ) -> tuple[int, int]:
+        ww = max(1, int(world_w))
+        wh = max(1, int(world_h))
+        sx = max(0, min(ww - 1, lx))
+        sy = (wh - 1) - max(0, min(wh - 1, ly_top))
         return sx, sy
 
     def _canvas_display_scale() -> int:
@@ -2153,13 +2233,187 @@ def run_gui() -> int:
 
     def _normalize_row_tile_layers_inplace(row: dict[str, Any]) -> None:
         px = _tiles_px_from_widgets()
-        row["tile_layers"] = tile_layers_to_json_list(
-            parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ww, wh = scene_world_pixel_size(
+            row.get("world_steps_x", 1), row.get("world_steps_y", 1)
         )
+        row["tile_layers"] = tile_layers_to_json_list(
+            parse_tile_layers(
+                row.get("tile_layers"), tile_px=px, world_w=ww, world_h=wh
+            )
+        )
+
+    def _commit_world_steps_for_scene_id(sid: str) -> None:
+        if not dpg.does_item_exist("ts_scene_world_steps_x"):
+            return
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list):
+            return
+        row = next((x for x in scenes if x.get("id") == sid), None)
+        if row is None:
+            return
+        try:
+            sx = clamp_world_steps(dpg.get_value("ts_scene_world_steps_x"))
+            sy = clamp_world_steps(dpg.get_value("ts_scene_world_steps_y"))
+        except (TypeError, ValueError):
+            return
+        old_ww, old_wh = scene_world_pixel_size(
+            row.get("world_steps_x", 1), row.get("world_steps_y", 1)
+        )
+        row["world_steps_x"] = sx
+        row["world_steps_y"] = sy
+        new_ww, new_wh = scene_world_pixel_size(sx, sy)
+        if old_ww != new_ww or old_wh != new_wh:
+            px = _tiles_px_from_widgets()
+            row["tile_layers"] = tile_layers_to_json_list(
+                parse_tile_layers(
+                    row.get("tile_layers"),
+                    tile_px=px,
+                    world_w=new_ww,
+                    world_h=new_wh,
+                )
+            )
+
+    def _commit_world_steps_for_active_scene() -> None:
+        _commit_world_steps_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def on_scene_world_steps_change(_sender: object, _app_data: object) -> None:
+        _commit_world_steps_for_active_scene()
+        _invalidate_scene_canvas_cache()
+        refresh_canvas_texture()
+
+    def _scene_camera_from_row(row: dict[str, Any]) -> SceneCameraConfig:
+        return parse_scene_camera_from_row(row)
+
+    def _commit_camera_for_scene_id(sid: str) -> None:
+        scenes = state.get("scenes")
+        if not isinstance(scenes, list):
+            return
+        row = next((x for x in scenes if x.get("id") == sid), None)
+        if row is None:
+            return
+        mode = CAMERA_MODE_FOLLOW
+        if dpg.does_item_exist("ts_scene_camera_mode"):
+            raw_m = str(dpg.get_value("ts_scene_camera_mode") or "").strip().lower()
+            if raw_m in (CAMERA_MODE_FIXED, "fija", "fixed"):
+                mode = CAMERA_MODE_FIXED
+        target = ""
+        if dpg.does_item_exist("ts_scene_camera_target"):
+            raw_t = dpg.get_value("ts_scene_camera_target")
+            if raw_t is not None:
+                ts = str(raw_t).strip()
+                if ts and not ts.startswith("("):
+                    target = ts
+        try:
+            cx = int(dpg.get_value("ts_scene_camera_x")) if dpg.does_item_exist("ts_scene_camera_x") else 0
+            cy = int(dpg.get_value("ts_scene_camera_y")) if dpg.does_item_exist("ts_scene_camera_y") else 0
+            mx = (
+                int(dpg.get_value("ts_scene_camera_margin_x"))
+                if dpg.does_item_exist("ts_scene_camera_margin_x")
+                else 64
+            )
+            my = (
+                int(dpg.get_value("ts_scene_camera_margin_y"))
+                if dpg.does_item_exist("ts_scene_camera_margin_y")
+                else 48
+            )
+        except (TypeError, ValueError):
+            cx, cy, mx, my = 0, 0, 64, 48
+        cam = SceneCameraConfig(
+            mode=mode,
+            x=cx,
+            y=cy,
+            target=target,
+            margin_x=mx,
+            margin_y=my,
+        )
+        apply_scene_camera_to_row(row, cam)
+
+    def _commit_camera_for_active_scene() -> None:
+        _commit_camera_for_scene_id(str(state.get("active_scene_id") or ""))
+
+    def on_scene_camera_change(_sender: object, _app_data: object) -> None:
+        proj = isinstance(state.get("project_root"), Path)
+        if dpg.does_item_exist("ts_scene_camera_mode"):
+            raw_m = str(dpg.get_value("ts_scene_camera_mode") or "").strip().lower()
+            fixed = raw_m.startswith("fij") or raw_m == CAMERA_MODE_FIXED
+            for tag in ("ts_scene_camera_x", "ts_scene_camera_y"):
+                if dpg.does_item_exist(tag):
+                    dpg.configure_item(tag, enabled=proj and fixed)
+        _commit_camera_for_active_scene()
+        _invalidate_scene_canvas_cache()
+        refresh_canvas_texture()
+
+    def _refresh_scene_camera_target_combo(row: dict[str, Any] | None = None) -> None:
+        if not dpg.does_item_exist("ts_scene_camera_target"):
+            return
+        items = ["(auto character/player)"]
+        if row is None:
+            row = _active_scene_row()
+        if isinstance(row, dict):
+            raw_objs = row.get("objects")
+            if isinstance(raw_objs, list):
+                for o in raw_objs:
+                    if isinstance(o, dict):
+                        oid = str(o.get("id", "")).strip()
+                        if oid and oid not in items:
+                            items.append(oid)
+        cur = ""
+        if row is not None:
+            cur = str(row.get("camera_target") or "").strip()
+            if not cur and isinstance(row.get("camera"), dict):
+                cur = str(row["camera"].get("target", "")).strip()
+        pick = "(auto character/player)"
+        if cur and cur in items:
+            pick = cur
+        elif cur:
+            items.append(cur)
+            pick = cur
+        dpg.configure_item("ts_scene_camera_target", items=items)
+        dpg.set_value("ts_scene_camera_target", pick)
+
+    def _load_camera_widgets_from_row(row: dict[str, Any]) -> None:
+        cam = _scene_camera_from_row(row)
+        if dpg.does_item_exist("ts_scene_camera_mode"):
+            dpg.set_value(
+                "ts_scene_camera_mode",
+                "Fija" if cam.mode == CAMERA_MODE_FIXED else "Seguir objetivo",
+            )
+        if dpg.does_item_exist("ts_scene_camera_x"):
+            dpg.set_value("ts_scene_camera_x", int(cam.x))
+        if dpg.does_item_exist("ts_scene_camera_y"):
+            dpg.set_value("ts_scene_camera_y", int(cam.y))
+        if dpg.does_item_exist("ts_scene_camera_margin_x"):
+            dpg.set_value("ts_scene_camera_margin_x", int(cam.margin_x))
+        if dpg.does_item_exist("ts_scene_camera_margin_y"):
+            dpg.set_value("ts_scene_camera_margin_y", int(cam.margin_y))
+        _refresh_scene_camera_target_combo(row)
+        fixed = cam.mode == CAMERA_MODE_FIXED
+        for tag in ("ts_scene_camera_x", "ts_scene_camera_y"):
+            if dpg.does_item_exist(tag):
+                dpg.configure_item(tag, enabled=fixed)
+
+    def _load_world_steps_widgets_from_row(row: dict[str, Any]) -> None:
+        sx = clamp_world_steps(row.get("world_steps_x", 1))
+        sy = clamp_world_steps(row.get("world_steps_y", 1))
+        if dpg.does_item_exist("ts_scene_world_steps_x"):
+            dpg.set_value("ts_scene_world_steps_x", sx)
+        if dpg.does_item_exist("ts_scene_world_steps_y"):
+            dpg.set_value("ts_scene_world_steps_y", sy)
+        if dpg.does_item_exist("ts_canvas_scale") and (sx > 1 or sy > 1):
+            try:
+                if int(dpg.get_value("ts_canvas_scale")) > 1:
+                    dpg.set_value("ts_canvas_scale", 1)
+            except (TypeError, ValueError):
+                pass
 
     def _commit_widgets_to_tile_row_for_slot(row: dict[str, Any], slot: int) -> None:
         px = _tiles_px_from_widgets()
-        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ww, wh = scene_world_pixel_size(
+            row.get("world_steps_x", 1), row.get("world_steps_y", 1)
+        )
+        tpl = parse_tile_layers(
+            row.get("tile_layers"), tile_px=px, world_w=ww, world_h=wh
+        )
         slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
         en = (
             bool(dpg.get_value("ts_tile_layer_enabled"))
@@ -2181,7 +2435,12 @@ def run_gui() -> int:
     def _load_tile_widgets_from_row_for_slot(row: dict[str, Any], slot: int) -> None:
         _normalize_row_tile_layers_inplace(row)
         px = _tiles_px_from_widgets()
-        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ww, wh = scene_world_pixel_size(
+            row.get("world_steps_x", 1), row.get("world_steps_y", 1)
+        )
+        tpl = parse_tile_layers(
+            row.get("tile_layers"), tile_px=px, world_w=ww, world_h=wh
+        )
         slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
         ly = tpl[slot]
         if dpg.does_item_exist("ts_tile_layer_enabled"):
@@ -2405,6 +2664,41 @@ def run_gui() -> int:
             return None
         return next((x for x in scenes if x.get("id") == active), None)
 
+    def _active_scene_world_size() -> tuple[int, int]:
+        row = _active_scene_row()
+        if row is None:
+            return SCENE_PIXEL_W, SCENE_PIXEL_H
+        return scene_world_pixel_size(
+            row.get("world_steps_x", 1),
+            row.get("world_steps_y", 1),
+        )
+
+    def _scene_canvas_scale_clamped(world_w: int, world_h: int) -> int:
+        sc = _canvas_display_scale()
+        if world_w <= 0 or world_h <= 0:
+            return sc
+        with_gaps = (
+            bool(dpg.get_value("ts_show_grid"))
+            if dpg.does_item_exist("ts_show_grid")
+            else False
+        )
+        cap = 1
+        for try_sc in range(_SCENE_CANVAS_SCALE_MAX, 0, -1):
+            dw, dh = _sprite_display_size(
+                world_w, world_h, try_sc, with_gaps=with_gaps
+            )
+            if dw * dh <= _SCENE_CANVAS_MAX_UPLOAD_PIXELS:
+                cap = try_sc
+                break
+        if _scene_is_large_world(world_w, world_h):
+            cap = min(cap, _SCENE_LARGE_WORLD_SCALE_MAX)
+        return max(1, min(sc, cap))
+
+    def _scene_canvas_hover_min_interval(ww: int, wh: int) -> float:
+        if _scene_is_large_world(ww, wh):
+            return _SCENE_LARGE_WORLD_HOVER_INTERVAL_S
+        return _SCENE_CANVAS_HOVER_MIN_INTERVAL_S
+
     def _scene_tile_grid_visible() -> bool:
         if not isinstance(state.get("project_root"), Path):
             return False
@@ -2418,7 +2712,10 @@ def run_gui() -> int:
             return False
         slot = max(0, min(TILE_LAYER_COUNT - 1, int(state.get("edit_tile_layer_slot", 0))))
         px = _tiles_px_from_widgets()
-        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ww, wh = _active_scene_world_size()
+        tpl = parse_tile_layers(
+            row.get("tile_layers"), tile_px=px, world_w=ww, world_h=wh
+        )
         ly = tpl[slot]
         return ly.enabled and bool(ly.tileset.strip())
 
@@ -2429,19 +2726,22 @@ def run_gui() -> int:
         min_x, min_y = dpg.get_item_rect_min(_SCENE_CANVAS_IMG_TAG)
         rel_x = float(mx - min_x)
         rel_y = float(my - min_y)
-        sc = _canvas_display_scale()
+        ww, wh = _active_scene_world_size()
+        sc = _scene_canvas_scale_clamped(ww, wh)
         show_grid = bool(dpg.get_value("ts_show_grid"))
-        dw, dh = _sprite_display_size(_FB_W, _FB_H, sc, with_gaps=show_grid)
+        dw, dh = _sprite_display_size(ww, wh, sc, with_gaps=show_grid)
         if rel_x < 0 or rel_y < 0 or rel_x >= dw or rel_y >= dh:
             return None
         hit = _sprite_pixel_from_display(
-            rel_x, rel_y, _FB_W, _FB_H, sc, with_gaps=show_grid
+            rel_x, rel_y, ww, wh, sc, with_gaps=show_grid
         )
         if hit is None:
             return None
         lx, ly_top = hit
-        sx, sy = _texture_px_to_scene_coords(lx, ly_top)
-        return scene_coords_to_cell(sx, sy, tile_px=_tiles_px_from_widgets())
+        sx, sy = _texture_px_to_scene_coords(lx, ly_top, ww, wh)
+        return scene_coords_to_cell(
+            sx, sy, tile_px=_tiles_px_from_widgets(), world_w=ww, world_h=wh
+        )
 
     def _try_scene_tile_paint_at_mouse(*, erase: bool = False) -> bool:
         row = _active_scene_row()
@@ -2457,7 +2757,10 @@ def run_gui() -> int:
         slot = int(state.get("edit_tile_layer_slot", 0))
         slot = max(0, min(TILE_LAYER_COUNT - 1, slot))
         px = _tiles_px_from_widgets()
-        tpl = parse_tile_layers(row.get("tile_layers"), tile_px=px)
+        ww, wh = _active_scene_world_size()
+        tpl = parse_tile_layers(
+            row.get("tile_layers"), tile_px=px, world_w=ww, world_h=wh
+        )
         ly = tpl[slot]
         brush = (
             TRANSPARENT_PALETTE_INDEX
@@ -2469,6 +2772,7 @@ def run_gui() -> int:
         new_list = [tpl[i] for i in range(TILE_LAYER_COUNT)]
         new_list[slot] = SceneTileLayer(ly.enabled, ly.tileset, tuple(tuple(r) for r in cells))
         row["tile_layers"] = tile_layers_to_json_list(tuple(new_list))
+        _invalidate_scene_canvas_cache()
         refresh_canvas_texture()
         return True
 
@@ -3117,71 +3421,188 @@ def run_gui() -> int:
             v = 255
         return max(0, min(255, v)) / 255.0
 
-    def refresh_canvas_texture() -> None:
-        rgbs = state["rgb"]
-        if not rgbs:
-            return
-        scenes = state.get("scenes")
-        active = str(state.get("active_scene_id") or "")
-        row: dict[str, Any] | None = None
-        if isinstance(scenes, list):
-            row = next((x for x in scenes if x.get("id") == active), None)
-        n_colors = len(rgbs)
-        try:
-            legacy = int(row.get("background_index", 1)) if row is not None else parse_bg_index()
-        except (TypeError, ValueError):
-            legacy = 1
-        tpl = parse_background_layers(
-            row.get("background_layers") if row is not None else None,
-            legacy_flat_index=legacy,
-            n_colors=n_colors,
+    def _invalidate_scene_canvas_cache() -> None:
+        state["scene_canvas_base_cache"] = None
+        state["scene_canvas_cache_key"] = None
+        _invalidate_scene_scaled_cache()
+
+    def _scene_is_large_world(ww: int, wh: int) -> bool:
+        return ww > SCENE_PIXEL_W or wh > SCENE_PIXEL_H
+
+    def _scene_canvas_base_cache_key(
+        row: dict[str, Any] | None,
+        ww: int,
+        wh: int,
+        active: str,
+    ) -> tuple[Any, ...]:
+        if row is None:
+            return (active, ww, wh, 0)
+        return (
+            active,
+            ww,
+            wh,
+            int(row.get("background_index", 1)),
+            str(row.get("background", "")),
+            int(row.get("world_steps_x", 1)),
+            int(row.get("world_steps_y", 1)),
+            id(row.get("background_layers")),
+            id(row.get("tile_layers")),
+            id(row.get("objects")),
+            _scene_sprites_preview_visible(),
+            round(_scene_sprites_preview_opacity(), 4),
+            str(row.get("camera_mode", "")),
+            int(row.get("camera_x", 0)),
+            int(row.get("camera_y", 0)),
+            str(row.get("camera_target", "")),
+            int(row.get("camera_margin_x", 64)),
+            int(row.get("camera_margin_y", 48)),
         )
+
+    def _scene_scaled_content_key(
+        base_key: tuple[Any, ...],
+        sc: int,
+        show_pixel_grid: bool,
+        tile_grid_on: bool,
+    ) -> tuple[Any, ...]:
+        return (base_key, sc, show_pixel_grid, tile_grid_on)
+
+    def _invalidate_scene_scaled_cache() -> None:
+        state["scene_scaled_nohover"] = None
+        state["scene_scaled_display"] = None
+        state["scene_scaled_content_key"] = None
+        state["scene_scaled_prev_hover"] = None
+
+    def _scaled_stride(sc: int, with_gaps: bool) -> int:
+        return (sc + 1) if with_gaps else sc
+
+    def _scaled_tile_cell_display_rect(
+        gx: int,
+        gy: int,
+        tile_px: int,
+        ww: int,
+        wh: int,
+        sc: int,
+        with_gaps: bool,
+    ) -> tuple[int, int, int, int]:
+        x0, y0fb, x1, y1fb = scene_cell_framebuffer_rect(
+            gx, gy, tile_px=tile_px, fb_w=ww, fb_h=wh
+        )
+        st = _scaled_stride(sc, with_gaps)
+        ox0 = x0 * st
+        oy0 = y0fb * st
+        ow = (x1 - x0 + 1) * st
+        oh = (y1fb - y0fb + 1) * st
+        return ox0, oy0, ox0 + ow - 1, oy0 + oh - 1
+
+    def _copy_scaled_tile_cell_from_nohover(
+        disp: list[float],
+        nohover: list[float],
+        dw: int,
+        dh: int,
+        ww: int,
+        wh: int,
+        sc: int,
+        with_gaps: bool,
+        gx: int,
+        gy: int,
+        tile_px: int,
+    ) -> None:
+        ox0, oy0, ox1, oy1 = _scaled_tile_cell_display_rect(
+            gx, gy, tile_px, ww, wh, sc, with_gaps
+        )
+        ow = ox1 - ox0 + 1
+        for y in range(oy0, oy1 + 1):
+            if y < 0 or y >= dh:
+                continue
+            si = (y * dw + ox0) * 4
+            ei = si + ow * 4
+            disp[si:ei] = nohover[si:ei]
+
+    def _draw_scaled_tile_hover(
+        disp: list[float],
+        dw: int,
+        dh: int,
+        ww: int,
+        wh: int,
+        sc: int,
+        with_gaps: bool,
+        gx: int,
+        gy: int,
+        tile_px: int,
+    ) -> None:
+        ox0, oy0, ox1, oy1 = _scaled_tile_cell_display_rect(
+            gx, gy, tile_px, ww, wh, sc, with_gaps
+        )
+        sr, sg, sb, sa = _SCENE_TILE_GRID_HOVER_RGBA
+        border = max(1, min(3, sc))
+        for t in range(border):
+            for x in range(ox0, ox1 + 1):
+                for y in (oy0 + t, oy1 - t):
+                    if 0 <= y < dh and 0 <= x < dw:
+                        _blend_rgba_pixel_inplace(
+                            disp, (y * dw + x) * 4, sr, sg, sb, sa
+                        )
+            for y in range(oy0, oy1 + 1):
+                for x in (ox0 + t, ox1 - t):
+                    if 0 <= y < dh and 0 <= x < dw:
+                        _blend_rgba_pixel_inplace(
+                            disp, (y * dw + x) * 4, sr, sg, sb, sa
+                        )
+
+    def _build_scene_canvas_base_rgba(
+        row: dict[str, Any] | None,
+        ww: int,
+        wh: int,
+        rgbs: list[tuple[float, float, float]],
+        *,
+        tpl: tuple[BackgroundLayer, ...],
+        legacy: int,
+    ) -> list[float]:
         under: list[float] | None = None
         root = state.get("project_root")
         if row is not None and isinstance(root, Path):
-            under = _scene_background_asset_underlay(row, rgbs, _FB_W, _FB_H, root)
+            under = _scene_background_asset_underlay(row, rgbs, ww, wh, root)
         if under is not None:
-            # Recurso backgrounds/*.json: base visible; capas legacy solo como tinte semitransparente.
             base = list(under)
             for ly in tpl:
-                if not ly.enabled or ly.opacity <= 0:
-                    continue
-                if ly.opacity >= 255:
+                if not ly.enabled or ly.opacity <= 0 or ly.opacity >= 255:
                     continue
                 a = ly.opacity / 255.0
                 col = resolve_palette_color(ly.color_index, rgbs)
                 if col is None:
                     continue
                 r, g, b = col
-                for i in range(0, _FB_W * _FB_H * 4, 4):
+                npx = ww * wh * 4
+                for i in range(0, npx, 4):
                     base[i] = base[i] * (1.0 - a) + r * a
                     base[i + 1] = base[i + 1] * (1.0 - a) + g * a
                     base[i + 2] = base[i + 2] * (1.0 - a) + b * a
                     base[i + 3] = 1.0
         else:
             base = _composite_background_layers_rgba(
-                tpl, rgbs, _FB_W, _FB_H, underlay_rgba=None
+                tpl, rgbs, ww, wh, underlay_rgba=None
             )
         if row is not None and isinstance(root, Path):
             tpx = _tiles_px_from_widgets()
-            tile_tpl = parse_tile_layers(row.get("tile_layers"), tile_px=tpx)
+            tile_tpl = parse_tile_layers(
+                row.get("tile_layers"), tile_px=tpx, world_w=ww, world_h=wh
+            )
+            tile_cache = state.get("scene_tileset_preview_cache")
+            if not isinstance(tile_cache, dict):
+                tile_cache = {}
+                state["scene_tileset_preview_cache"] = tile_cache
             paint_tile_layers_on_rgba(
                 base,
-                _FB_W,
-                _FB_H,
+                ww,
+                wh,
                 tile_tpl,
                 root,
                 rgbs,
                 tile_px=tpx,
+                tile_cache=tile_cache,
             )
-        slot = int(state.get("edit_bg_layer_slot", 0))
-        slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
-        ly = tpl[slot]
-        ci_sw = max(0, min(n_colors - 1, ly.color_index))
-        r, g, b = rgbs[ci_sw]
-        _update_color_swatch(r, g, b)
         placements: list[dict[str, Any]] = []
-        if isinstance(scenes, list) and row is not None:
+        if row is not None:
             raw_objs = row.get("objects")
             if isinstance(raw_objs, list):
                 for x in raw_objs:
@@ -3193,14 +3614,13 @@ def run_gui() -> int:
             nr = len(rgbs)
             mi = (idx + max(1, nr // 4)) % nr if nr else 0
             tr, tg, tb = rgbs[mi]
-            root = state.get("project_root")
             show_sprites = _scene_sprites_preview_visible()
             sprite_a = _scene_sprites_preview_opacity() if show_sprites else 0.0
             if isinstance(root, Path):
                 _paint_scene_objects_preview(
                     base,
-                    _FB_W,
-                    _FB_H,
+                    ww,
+                    wh,
                     root,
                     placements,
                     cross_rgb=(tr, tg, tb),
@@ -3208,39 +3628,194 @@ def run_gui() -> int:
                 )
             else:
                 _paint_placement_crosses_only(
-                    base, _FB_W, _FB_H, placements, tr, tg, tb
+                    base, ww, wh, placements, tr, tg, tb
                 )
-        if _scene_tile_grid_visible():
-            tpx_grid = _tiles_px_from_widgets()
-            hover: tuple[int, int] | None = None
-            if _scene_tile_layer_paint_active():
-                hc = state.get("scene_tile_hover_cell")
-                if isinstance(hc, tuple) and len(hc) == 2:
-                    hover = (int(hc[0]), int(hc[1]))
-            draw_scene_tile_grid_on_rgba(
-                base,
-                _FB_W,
-                _FB_H,
-                tpx_grid,
-                hover_cell=hover,
-                grid_rgba=_SCENE_TILE_GRID_RGBA,
-                hover_rgba=_SCENE_TILE_GRID_HOVER_RGBA,
+        wsx = clamp_world_steps(row.get("world_steps_x", 1)) if row else 1
+        wsy = clamp_world_steps(row.get("world_steps_y", 1)) if row else 1
+        if wsx > 1 or wsy > 1:
+            draw_scene_step_bounds_on_rgba(base, ww, wh)
+        if ww > VIEWPORT_PIXEL_W or wh > VIEWPORT_PIXEL_H:
+            cam_cfg = _scene_camera_from_row(row) if row is not None else SceneCameraConfig()
+            objs: list[dict[str, Any]] = []
+            if row is not None:
+                raw_objs = row.get("objects")
+                if isinstance(raw_objs, list):
+                    for x in raw_objs:
+                        d = _scene_obj_dict_from_any(x)
+                        if d is not None:
+                            objs.append(d)
+            cam_x, cam_y = resolve_scene_camera_viewport(
+                cam_cfg, world_w=ww, world_h=wh, objects=objs
             )
-        show = bool(dpg.get_value("ts_show_grid"))
-        sc = _canvas_display_scale()
-        if show:
-            disp_rgba, dw, dh = _scale_rgba_with_pixel_gaps(
-                base, _FB_W, _FB_H, sc, grid_step=_GRID_STEP
+            draw_scene_camera_viewport_on_rgba(base, ww, wh, cam_x, cam_y)
+        return base
+
+    def refresh_canvas_texture(*, overlay_only: bool = False) -> None:
+        rgbs = state["rgb"]
+        if not rgbs:
+            return
+        ww, wh = _active_scene_world_size()
+        scenes = state.get("scenes")
+        active = str(state.get("active_scene_id") or "")
+        row: dict[str, Any] | None = None
+        if isinstance(scenes, list):
+            row = next((x for x in scenes if x.get("id") == active), None)
+
+        cache_key = state.get("scene_canvas_cache_key")
+        if overlay_only:
+            cached = state.get("scene_canvas_base_cache")
+            if not (
+                isinstance(cached, list)
+                and len(cached) == ww * wh * 4
+                and cache_key is not None
+            ):
+                overlay_only = False
+
+        if not overlay_only:
+            n_colors = len(rgbs)
+            try:
+                legacy = (
+                    int(row.get("background_index", 1))
+                    if row is not None
+                    else parse_bg_index()
+                )
+            except (TypeError, ValueError):
+                legacy = 1
+            tpl = parse_background_layers(
+                row.get("background_layers") if row is not None else None,
+                legacy_flat_index=legacy,
+                n_colors=n_colors,
             )
+            slot = int(state.get("edit_bg_layer_slot", 0))
+            slot = max(0, min(BACKGROUND_LAYER_COUNT - 1, slot))
+            ly = tpl[slot]
+            ci_sw = max(0, min(n_colors - 1, ly.color_index))
+            r, g, b = rgbs[ci_sw]
+            _update_color_swatch(r, g, b)
+
+            cache_key = _scene_canvas_base_cache_key(row, ww, wh, active)
+            work = _build_scene_canvas_base_rgba(
+                row, ww, wh, rgbs, tpl=tpl, legacy=legacy
+            )
+            state["scene_canvas_base_cache"] = work
+            state["scene_canvas_cache_key"] = cache_key
         else:
-            disp_rgba, dw, dh = _scale_rgba_nearest(base, _FB_W, _FB_H, sc)
-        if dw > _SCENE_PREVIEW_TEX_W or dh > _SCENE_PREVIEW_TEX_H:
-            dw = min(dw, _SCENE_PREVIEW_TEX_W)
-            dh = min(dh, _SCENE_PREVIEW_TEX_H)
-            disp_rgba = disp_rgba[: dw * dh * 4]
+            work = state["scene_canvas_base_cache"]
+            assert isinstance(work, list)
+
+        hover: tuple[int, int] | None = None
+        if _scene_tile_layer_paint_active():
+            hc = state.get("scene_tile_hover_cell")
+            if isinstance(hc, tuple) and len(hc) == 2:
+                hover = (int(hc[0]), int(hc[1]))
+
+        show_pixel_grid = bool(dpg.get_value("ts_show_grid"))
+        tile_grid_on = _scene_tile_grid_visible()
+        sc = _scene_canvas_scale_clamped(ww, wh)
+        scaled_key = _scene_scaled_content_key(
+            cache_key, sc, show_pixel_grid, tile_grid_on
+        )
+        need_rebuild_scaled = (
+            not overlay_only
+            or state.get("scene_scaled_content_key") != scaled_key
+            or not isinstance(state.get("scene_scaled_nohover"), list)
+            or not isinstance(state.get("scene_scaled_display"), list)
+        )
+
+        if need_rebuild_scaled:
+            if tile_grid_on or (hover is not None and not overlay_only):
+                base = list(work)
+            else:
+                base = work
+            if tile_grid_on:
+                tpx_grid = _tiles_px_from_widgets()
+                draw_scene_tile_grid_on_rgba(
+                    base,
+                    ww,
+                    wh,
+                    tpx_grid,
+                    hover_cell=None if overlay_only else hover,
+                    grid_rgba=_SCENE_TILE_GRID_RGBA,
+                    hover_rgba=_SCENE_TILE_GRID_HOVER_RGBA,
+                    full_grid=True,
+                )
+            if show_pixel_grid:
+                disp_nohover, dw, dh = _scale_rgba_with_pixel_gaps(
+                    base, ww, wh, sc, grid_step=_GRID_STEP
+                )
+            else:
+                disp_nohover, dw, dh = _scale_rgba_nearest(base, ww, wh, sc)
+            if dw > _SCENE_PREVIEW_TEX_W or dh > _SCENE_PREVIEW_TEX_H:
+                dw = min(dw, _SCENE_PREVIEW_TEX_W)
+                dh = min(dh, _SCENE_PREVIEW_TEX_H)
+                disp_nohover = disp_nohover[: dw * dh * 4]
+            state["scene_scaled_nohover"] = disp_nohover
+            state["scene_scaled_dw"] = dw
+            state["scene_scaled_dh"] = dh
+            state["scene_scaled_content_key"] = scaled_key
+            state["scene_scaled_display"] = list(disp_nohover)
+            state["scene_scaled_prev_hover"] = None
+            if hover is not None and not overlay_only:
+                tpx_grid = _tiles_px_from_widgets()
+                _draw_scaled_tile_hover(
+                    state["scene_scaled_display"],
+                    dw,
+                    dh,
+                    ww,
+                    wh,
+                    sc,
+                    show_pixel_grid,
+                    hover[0],
+                    hover[1],
+                    tpx_grid,
+                )
+                state["scene_scaled_prev_hover"] = hover
+        else:
+            dw = int(state.get("scene_scaled_dw") or 0)
+            dh = int(state.get("scene_scaled_dh") or 0)
+            nohover = state.get("scene_scaled_nohover")
+            disp = state.get("scene_scaled_display")
+            if isinstance(nohover, list) and isinstance(disp, list):
+                prev_hover = state.get("scene_scaled_prev_hover")
+                if prev_hover != hover:
+                    tpx_grid = _tiles_px_from_widgets()
+                    if isinstance(prev_hover, tuple) and len(prev_hover) == 2:
+                        _copy_scaled_tile_cell_from_nohover(
+                            disp,
+                            nohover,
+                            dw,
+                            dh,
+                            ww,
+                            wh,
+                            sc,
+                            show_pixel_grid,
+                            int(prev_hover[0]),
+                            int(prev_hover[1]),
+                            tpx_grid,
+                        )
+                    if hover is not None:
+                        _draw_scaled_tile_hover(
+                            disp,
+                            dw,
+                            dh,
+                            ww,
+                            wh,
+                            sc,
+                            show_pixel_grid,
+                            hover[0],
+                            hover[1],
+                            tpx_grid,
+                        )
+                    state["scene_scaled_prev_hover"] = hover
+
+        disp_upload = state.get("scene_scaled_display")
+        dw = int(state.get("scene_scaled_dw") or 1)
+        dh = int(state.get("scene_scaled_dh") or 1)
+        if not isinstance(disp_upload, list):
+            return
+
         vp_scroll = _child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG)
-        tex_rgba = _pack_scene_preview_rgba_into_tex_buffer(disp_rgba, dw, dh)
-        dpg.set_value(_SCENE_CANVAS_TEX_TAG, tex_rgba)
+        _upload_scene_canvas_texture(state, disp_upload, dw, dh)
         _sync_scene_canvas_image_widget(dw, dh)
         _set_child_window_y_scroll(_SCENE_CANVAS_VIEWPORT_TAG, vp_scroll)
 
@@ -3266,6 +3841,14 @@ def run_gui() -> int:
         for tag in (
             "ts_scene_combo",
             "ts_scene_pal",
+            "ts_scene_world_steps_x",
+            "ts_scene_world_steps_y",
+            "ts_scene_camera_mode",
+            "ts_scene_camera_target",
+            "ts_scene_camera_x",
+            "ts_scene_camera_y",
+            "ts_scene_camera_margin_x",
+            "ts_scene_camera_margin_y",
             "ts_scene_script",
             "ts_scene_target_fps",
             "ts_scene_default_anim_fps",
@@ -3755,6 +4338,8 @@ def run_gui() -> int:
                 enabled=isinstance(state.get("project_root"), Path),
             )
         _load_scene_runtime_widgets_from_row(row)
+        _load_world_steps_widgets_from_row(row)
+        _load_camera_widgets_from_row(row)
         _refresh_bg_palette_combo(select_rel=pal)
         _bg_palette_reload_core(append_log=False)
         _refresh_scene_background_combo()
@@ -3825,6 +4410,7 @@ def run_gui() -> int:
             "ts_scene_obj_inscene_list",
             items=inscene if inscene else ["(ningun objeto en la escena)"],
         )
+        _refresh_scene_camera_target_combo(row)
 
     def on_scene_add_object(_sender: object, _app_data: object) -> None:
         stem = _scene_compat_obj_selected_stem()
@@ -3860,20 +4446,21 @@ def run_gui() -> int:
         min_x, min_y = dpg.get_item_rect_min(_SCENE_CANVAS_IMG_TAG)
         rel_x = float(mx - min_x)
         rel_y = float(my - min_y)
-        sc = _canvas_display_scale()
+        ww, wh = _active_scene_world_size()
+        sc = _scene_canvas_scale_clamped(ww, wh)
         show_grid = bool(dpg.get_value("ts_show_grid"))
         dw, dh = _sprite_display_size(
-            _FB_W, _FB_H, sc, with_gaps=show_grid
+            ww, wh, sc, with_gaps=show_grid
         )
         if rel_x < 0 or rel_y < 0 or rel_x >= dw or rel_y >= dh:
             return
         hit = _sprite_pixel_from_display(
-            rel_x, rel_y, _FB_W, _FB_H, sc, with_gaps=show_grid
+            rel_x, rel_y, ww, wh, sc, with_gaps=show_grid
         )
         if hit is None:
             return
         lx, ly_top = hit
-        sx, sy = _texture_px_to_scene_coords(lx, ly_top)
+        sx, sy = _texture_px_to_scene_coords(lx, ly_top, ww, wh)
         scenes = state.get("scenes")
         active = str(state.get("active_scene_id") or "")
         if not isinstance(scenes, list) or not active:
@@ -5603,6 +6190,19 @@ def run_gui() -> int:
                     if s.default_anim_fps is not None
                     else {}
                 ),
+                "world_steps_x": s.world_steps_x,
+                "world_steps_y": s.world_steps_y,
+                "camera": scene_camera_to_json(s.camera),
+                "camera_mode": s.camera.mode,
+                "camera_x": s.camera.x,
+                "camera_y": s.camera.y,
+                "camera_margin_x": s.camera.margin_x,
+                "camera_margin_y": s.camera.margin_y,
+                **(
+                    {"camera_target": s.camera.target}
+                    if s.camera.target.strip()
+                    else {}
+                ),
             }
             for s in info.scenes
         ]
@@ -5630,6 +6230,8 @@ def run_gui() -> int:
         _commit_scene_background_for_scene_id(old_active)
         _commit_tile_layers_for_scene_id(old_active)
         _commit_scene_runtime_for_scene_id(old_active)
+        _commit_world_steps_for_scene_id(old_active)
+        _commit_camera_for_scene_id(old_active)
         new_id = str(dpg.get_value("ts_scene_combo")).strip()
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
@@ -5652,6 +6254,8 @@ def run_gui() -> int:
         _commit_scene_background_for_scene_id(cur)
         _commit_tile_layers_for_scene_id(cur)
         _commit_scene_runtime_for_scene_id(cur)
+        _commit_world_steps_for_scene_id(cur)
+        _commit_camera_for_scene_id(cur)
         scenes = state.get("scenes")
         if not isinstance(scenes, list):
             scenes = []
@@ -5675,8 +6279,11 @@ def run_gui() -> int:
                 "tile_layers": tile_layers_to_json_list(
                     default_tile_layers(_tiles_px_from_widgets())
                 ),
+                "world_steps_x": 1,
+                "world_steps_y": 1,
             }
         )
+        apply_scene_camera_to_row(scenes[-1], SceneCameraConfig())
         state["active_scene_id"] = new_id
         _refresh_scene_widgets()
         rel = scene_lua_relpath(new_id)
@@ -5915,6 +6522,9 @@ def run_gui() -> int:
     initial_black = _solid_rgba_float(
         _SCENE_PREVIEW_TEX_W, _SCENE_PREVIEW_TEX_H, 0.08, 0.08, 0.1
     )
+    state["scene_preview_tex_buffer"] = initial_black
+    state["scene_tex_upload_w"] = 0
+    state["scene_tex_upload_h"] = 0
     _scene_canvas_dw0, _scene_canvas_dh0 = _sprite_display_size(
         _FB_W, _FB_H, _DEFAULT_CANVAS_SCALE, with_gaps=False
     )
@@ -6221,13 +6831,15 @@ def run_gui() -> int:
         refresh_canvas_texture()
 
     def on_scene_tile_grid_toggle(_sender: object, _app_data: object) -> None:
+        _invalidate_scene_scaled_cache()
         refresh_canvas_texture()
 
     def on_scene_canvas_mouse_move(_sender: object, _app_data: object) -> None:
+        ww, wh = _active_scene_world_size()
         if not _scene_tile_grid_visible() or not _scene_tile_layer_paint_active():
             if state.get("scene_tile_hover_cell") is not None:
                 state["scene_tile_hover_cell"] = None
-                refresh_canvas_texture()
+                refresh_canvas_texture(overlay_only=True)
             return
         if not dpg.does_item_exist(_SCENE_CANVAS_IMG_TAG):
             return
@@ -6235,7 +6847,7 @@ def run_gui() -> int:
             if not dpg.is_item_hovered(_SCENE_CANVAS_IMG_TAG):
                 if state.get("scene_tile_hover_cell") is not None:
                     state["scene_tile_hover_cell"] = None
-                    refresh_canvas_texture()
+                    refresh_canvas_texture(overlay_only=True)
                 return
         except SystemError:
             return
@@ -6243,7 +6855,12 @@ def run_gui() -> int:
         prev = state.get("scene_tile_hover_cell")
         if cell != prev:
             state["scene_tile_hover_cell"] = cell
-            refresh_canvas_texture()
+            now = time.monotonic()
+            last = float(state.get("scene_canvas_last_hover_ts") or 0.0)
+            if now - last < _scene_canvas_hover_min_interval(ww, wh):
+                return
+            state["scene_canvas_last_hover_ts"] = now
+            refresh_canvas_texture(overlay_only=True)
 
     def on_canvas_scale_change(_sender: object, _app_data: object) -> None:
         refresh_canvas_texture()
@@ -6407,6 +7024,8 @@ def run_gui() -> int:
         _commit_scene_background_for_active_scene()
         _commit_tile_layers_for_active_scene()
         _commit_scene_runtime_for_active_scene()
+        _commit_world_steps_for_active_scene()
+        _commit_camera_for_active_scene()
         pal_s = str(dpg.get_value("ts_pal_path")).strip()
         pal: Path | None = Path(pal_s).expanduser() if pal_s else None
         scenes_list = [dict(x) for x in state.get("scenes", []) if isinstance(x, dict)]
@@ -8438,6 +9057,109 @@ def run_gui() -> int:
                             use_internal_label=False,
                             callback=on_scene_palette_input_change,
                         )
+                        dpg.add_text(
+                            f"Mundo = pasos × vista ({VIEWPORT_PIXEL_W}×{VIEWPORT_PIXEL_H}). "
+                            f"Max {WORLD_STEPS_MAX} pasos/eje. Marco naranja = camara en canvas.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(160, 180, 210, 255),
+                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_int(
+                                tag="ts_scene_world_steps_x",
+                                label="Pasos X",
+                                width=72,
+                                default_value=1,
+                                min_value=WORLD_STEPS_MIN,
+                                max_value=WORLD_STEPS_MAX,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_scene_world_steps_change,
+                            )
+                            dpg.add_input_int(
+                                tag="ts_scene_world_steps_y",
+                                label="Pasos Y",
+                                width=72,
+                                default_value=1,
+                                min_value=WORLD_STEPS_MIN,
+                                max_value=WORLD_STEPS_MAX,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_scene_world_steps_change,
+                            )
+                        dpg.add_text(
+                            "Camara (consola y vista previa). Seguir: margen al borde "
+                            "antes de desplazar. Fija: X/Y = esquina inf-izq del viewport.",
+                            wrap=_LEFT_TEXT_WRAP,
+                            color=(160, 180, 210, 255),
+                        )
+                        dpg.add_combo(
+                            tag="ts_scene_camera_mode",
+                            label="Modo camara",
+                            width=_LEFT_FORM_WIDTH,
+                            items=["Seguir objetivo", "Fija"],
+                            default_value="Seguir objetivo",
+                            enabled=False,
+                            callback=on_scene_camera_change,
+                            use_internal_label=False,
+                        )
+                        dpg.add_combo(
+                            tag="ts_scene_camera_target",
+                            label="Objetivo (seguir)",
+                            width=_LEFT_FORM_WIDTH,
+                            items=["(auto character/player)"],
+                            default_value="(auto character/player)",
+                            enabled=False,
+                            callback=on_scene_camera_change,
+                            use_internal_label=False,
+                        )
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_int(
+                                tag="ts_scene_camera_x",
+                                label="Cam X",
+                                width=72,
+                                default_value=0,
+                                min_value=0,
+                                max_value=4096,
+                                enabled=False,
+                                callback=on_scene_camera_change,
+                            )
+                            dpg.add_input_int(
+                                tag="ts_scene_camera_y",
+                                label="Cam Y",
+                                width=72,
+                                default_value=0,
+                                min_value=0,
+                                max_value=4096,
+                                enabled=False,
+                                callback=on_scene_camera_change,
+                            )
+                        with dpg.group(horizontal=True):
+                            dpg.add_input_int(
+                                tag="ts_scene_camera_margin_x",
+                                label="Margen X",
+                                width=72,
+                                default_value=64,
+                                min_value=0,
+                                max_value=131,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_scene_camera_change,
+                            )
+                            dpg.add_input_int(
+                                tag="ts_scene_camera_margin_y",
+                                label="Margen Y",
+                                width=72,
+                                default_value=48,
+                                min_value=0,
+                                max_value=98,
+                                min_clamped=True,
+                                max_clamped=True,
+                                enabled=False,
+                                callback=on_scene_camera_change,
+                            )
                         dpg.add_input_text(
                             tag="ts_scene_script",
                             label="Lua escena (stem → scripts/<stem>.lua)",
@@ -8735,7 +9457,7 @@ def run_gui() -> int:
                                     tag="ts_canvas_scale",
                                     label="Escala",
                                     min_value=1,
-                                    max_value=8,
+                                    max_value=_SCENE_CANVAS_SCALE_MAX,
                                     default_value=_DEFAULT_CANVAS_SCALE,
                                     format="x%d",
                                     clamped=True,
@@ -8743,8 +9465,8 @@ def run_gui() -> int:
                                     callback=on_canvas_scale_change,
                                 )
                             dpg.add_text(
-                                "Escala entera en CPU (pixeles nitidos). Con zoom alto o rejilla, "
-                                "desplazate dentro del marco (barras horizontal y vertical).",
+                                "Escala entera en CPU. Mundos grandes (2 pasos): zoom max x2 en editor; "
+                                "rejilla tiles puede ir lenta en mundos grandes.",
                                 wrap=400,
                             )
                             with dpg.child_window(
