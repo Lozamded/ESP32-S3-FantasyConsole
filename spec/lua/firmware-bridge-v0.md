@@ -38,7 +38,7 @@ turtle_input_poll()                    // C++: GPIO → btn/btnp
 ## Cómo Lua mueve un actor
 
 1. `turtle_scene_actor_set_lua_target(i)` — contexto del actor `i` (interno, antes de `_update`).
-2. Lua llama `move(dx, dy)` → `turtle_scene_actor_move` resuelve colision por ejes contra tiles solidos, actualiza `grounded` y hace **clamp** al borde de escena (AABB de colision). Ver **`spec/lua/physics-v0.md`**.
+2. Lua llama `move(dx, dy)` → devuelve **`ax, ay`** (pixeles realmente movidos tras colision). `turtle_scene_actor_move` resuelve por ejes contra tiles solidos, actualiza `grounded` y hace **clamp** al borde de escena (AABB de colision). Ver **`spec/lua/physics-v0.md`**.
 3. Lua llama `on_ground()` → lee `grounded` del actor activo (tras el ultimo `move` del mismo frame).
 4. C++ redibuja el sprite en la nueva posicion; la capa de fondo/tiles no se repinta.
 

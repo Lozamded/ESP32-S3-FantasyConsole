@@ -29,7 +29,8 @@ int turtle_scene_actor_count(void);
 bool turtle_scene_actor_script_stem(int index, char* out, size_t out_cap);
 void turtle_scene_actor_set_lua_target(int index);
 bool turtle_scene_actor_pos(int* x, int* y);
-void turtle_scene_actor_move(int dx, int dy);
+/** Mueve el actor Lua; si out_dx/out_dy no son null, devuelve pixeles realmente movidos. */
+void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy);
 /** true si el actor Lua actual apoya sobre tile solido o el borde inferior de escena. */
 bool turtle_scene_actor_on_ground(void);
 

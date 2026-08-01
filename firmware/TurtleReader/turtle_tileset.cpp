@@ -1,6 +1,7 @@
 #include "turtle_tileset.h"
 
 #include "turtle_asset_bin.h"
+#include "turtle_tile_collision.h"
 
 #include <Arduino.h>
 #include <stdlib.h>
@@ -62,9 +63,10 @@ bool turtle_tileset_load_tts(const uint8_t* data, size_t len, TurtleTileset* out
   out->pixels = nullptr;
   out->in_psram = false;
 
-  if (memcmp(data, kMagicTts, 4) != 0 || data[4] != 0) {
+  if (memcmp(data, kMagicTts, 4) != 0 || (data[4] != 0 && data[4] != 1)) {
     return false;
   }
+  const uint8_t format_version = data[4];
 
   const int px = static_cast<int>(read_u16_le(data + 6));
   const int count = static_cast<int>(read_u16_le(data + 8));
@@ -104,8 +106,40 @@ bool turtle_tileset_load_tts(const uint8_t* data, size_t len, TurtleTileset* out
   out->tile_px = static_cast<uint8_t>(px);
   out->tile_count = static_cast<uint16_t>(count);
   out->pixels = pixels;
-  Serial.printf("turtle_tileset: %d tiles %dx%d (%u bytes)\n", count, px, px,
-                static_cast<unsigned>(total));
+  out->format_version = format_version;
+
+  // v1: bloque de colision por tile embebido tras los chunks de pixeles (10 bytes/tile,
+  // ver spec/asset-bin-v0.md). Si falta o esta truncado, cae a defaults (todo solido).
+  bool coll_from_binary = false;
+  if (format_version == 1) {
+    constexpr size_t kCollRecordSize = 10;
+    const size_t coll_total = static_cast<size_t>(count) * kCollRecordSize;
+    if (coll_total == 0 || off + coll_total <= len) {
+      turtle_tile_collision_defaults(out);
+      const int n = count > kTurtleTileCollMax ? kTurtleTileCollMax : count;
+      for (int i = 0; i < n; ++i) {
+        const uint8_t* rec = data + off + static_cast<size_t>(i) * kCollRecordSize;
+        TurtleTileCollEntry* e = &out->coll[i];
+        const uint8_t kind = rec[0];
+        e->kind = (kind <= TURTLE_TILE_COLL_AABB) ? kind : TURTLE_TILE_COLL_SOLID;
+        const uint8_t flags = rec[1];
+        e->oneway = flags & 0x01;
+        e->oneway_dir = static_cast<uint8_t>((flags >> 1) & 0x03);
+        e->x0 = static_cast<int16_t>(read_u16_le(rec + 2));
+        e->y0 = static_cast<int16_t>(read_u16_le(rec + 4));
+        e->x1 = static_cast<int16_t>(read_u16_le(rec + 6));
+        e->y1 = static_cast<int16_t>(read_u16_le(rec + 8));
+      }
+      turtle_tile_collision_recompute_has_solid(out);
+      coll_from_binary = true;
+    }
+  }
+  if (!coll_from_binary) {
+    turtle_tile_collision_defaults(out);
+  }
+
+  Serial.printf("turtle_tileset: %d tiles %dx%d (%u bytes)%s\n", count, px, px,
+                static_cast<unsigned>(total), coll_from_binary ? " +coll" : "");
   return true;
 }
 
@@ -117,6 +151,8 @@ void turtle_tileset_free(TurtleTileset* ts) {
   ts->pixels = nullptr;
   ts->tile_count = 0;
   ts->in_psram = false;
+  ts->format_version = 0;
+  turtle_tile_collision_defaults(ts);
 }
 
 const uint8_t* turtle_tileset_tile(const TurtleTileset* ts, int index) {

@@ -1,11 +1,11 @@
 [project]
 name = "turtlestudio"
-version = "0.1.0"
-description = "Herramientas Python para cartuchos .turtlecart (FantasyConsole)"
+version = "0.2.0"
+description = "Herramientas Python para cartuchos .turtlecart (FantasyConsole) — editor PyQt6"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "dearpygui>=1.10.0",
+    "PyQt6>=6.6.0",
 ]
 
 [project.scripts]

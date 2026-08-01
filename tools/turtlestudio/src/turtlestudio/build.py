@@ -76,6 +76,13 @@ def load_palette_lines(path: Path) -> list[str]:
     return out
 
 
+def save_palette_lines(path: Path, hex_lines: list[str]) -> None:
+    """Escribe lineas #RRGGBB (una por color, orden = indice), mismo formato que load_palette_lines."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = "\n".join(normalize_hex_display(h) for h in hex_lines) + "\n"
+    path.write_text(body, encoding="utf-8", newline="\n")
+
+
 # Paleta por defecto del firmware (Genesis-like), misma orden que turtle_gpu.cpp
 DEFAULT_CONSOLE_PALETTE_HEX: tuple[str, ...] = (
     "#000000",

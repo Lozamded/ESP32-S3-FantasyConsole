@@ -1,0 +1,1 @@
+-- Lua de la escena "scene_3"

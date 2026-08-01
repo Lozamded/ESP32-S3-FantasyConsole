@@ -4,4 +4,4 @@
 #   pip install -e .
 # No uses src/turtlestudio como cwd: ahi no hay pyproject.toml.
 #
-dearpygui>=1.10.0
+PyQt6>=6.6.0

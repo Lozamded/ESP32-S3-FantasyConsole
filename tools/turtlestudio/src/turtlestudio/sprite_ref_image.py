@@ -13,9 +13,9 @@ def is_supported_ref_image_path(path: str | Path) -> bool:
 
 def load_image_rgba_float01(path: str | Path) -> tuple[int, int, list[float]]:
     """
-    Carga imagen con Dear PyGui. Devuelve (ancho, alto, rgba 0..1 fila 0 arriba).
+    Carga imagen con QImage (Qt). Devuelve (ancho, alto, rgba 0..1 fila 0 arriba).
     """
-    import dearpygui.dearpygui as dpg
+    from PyQt6.QtGui import QImage
 
     p = Path(path).expanduser()
     if not p.is_file():
@@ -23,45 +23,26 @@ def load_image_rgba_float01(path: str | Path) -> tuple[int, int, list[float]]:
     if not is_supported_ref_image_path(p):
         raise ValueError("formato no soportado (usa .png, .jpg, .jpeg, .webp o .bmp)")
 
-    loaded = dpg.load_image(str(p.resolve()))
-    if not loaded:
+    img = QImage(str(p.resolve()))
+    if img.isNull():
         raise ValueError(f"no se pudo decodificar la imagen: {p.name}")
 
-    w, h, ch, data = loaded
-    w = int(w)
-    h = int(h)
-    ch = int(ch)
+    img = img.convertToFormat(QImage.Format.Format_RGBA8888)
+    w = img.width()
+    h = img.height()
     if w <= 0 or h <= 0:
         raise ValueError("imagen vacia o tamano invalido")
 
-    n = w * h * ch
-    if ch == 4:
-        rgba = [float(data[i]) for i in range(n)]
-    elif ch == 3:
-        rgba = []
-        for i in range(0, n, 3):
-            rgba.extend((float(data[i]), float(data[i + 1]), float(data[i + 2]), 1.0))
-    elif ch == 1:
-        rgba = []
-        for i in range(n):
-            g = float(data[i])
-            rgba.extend((g, g, g, 1.0))
-    else:
-        raise ValueError(f"canales de imagen no soportados: {ch}")
-
-    rgba = _coerce_rgba_float01(rgba)
-    return w, h, rgba
-
-
-def _coerce_rgba_float01(rgba: list[float]) -> list[float]:
-    """DPG a veces devuelve 0..255 en lugar de 0..1."""
-    if not rgba:
-        return rgba
-    peak = max(rgba)
-    if peak <= 1.0 + 1e-6:
-        return rgba
+    rgba: list[float] = [0.0] * (w * h * 4)
     inv = 1.0 / 255.0
-    return [max(0.0, min(1.0, v * inv)) for v in rgba]
+    for y in range(h):
+        line = img.constScanLine(y)
+        line.setsize(w * 4)
+        row = bytes(line)
+        base = y * w * 4
+        for i in range(w * 4):
+            rgba[base + i] = row[i] * inv
+    return w, h, rgba
 
 
 def resample_rgba_stretch(

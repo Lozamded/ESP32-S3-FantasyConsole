@@ -85,8 +85,12 @@ static int l_move(lua_State* L) {
   const lua_Number my = luaL_checknumber(L, 2);
   const int dx = lua_round_to_int(mx);
   const int dy = lua_round_to_int(my);
-  turtle_scene_actor_move(dx, dy);
-  return 0;
+  int ax = 0;
+  int ay = 0;
+  turtle_scene_actor_move(dx, dy, &ax, &ay);
+  lua_pushinteger(L, ax);
+  lua_pushinteger(L, ay);
+  return 2;
 }
 
 static int l_on_ground(lua_State* L) {

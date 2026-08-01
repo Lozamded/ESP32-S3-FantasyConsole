@@ -56,10 +56,11 @@ def _cmd_build(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_gui(_args: argparse.Namespace) -> int:
-    from turtlestudio.gui import run_gui
+def _cmd_gui(args: argparse.Namespace) -> int:
+    from turtlestudio.mainwindow import run_studio
 
-    return run_gui()
+    project = Path(args.project).resolve() if args.project else None
+    return run_studio(project)
 
 
 def main() -> None:
@@ -106,8 +107,9 @@ def main() -> None:
 
     gui = sub.add_parser(
         "gui",
-        help="Ventana minima (Dear PyGui): panel, canvas, Exportar",
+        help="Editor TurtleStudio (PyQt6)",
     )
+    gui.add_argument("project", nargs="?", help="Carpeta de proyecto a abrir")
     gui.set_defaults(func=_cmd_gui)
 
     proj = sub.add_parser(

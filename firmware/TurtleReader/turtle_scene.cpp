@@ -5,6 +5,7 @@
 #include "turtle_cart.h"
 #include "turtle_gpu.h"
 #include "turtle_tileset.h"
+#include "turtle_tile_collision.h"
 
 #include <Arduino.h>
 #include <ctype.h>
@@ -13,6 +14,10 @@
 
 #if defined(ESP32) || defined(ESP_PLATFORM)
 #include <esp_heap_caps.h>
+#include <esp_attr.h>
+#define TURTLE_BSS_PSRAM EXT_RAM_ATTR
+#else
+#define TURTLE_BSS_PSRAM
 #endif
 
 namespace {
@@ -39,6 +44,9 @@ struct TileLayer {
   int cols;
   int rows;
   uint8_t cells[kMaxTileRows][kMaxTileCols];
+  /** Precomputado en coll_tileset_cache_prewarm(): evita tocar la cache de tileset
+   *  de colision (single-entry, ver s_tileset_coll) en capas puramente decorativas. */
+  bool has_solid_tiles;
 };
 
 struct Placement {
@@ -76,19 +84,19 @@ struct SceneActor {
   bool has_prev_blit;
 };
 
-static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
+TURTLE_BSS_PSRAM static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
 /** Decode temporal (fondos <= 1 pantalla); mundos grandes usan s_world_bg en PSRAM. */
-static uint8_t s_scene_pixels[kSceneW * kSceneH];
+TURTLE_BSS_PSRAM static uint8_t s_scene_pixels[kSceneW * kSceneH];
 /** Fondo indexado del mundo completo (scroll); se pinta por ventana con la camara. */
 static uint8_t* s_world_bg = nullptr;
 static int s_world_bg_w = 0;
 static int s_world_bg_h = 0;
 static bool s_world_static_ready = false;
 /** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
-static Placement s_placements[kMaxPlacements];
-static TileLayer s_tile_layers[kMaxTileLayers];
-static TurtleTileset s_tileset_draw;
-static SceneActor s_actors[kMaxPlacements];
+TURTLE_BSS_PSRAM static Placement s_placements[kMaxPlacements];
+TURTLE_BSS_PSRAM static TileLayer s_tile_layers[kMaxTileLayers];
+TURTLE_BSS_PSRAM static TurtleTileset s_tileset_draw;
+TURTLE_BSS_PSRAM static SceneActor s_actors[kMaxPlacements];
 static int s_actor_count = 0;
 static int s_player_actor = -1;
 static int s_lua_actor_target = -1;
@@ -111,6 +119,8 @@ static char s_camera_target[48];
 static int s_camera_margin_x = 64;
 static int s_camera_margin_y = 48;
 static int s_runtime_bg = 0;
+
+static void coll_tileset_cache_clear(void);
 static char s_seen_asset_paths[24][112];
 static int s_seen_asset_paths_count = 0;
 
@@ -123,6 +133,7 @@ struct ActorDrawCache {
 static ActorDrawCache s_actor_draw_cache[kMaxPlacements];
 
 constexpr int kMaxSpriteCache = 48;
+constexpr int kMaxObjectCache = 8;
 
 struct SpriteBlobCacheEntry {
   char id[48];
@@ -133,6 +144,16 @@ struct SpriteBlobCacheEntry {
 
 static SpriteBlobCacheEntry s_sprite_cache[kMaxSpriteCache];
 static int s_sprite_cache_count = 0;
+
+struct ObjectJsonCacheEntry {
+  char id[48];
+  char* data;
+  size_t len;
+  bool in_psram;
+};
+
+static ObjectJsonCacheEntry s_object_cache[kMaxObjectCache];
+static int s_object_cache_count = 0;
 
 static constexpr size_t kScenePixelsMaxBytes =
     static_cast<size_t>(kMaxWorldW) * static_cast<size_t>(kMaxWorldH);
@@ -169,6 +190,71 @@ static void world_buffer_put_scene_pixel(int sx, int sy, uint8_t ci) {
               static_cast<size_t>(sx)] = ci;
 }
 
+static void object_cache_free_entry(ObjectJsonCacheEntry* e) {
+  if (!e || !e->data) {
+    return;
+  }
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  if (e->in_psram) {
+    heap_caps_free(e->data);
+  } else {
+    free(e->data);
+  }
+#else
+  free(e->data);
+#endif
+  e->data = nullptr;
+  e->len = 0;
+  e->in_psram = false;
+}
+
+static void object_cache_clear_all(void) {
+  for (int i = 0; i < s_object_cache_count; ++i) {
+    object_cache_free_entry(&s_object_cache[i]);
+    s_object_cache[i].id[0] = '\0';
+  }
+  s_object_cache_count = 0;
+}
+
+static bool object_cache_find(const char* obj_id, const char** inner, const char** inner_end) {
+  if (!obj_id || !obj_id[0] || !inner || !inner_end) {
+    return false;
+  }
+  for (int i = 0; i < s_object_cache_count; ++i) {
+    if (strcmp(s_object_cache[i].id, obj_id) == 0 && s_object_cache[i].data) {
+      *inner = s_object_cache[i].data;
+      *inner_end = s_object_cache[i].data + s_object_cache[i].len;
+      return true;
+    }
+  }
+  return false;
+}
+
+static bool object_cache_add_move(const char* obj_id, TurtleCartBuffer* buf) {
+  if (!obj_id || !obj_id[0] || !buf || !buf->data) {
+    return false;
+  }
+  const char* existing_a = nullptr;
+  const char* existing_b = nullptr;
+  if (object_cache_find(obj_id, &existing_a, &existing_b)) {
+    turtle_cart_free(buf);
+    return true;
+  }
+  if (s_object_cache_count >= kMaxObjectCache) {
+    return false;
+  }
+  ObjectJsonCacheEntry* e = &s_object_cache[s_object_cache_count];
+  snprintf(e->id, sizeof e->id, "%s", obj_id);
+  e->data = buf->data;
+  e->len = buf->len;
+  e->in_psram = buf->in_psram;
+  buf->data = nullptr;
+  buf->len = 0;
+  buf->in_psram = false;
+  ++s_object_cache_count;
+  return true;
+}
+
 static void sprite_cache_free_entry(SpriteBlobCacheEntry* e) {
   if (!e || !e->data) {
     return;
@@ -193,6 +279,8 @@ static void sprite_cache_clear_all(void) {
     s_sprite_cache[i].id[0] = '\0';
   }
   s_sprite_cache_count = 0;
+  object_cache_clear_all();
+  coll_tileset_cache_clear();
   scene_asset_buffers_release();
 }
 
@@ -569,6 +657,82 @@ struct AssetSdLoad {
     return true;
   }
 };
+
+static bool resolve_tileset_tts(const char* json, const char* json_end, const char* tileset_id,
+                                AssetSdLoad* sd, TurtleTileset* ts);
+
+static AssetSdLoad s_tileset_coll_sd;
+static char s_tileset_coll_loaded_id[48];
+
+/** Un tileset cargado para colision (evita N× coll[256] en DRAM). */
+TURTLE_BSS_PSRAM static TurtleTileset s_tileset_coll;
+static char s_tileset_coll_active_id[48];
+
+static void coll_tileset_cache_clear(void) {
+  turtle_tileset_free(&s_tileset_coll);
+  s_tileset_coll_active_id[0] = '\0';
+}
+
+static const TurtleTileset* coll_tileset_cache_get(const char* json, const char* json_end,
+                                                   const char* tileset_id) {
+  if (!tileset_id || !tileset_id[0]) {
+    return nullptr;
+  }
+  if (strcmp(s_tileset_coll_active_id, tileset_id) == 0 && s_tileset_coll.pixels) {
+    return &s_tileset_coll;
+  }
+  turtle_tileset_free(&s_tileset_coll);
+  s_tileset_coll_active_id[0] = '\0';
+  if (!resolve_tileset_tts(json, json_end, tileset_id, &s_tileset_coll_sd, &s_tileset_coll)) {
+    return nullptr;
+  }
+  snprintf(s_tileset_coll_active_id, sizeof s_tileset_coll_active_id, "%s", tileset_id);
+  return &s_tileset_coll;
+}
+
+static void coll_tileset_cache_prewarm(const char* json, const char* json_end) {
+  for (int li = 0; li < s_runtime_tile_layer_count; ++li) {
+    TileLayer* ly = &s_tile_layers[li];
+    // Conservador por defecto: si no se puede determinar, se trata como solida.
+    ly->has_solid_tiles = true;
+    if (!ly->enabled || !ly->tileset[0]) {
+      continue;
+    }
+    int dup_of = -1;
+    for (int j = 0; j < li; ++j) {
+      if (strcmp(s_tile_layers[j].tileset, ly->tileset) == 0) {
+        dup_of = j;
+        break;
+      }
+    }
+    if (dup_of >= 0) {
+      ly->has_solid_tiles = s_tile_layers[dup_of].has_solid_tiles;
+      continue;
+    }
+    const TurtleTileset* ts = coll_tileset_cache_get(json, json_end, ly->tileset);
+    ly->has_solid_tiles = ts ? ts->has_solid_tiles : true;
+  }
+}
+
+static void tileset_load_collision_meta(const char* json, const char* json_end,
+                                        const char* tileset_id, const char* inner,
+                                        const char* inner_end, TurtleTileset* ts) {
+  turtle_tile_collision_defaults(ts);
+  if (inner && inner_end > inner &&
+      strstr_bounded(inner, inner_end, "\"tiles\"") != nullptr) {
+    if (turtle_tile_collision_parse_json(ts, inner, inner_end)) {
+      return;
+    }
+  }
+  char jpath[80];
+  snprintf(jpath, sizeof jpath, "/tiles/%s.json", tileset_id);
+  if (s_tileset_coll_sd.load_path(jpath)) {
+    turtle_tile_collision_parse_json(ts, s_tileset_coll_sd.buf.data,
+                                     s_tileset_coll_sd.buf.data + s_tileset_coll_sd.buf.len);
+  }
+  (void)json;
+  (void)json_end;
+}
 
 static bool resolve_sprite_inner(const char* json, const char* json_end, const char* sprite_id,
                                  AssetSdLoad* sd, const char** inner, const char** inner_end);
@@ -957,8 +1121,43 @@ static void paint_cached_world_background(uint8_t transparent_index) {
   if (!s_world_bg || s_world_bg_w <= 0 || s_world_bg_h <= 0) {
     return;
   }
-  /* Buffer is addressed from world origin (0,0). Camera clips in blit (vx = sx - cam). */
-  turtle_gpu_blit_indexed_scene(0, 0, s_world_bg_w, s_world_bg_h, s_world_bg, s_world_bg_w,
+  /*
+   * Blitea solo la ventana visible (viewport) del buffer del mundo, no el buffer
+   * entero (hasta kMaxWorldSteps por eje = hasta 4x pixeles de sobra). Se lee la
+   * camara real de turtle_gpu (no el espejo s_cam_x/y) para no desalinearse con
+   * el clip que hace turtle_gpu_blit_indexed_scene internamente.
+   */
+  int cam_x = 0;
+  int cam_y = 0;
+  turtle_gpu_get_camera(&cam_x, &cam_y);
+
+  int vis_x0 = cam_x;
+  int vis_y0 = cam_y;
+  int vis_x1 = cam_x + kSceneW - 1;
+  int vis_y1 = cam_y + kSceneH - 1;
+  if (vis_x0 < 0) {
+    vis_x0 = 0;
+  }
+  if (vis_y0 < 0) {
+    vis_y0 = 0;
+  }
+  if (vis_x1 >= s_world_bg_w) {
+    vis_x1 = s_world_bg_w - 1;
+  }
+  if (vis_y1 >= s_world_bg_h) {
+    vis_y1 = s_world_bg_h - 1;
+  }
+  const int vis_w = vis_x1 - vis_x0 + 1;
+  const int vis_h = vis_y1 - vis_y0 + 1;
+  if (vis_w <= 0 || vis_h <= 0) {
+    return;
+  }
+
+  const int row_top = (s_world_bg_h - 1) - vis_y1;
+  const uint8_t* src = s_world_bg +
+                       static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w) +
+                       static_cast<size_t>(vis_x0);
+  turtle_gpu_blit_indexed_scene(vis_x0, vis_y0, vis_w, vis_h, src, s_world_bg_w,
                                 transparent_index);
 }
 
@@ -1595,6 +1794,7 @@ static int parse_tile_layers(const char* sc_start, const char* sc_end, int tile_
 static bool resolve_tileset_tts(const char* json, const char* json_end, const char* tileset_id,
                                 AssetSdLoad* sd, TurtleTileset* ts) {
   turtle_tileset_free(ts);
+  s_tileset_coll_loaded_id[0] = '\0';
 
   const char* inner = nullptr;
   const char* inner_end = nullptr;
@@ -1611,7 +1811,16 @@ static bool resolve_tileset_tts(const char* json, const char* json_end, const ch
       Serial.printf("turtle_scene: tileset \"%s\" en bundle no es .tts binario\n", tileset_id);
       return false;
     }
-    return turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(asset_inner), blob_len, ts);
+    if (!turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(asset_inner), blob_len, ts)) {
+      return false;
+    }
+    // v1 .tts ya trae colision embebida (ver turtle_tileset_load_tts); el fallback JSON
+    // solo aplica a binarios v0 legacy, si no pisaria los datos recien parseados.
+    if (ts->format_version == 0) {
+      tileset_load_collision_meta(json, json_end, tileset_id, inner, inner_end, ts);
+    }
+    snprintf(s_tileset_coll_loaded_id, sizeof s_tileset_coll_loaded_id, "%s", tileset_id);
+    return true;
   }
 
   char path[80];
@@ -1624,7 +1833,14 @@ static bool resolve_tileset_tts(const char* json, const char* json_end, const ch
     Serial.printf("turtle_scene: %s no es .tts valido\n", path);
     return false;
   }
-  return turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(sd->buf.data), sd->buf.len, ts);
+  if (!turtle_tileset_load_tts(reinterpret_cast<const uint8_t*>(sd->buf.data), sd->buf.len, ts)) {
+    return false;
+  }
+  if (ts->format_version == 0) {
+    tileset_load_collision_meta(json, json_end, tileset_id, nullptr, nullptr, ts);
+  }
+  snprintf(s_tileset_coll_loaded_id, sizeof s_tileset_coll_loaded_id, "%s", tileset_id);
+  return true;
 }
 
 static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram) {
@@ -2064,6 +2280,10 @@ static bool resolve_object_json(const char* json, const char* json_end, const ch
   if (!json || !json_end || !obj_id || !obj_id[0] || !out_inner || !out_inner_end) {
     return false;
   }
+  if (object_cache_find(obj_id, out_inner, out_inner_end)) {
+    return true;
+  }
+
   const char* od = find_root_objects_dict_brace(json, json_end);
   if (!od || *od != '{') {
     return false;
@@ -2094,6 +2314,14 @@ static bool resolve_object_json(const char* json, const char* json_end, const ch
   if (!obj_sd.resolve(oinner, oinner_end, &obj_inner, &obj_inner_end)) {
     return false;
   }
+
+  if (obj_sd.loaded && obj_sd.buf.data) {
+    if (object_cache_add_move(obj_id, &obj_sd.buf)) {
+      return object_cache_find(obj_id, out_inner, out_inner_end);
+    }
+    return false;
+  }
+
   *out_inner = obj_inner;
   *out_inner_end = obj_inner_end;
   return true;
@@ -2404,20 +2632,54 @@ static void actor_world_aabb(const SceneActor* a, int* x0, int* y0, int* x1, int
   *y1 = top;
 }
 
-static bool tile_cell_solid(int gx, int gy) {
+static bool tile_cell_blocks_actor(int gx, int gy, int ax0, int ay0, int ax1, int ay1, int step_dx,
+                                   int step_dy, bool ground_probe) {
   if (gx < 0 || gy < 0 || gx >= kMaxTileCols || gy >= kMaxTileRows) {
     return false;
   }
+  if (!s_runtime_json || !s_runtime_json_end) {
+    return false;
+  }
+  const int px = s_runtime_tile_px;
+  if (px < 1) {
+    return false;
+  }
+  int cols = 0;
+  int rows = 0;
+  tile_grid_dims(px, &cols, &rows);
+  if (gx >= cols || gy >= rows) {
+    return false;
+  }
+  const int tsy0 = (rows - 1 - gy) * px;
+  const int tsy1 = tsy0 + px - 1;
+  const int tsx0 = gx * px;
+  const int tsx1 = tsx0 + px - 1;
+
   for (int li = 0; li < s_runtime_tile_layer_count; ++li) {
     const TileLayer* ly = &s_tile_layers[li];
-    if (!ly->enabled) {
+    // Capa sin ningun tile solido (p. ej. decorativa): se salta antes de tocar la
+    // cache de tileset de colision, que solo tiene 1 entrada (evita thrashing).
+    if (!ly->enabled || !ly->tileset[0] || !ly->has_solid_tiles) {
       continue;
     }
     if (gx >= ly->cols || gy >= ly->rows) {
       continue;
     }
     const int ti = ly->cells[gy][gx];
-    if (ti >= 0 && ti != static_cast<int>(s_runtime_transp)) {
+    if (ti < 0 || ti == static_cast<int>(s_runtime_transp)) {
+      continue;
+    }
+    const TurtleTileset* ts =
+        coll_tileset_cache_get(s_runtime_json, s_runtime_json_end, ly->tileset);
+    if (!ts) {
+      continue;
+    }
+    if (ti >= static_cast<int>(ts->tile_count)) {
+      continue;
+    }
+    const TurtleTileCollEntry* ce = &ts->coll[ti];
+    if (turtle_tile_collision_blocks(ce, px, tsx0, tsy0, tsx1, tsy1, ax0, ay0, ax1, ay1, step_dx,
+                                     step_dy, ground_probe)) {
       return true;
     }
   }
@@ -2429,7 +2691,8 @@ static bool rects_overlap(int ax0, int ay0, int ax1, int ay1, int bx0, int by0, 
   return ax0 <= bx1 && ax1 >= bx0 && ay0 <= by1 && ay1 >= by0;
 }
 
-static bool aabb_overlaps_solid_tiles(int x0, int y0, int x1, int y1) {
+static bool aabb_overlaps_solid_tiles(int x0, int y0, int x1, int y1, int step_dx, int step_dy,
+                                      bool ground_probe) {
   const int px = s_runtime_tile_px;
   if (px < 1) {
     return false;
@@ -2446,18 +2709,11 @@ static bool aabb_overlaps_solid_tiles(int x0, int y0, int x1, int y1) {
     if (gy < 0 || gy >= rows) {
       continue;
     }
-    const int tsy0 = (rows - 1 - gy) * px;
-    const int tsy1 = tsy0 + px - 1;
     for (int gx = gx0; gx <= gx1; ++gx) {
       if (gx < 0 || gx >= cols) {
         continue;
       }
-      if (!tile_cell_solid(gx, gy)) {
-        continue;
-      }
-      const int tsx0 = gx * px;
-      const int tsx1 = tsx0 + px - 1;
-      if (rects_overlap(x0, y0, x1, y1, tsx0, tsy0, tsx1, tsy1)) {
+      if (tile_cell_blocks_actor(gx, gy, x0, y0, x1, y1, step_dx, step_dy, ground_probe)) {
         return true;
       }
     }
@@ -2465,13 +2721,13 @@ static bool aabb_overlaps_solid_tiles(int x0, int y0, int x1, int y1) {
   return false;
 }
 
-static bool actor_aabb_hits_tiles(const SceneActor* a) {
+static bool actor_aabb_hits_tiles(const SceneActor* a, int step_dx, int step_dy) {
   int x0 = 0;
   int y0 = 0;
   int x1 = 0;
   int y1 = 0;
   actor_world_aabb(a, &x0, &y0, &x1, &y1);
-  return aabb_overlaps_solid_tiles(x0, y0, x1, y1);
+  return aabb_overlaps_solid_tiles(x0, y0, x1, y1, step_dx, step_dy, false);
 }
 
 static bool actor_touching_ground(const SceneActor* a) {
@@ -2483,7 +2739,11 @@ static bool actor_touching_ground(const SceneActor* a) {
   if (y0 <= 0) {
     return true;
   }
-  const int probe_y = y0 - 1;
+  // Sondeo 1px por debajo del AABB real: en reposo el borde inferior del actor
+  // queda justo tocando (no solapando) la celda solida, asi que hay que desplazar
+  // toda la caja hacia abajo antes del test de overlap, no solo elegir la fila.
+  const int probe_y0 = y0 - 1;
+  const int probe_y1 = y1 - 1;
   const int px = s_runtime_tile_px;
   if (px < 1) {
     return false;
@@ -2493,7 +2753,7 @@ static bool actor_touching_ground(const SceneActor* a) {
   tile_grid_dims(px, &cols, &rows);
   const int gx0 = x0 / px;
   const int gx1 = x1 / px;
-  const int gy = rows - 1 - (probe_y / px);
+  const int gy = rows - 1 - (probe_y0 / px);
   if (gy < 0 || gy >= rows) {
     return false;
   }
@@ -2501,7 +2761,7 @@ static bool actor_touching_ground(const SceneActor* a) {
     if (gx < 0 || gx >= cols) {
       continue;
     }
-    if (tile_cell_solid(gx, gy)) {
+    if (tile_cell_blocks_actor(gx, gy, x0, probe_y0, x1, probe_y1, 0, -1, true)) {
       return true;
     }
   }
@@ -2515,7 +2775,7 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
     *dx = 0;
     for (int i = 0; i < steps; ++i) {
       a->x += step;
-      if (actor_aabb_hits_tiles(a)) {
+      if (actor_aabb_hits_tiles(a, step, 0)) {
         a->x -= step;
         break;
       }
@@ -2529,7 +2789,7 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
     *dy = 0;
     for (int i = 0; i < steps; ++i) {
       a->y += step;
-      if (actor_aabb_hits_tiles(a)) {
+      if (actor_aabb_hits_tiles(a, 0, step)) {
         a->y -= step;
         if (step < 0) {
           a->grounded = true;
@@ -2567,17 +2827,52 @@ static void draw_all_actors(void) {
 
   if (scene_uses_scrolling()) {
     paint_scene_static_layers();
-  } else {
-    turtle_gpu_set_camera(0, 0);
-    turtle_gpu_restore_static();
+
+    int cam_x = 0;
+    int cam_y = 0;
+    turtle_gpu_get_camera(&cam_x, &cam_y);
+    const int view_x1 = cam_x + kSceneW - 1;
+    const int view_y1 = cam_y + kSceneH - 1;
+
+    for (int i = 0; i < s_actor_count; ++i) {
+      SceneActor* a = &s_actors[i];
+      int bx0 = 0, by0 = 0, bw = 0, bh = 0;
+      actor_sprite_scene_bounds(a, &bx0, &by0, &bw, &bh);
+      // Fuera de la ventana de camara: no vale la pena cargar/blittear el sprite.
+      if (!rects_overlap(bx0, by0, bx0 + bw - 1, by0 + bh - 1, cam_x, cam_y, view_x1, view_y1)) {
+        continue;
+      }
+      if (!draw_actor_runtime(i)) {
+        Serial.printf("turtle_scene: no sprite para \"%s\"\n", a->obj_id);
+      }
+    }
+    turtle_gpu_request_full_flip();
+    return;
   }
+
+  // Camara fija: solo repinta la union de rects previos/actuales de los actores
+  // (turtle_gpu_dirty_mark_scene_rect asume cam=(0,0), no aplica offset de camara).
+  turtle_gpu_set_camera(0, 0);
+
+  turtle_gpu_dirty_reset();
+  for (int i = 0; i < s_actor_count; ++i) {
+    SceneActor* a = &s_actors[i];
+    if (a->has_prev_blit) {
+      turtle_gpu_dirty_mark_scene_rect(a->prev_blit_x, a->prev_blit_y, a->prev_blit_w,
+                                       a->prev_blit_h);
+    }
+    int cx0 = 0, cy0 = 0, cw = 0, ch = 0;
+    actor_sprite_scene_bounds(a, &cx0, &cy0, &cw, &ch);
+    turtle_gpu_dirty_mark_scene_rect(cx0, cy0, cw, ch);
+  }
+  turtle_gpu_dirty_slack_for_scale();
+  turtle_gpu_restore_static_dirty();
 
   for (int i = 0; i < s_actor_count; ++i) {
     if (!draw_actor_runtime(i)) {
       Serial.printf("turtle_scene: no sprite para \"%s\"\n", s_actors[i].obj_id);
     }
   }
-  turtle_gpu_request_full_flip();
 }
 
 static void clamp_actor_pos(SceneActor* a) {
@@ -2802,6 +3097,12 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     prewarm_actor_sprites(json, json_end, i);
   }
 
+  if (s_runtime_tile_layer_count <= 0) {
+    s_runtime_tile_layer_count =
+        parse_tile_layers(sc_start, sc_end, s_runtime_tile_px, s_tile_layers, kMaxTileLayers);
+  }
+  coll_tileset_cache_prewarm(json, json_end);
+
   draw_all_actors();
   s_runtime_active = true;
 
@@ -2866,7 +3167,13 @@ bool turtle_scene_actor_pos(int* x, int* y) {
   return true;
 }
 
-void turtle_scene_actor_move(int dx, int dy) {
+void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy) {
+  if (out_dx) {
+    *out_dx = 0;
+  }
+  if (out_dy) {
+    *out_dy = 0;
+  }
   if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
     return;
   }
@@ -2876,6 +3183,12 @@ void turtle_scene_actor_move(int dx, int dy) {
   if (dx != 0 || dy != 0) {
     resolve_axis_steps(a, &dx, &dy);
     clamp_actor_pos(a);
+    if (out_dx) {
+      *out_dx = dx;
+    }
+    if (out_dy) {
+      *out_dy = dy;
+    }
   }
 
   if (!a->grounded) {
@@ -2902,7 +3215,13 @@ bool turtle_scene_actor_set_anim(const char* name) {
 
   const char* sprite_id = lookup_anim_sprite(s_lua_actor_target, name);
   if (!sprite_id) {
-    Serial.printf("turtle_scene: anim \"%s\" no en objeto \"%s\"\n", name, a->obj_id);
+    static char s_last_anim_miss_obj[48];
+    static char s_last_anim_miss_name[33];
+    if (strcmp(s_last_anim_miss_obj, a->obj_id) != 0 || strcmp(s_last_anim_miss_name, name) != 0) {
+      snprintf(s_last_anim_miss_obj, sizeof s_last_anim_miss_obj, "%s", a->obj_id);
+      snprintf(s_last_anim_miss_name, sizeof s_last_anim_miss_name, "%s", name);
+      Serial.printf("turtle_scene: anim \"%s\" no en objeto \"%s\"\n", name, a->obj_id);
+    }
     return false;
   }
 
@@ -2923,8 +3242,15 @@ bool turtle_scene_actor_play_anim(const char* name, float speed, bool repeat) {
 
   const char* sprite_id = lookup_anim_sprite(s_lua_actor_target, name);
   if (!sprite_id) {
-    Serial.printf("turtle_scene: anim \"%s\" no en objeto \"%s\"\n", name,
-                  s_actors[s_lua_actor_target].obj_id);
+    SceneActor* miss_a = &s_actors[s_lua_actor_target];
+    static char s_last_play_miss_obj[48];
+    static char s_last_play_miss_name[33];
+    if (strcmp(s_last_play_miss_obj, miss_a->obj_id) != 0 ||
+        strcmp(s_last_play_miss_name, name) != 0) {
+      snprintf(s_last_play_miss_obj, sizeof s_last_play_miss_obj, "%s", miss_a->obj_id);
+      snprintf(s_last_play_miss_name, sizeof s_last_play_miss_name, "%s", name);
+      Serial.printf("turtle_scene: anim \"%s\" no en objeto \"%s\"\n", name, miss_a->obj_id);
+    }
     return false;
   }
 

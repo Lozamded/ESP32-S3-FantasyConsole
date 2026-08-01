@@ -1,0 +1,4 @@
+-- ENTRY del proyecto demo1 (scripts/global.lua)
+-- El firmware dibuja INITIAL_SCENE en C++ despues de este script y luego hace flip().
+-- Evita cls()/flip() aqui salvo que quieras pisar la escena (p. ej. transicion).
+print("demo1 global")

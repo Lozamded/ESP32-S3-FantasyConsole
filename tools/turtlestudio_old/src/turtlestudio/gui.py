@@ -61,6 +61,18 @@ from turtlestudio.fonts import (
     save_font_json,
     write_font_json,
 )
+from turtlestudio.tile_collision import (
+    TILE_COLLISION_NONE,
+    TILE_COLLISION_SHAPE,
+    TILE_COLLISION_SOLID,
+    TILE_ONEWAY_DIR_DEFAULT,
+    TILE_ONEWAY_DIRECTIONS,
+    default_shape_from_tile_pixels,
+    default_tile_collision_meta,
+    normalize_oneway_direction,
+    normalize_tile_collision_meta_list,
+    parse_tileset_collision_meta,
+)
 from turtlestudio.tiles import (
     DEFAULT_TILE_PX,
     MAX_TILE_PX,
@@ -156,6 +168,18 @@ _OBJ_COLL_SHAPE_MODES = (
     OBJECT_COLLISION_MODE_TRIANGLE,
     OBJECT_COLLISION_MODE_HEXAGON,
 )
+_TILE_COLL_KIND_LABELS = (
+    "Solido (celda entera)",
+    "Sin collision",
+    "Forma (caja)",
+)
+_TILE_COLL_KINDS = (
+    TILE_COLLISION_SOLID,
+    TILE_COLLISION_NONE,
+    TILE_COLLISION_SHAPE,
+)
+_TILE_ONEWAY_DIR_LABELS = ("Arriba", "Abajo", "Izquierda", "Derecha")
+_TILE_ONEWAY_DIR_VALUES = TILE_ONEWAY_DIRECTIONS
 from turtlestudio.sprite_png_export import export_sprite_frames_to_png_dir
 from turtlestudio.sprite_ref_image import (
     aspect_ratio_note,
@@ -1714,6 +1738,7 @@ def run_gui() -> int:
         "tileset_ref_source": None,
         "tileset_ref_path": "",
         "tileset_atlas_cell": None,
+        "tileset_collision_meta": [],
         "font_glyphs_pixels": None,
         "font_pixel_rows": None,
         "font_active_char": "A",
@@ -3968,6 +3993,14 @@ def run_gui() -> int:
             "ts_tileset_palette_rel",
             "ts_btn_tileset_palette_reload",
             "ts_tileset_editor_scale",
+            "ts_tile_coll_kind",
+            "ts_tile_coll_oneway",
+            "ts_tile_coll_oneway_dir",
+            "ts_tile_coll_x0",
+            "ts_tile_coll_y0",
+            "ts_tile_coll_x1",
+            "ts_tile_coll_y1",
+            "ts_btn_tile_coll_from_pixels",
             "ts_btn_tileset_fill",
             "ts_btn_tileset_clear",
             "ts_btn_tileset_ref_import",
@@ -4701,12 +4734,192 @@ def run_gui() -> int:
         if isinstance(rows, list) and idx < len(frames):
             frames[idx] = rows
 
+    def _tileset_ensure_collision_meta() -> list[dict[str, Any]]:
+        frames = _tileset_ensure_buffers()
+        meta = state.get("tileset_collision_meta")
+        if not isinstance(meta, list):
+            meta = []
+        state["tileset_collision_meta"] = normalize_tile_collision_meta_list(
+            meta, len(frames)
+        )
+        return state["tileset_collision_meta"]
+
+    def _tileset_flush_collision_meta() -> None:
+        meta = _tileset_ensure_collision_meta()
+        idx = _tileset_active_index()
+        if idx < len(meta):
+            meta[idx] = _read_tile_collision_meta_from_widgets()
+
+    def _tile_collision_kind_from_combo() -> str:
+        if not dpg.does_item_exist("ts_tile_coll_kind"):
+            return TILE_COLLISION_SOLID
+        label = str(dpg.get_value("ts_tile_coll_kind"))
+        for i, lab in enumerate(_TILE_COLL_KIND_LABELS):
+            if label == lab:
+                return _TILE_COLL_KINDS[i]
+        return TILE_COLLISION_SOLID
+
+    def _sync_tile_collision_shape_ui() -> None:
+        kind = _tile_collision_kind_from_combo()
+        show_shape = kind == TILE_COLLISION_SHAPE
+        if dpg.does_item_exist("ts_tile_coll_box_grp"):
+            dpg.configure_item("ts_tile_coll_box_grp", show=show_shape)
+        if dpg.does_item_exist("ts_btn_tile_coll_from_pixels"):
+            dpg.configure_item("ts_btn_tile_coll_from_pixels", show=show_shape)
+        collides = kind != TILE_COLLISION_NONE
+        if dpg.does_item_exist("ts_tile_coll_oneway"):
+            dpg.configure_item("ts_tile_coll_oneway", enabled=collides)
+            if not collides:
+                dpg.set_value("ts_tile_coll_oneway", False)
+        oneway_on = collides and bool(
+            dpg.get_value("ts_tile_coll_oneway")
+            if dpg.does_item_exist("ts_tile_coll_oneway")
+            else False
+        )
+        if dpg.does_item_exist("ts_tile_coll_oneway_dir"):
+            dpg.configure_item(
+                "ts_tile_coll_oneway_dir",
+                show=oneway_on,
+                enabled=oneway_on,
+            )
+
+    def _tile_oneway_direction_from_combo() -> str:
+        if not dpg.does_item_exist("ts_tile_coll_oneway_dir"):
+            return TILE_ONEWAY_DIR_DEFAULT
+        label = str(dpg.get_value("ts_tile_coll_oneway_dir"))
+        for i, lab in enumerate(_TILE_ONEWAY_DIR_LABELS):
+            if label == lab:
+                return _TILE_ONEWAY_DIR_VALUES[i]
+        return TILE_ONEWAY_DIR_DEFAULT
+
+    def _set_tile_collision_widgets_from_meta(meta: dict[str, Any]) -> None:
+        kind = str(meta.get("kind", TILE_COLLISION_SOLID)).strip()
+        label = _TILE_COLL_KIND_LABELS[0]
+        for i, k in enumerate(_TILE_COLL_KINDS):
+            if k == kind:
+                label = _TILE_COLL_KIND_LABELS[i]
+                break
+        if dpg.does_item_exist("ts_tile_coll_kind"):
+            dpg.set_value("ts_tile_coll_kind", label)
+        shape = meta.get("shape")
+        if isinstance(shape, dict) and kind == TILE_COLLISION_SHAPE:
+            for tag, key in (
+                ("ts_tile_coll_x0", "x0"),
+                ("ts_tile_coll_y0", "y0"),
+                ("ts_tile_coll_x1", "x1"),
+                ("ts_tile_coll_y1", "y1"),
+            ):
+                if dpg.does_item_exist(tag):
+                    try:
+                        dpg.set_value(tag, int(shape[key]))
+                    except (TypeError, ValueError, KeyError):
+                        dpg.set_value(tag, 0)
+        if dpg.does_item_exist("ts_tile_coll_oneway"):
+            dpg.set_value("ts_tile_coll_oneway", bool(meta.get("oneway")))
+        odir = normalize_oneway_direction(meta.get("oneway_direction"))
+        dir_label = _TILE_ONEWAY_DIR_LABELS[0]
+        for i, val in enumerate(_TILE_ONEWAY_DIR_VALUES):
+            if val == odir:
+                dir_label = _TILE_ONEWAY_DIR_LABELS[i]
+                break
+        if dpg.does_item_exist("ts_tile_coll_oneway_dir"):
+            dpg.set_value("ts_tile_coll_oneway_dir", dir_label)
+        _sync_tile_collision_shape_ui()
+
+    def _read_tile_collision_meta_from_widgets() -> dict[str, Any]:
+        kind = _tile_collision_kind_from_combo()
+
+        def _iv(tag: str) -> int:
+            try:
+                return int(dpg.get_value(tag))
+            except (TypeError, ValueError):
+                return 0
+
+        if kind == TILE_COLLISION_SHAPE:
+            meta: dict[str, Any] = {
+                "kind": TILE_COLLISION_SHAPE,
+                "shape": {
+                    "mode": OBJECT_COLLISION_MODE_AABB,
+                    "x0": _iv("ts_tile_coll_x0"),
+                    "y0": _iv("ts_tile_coll_y0"),
+                    "x1": _iv("ts_tile_coll_x1"),
+                    "y1": _iv("ts_tile_coll_y1"),
+                },
+            }
+        elif kind == TILE_COLLISION_NONE:
+            meta = default_tile_collision_meta(kind=TILE_COLLISION_NONE)
+        else:
+            meta = default_tile_collision_meta(kind=TILE_COLLISION_SOLID)
+        oneway = False
+        if kind != TILE_COLLISION_NONE and dpg.does_item_exist("ts_tile_coll_oneway"):
+            oneway = bool(dpg.get_value("ts_tile_coll_oneway"))
+        meta["oneway"] = oneway
+        meta["oneway_direction"] = _tile_oneway_direction_from_combo()
+        return meta
+
+    def _tile_collision_outline_for_active_tile(
+        px: int,
+    ) -> dict[str, Any] | None:
+        meta = _read_tile_collision_meta_from_widgets()
+        kind = str(meta.get("kind", TILE_COLLISION_SOLID))
+        if kind == TILE_COLLISION_NONE:
+            return None
+        if kind == TILE_COLLISION_SHAPE:
+            shape = meta.get("shape")
+            if isinstance(shape, dict):
+                return shape
+            return None
+        return {
+            "mode": OBJECT_COLLISION_MODE_AABB,
+            "x0": 0,
+            "y0": 0,
+            "x1": max(0, px - 1),
+            "y1": max(0, px - 1),
+        }
+
+    def on_tile_collision_kind_change(_sender: object, _app_data: object) -> None:
+        _tileset_flush_collision_meta()
+        _sync_tile_collision_shape_ui()
+        _refresh_tileset_edit_texture()
+
+    def on_tile_collision_oneway_change(_sender: object, _app_data: object) -> None:
+        _sync_tile_collision_shape_ui()
+        _tileset_flush_collision_meta()
+        _refresh_tileset_edit_texture()
+
+    def on_tile_collision_oneway_dir_change(_sender: object, _app_data: object) -> None:
+        _tileset_flush_collision_meta()
+        _refresh_tileset_edit_texture()
+
+    def on_tile_collision_box_change(_sender: object, _app_data: object) -> None:
+        _tileset_flush_collision_meta()
+        _refresh_tileset_edit_texture()
+
+    def on_tile_collision_from_pixels(_sender: object, _app_data: object) -> None:
+        rows = state.get("tileset_pixel_rows")
+        px = _tileset_px_for_editor()
+        if not isinstance(rows, list):
+            return
+        shape = default_shape_from_tile_pixels(
+            rows, tile_px=px, transparent_index=TRANSPARENT_PALETTE_INDEX
+        )
+        meta = default_tile_collision_meta(kind=TILE_COLLISION_SHAPE)
+        meta["shape"] = shape
+        _set_tile_collision_widgets_from_meta(meta)
+        _tileset_flush_collision_meta()
+        _refresh_tileset_edit_texture()
+
     def _tileset_load_active_tile_into_editor() -> None:
         frames = _tileset_ensure_buffers()
         if not frames:
             return
         idx = _tileset_active_index()
         state["tileset_pixel_rows"] = frames[idx]
+        meta = _tileset_ensure_collision_meta()
+        if idx < len(meta):
+            _set_tile_collision_widgets_from_meta(meta[idx])
+        else:
+            _set_tile_collision_widgets_from_meta(default_tile_collision_meta())
         if dpg.does_item_exist("ts_tile_list"):
             labels = [f"T{i}" for i in range(len(frames))]
             dpg.configure_item("ts_tile_list", items=labels)
@@ -4812,6 +5025,19 @@ def run_gui() -> int:
             ref_alpha=0.0,
             paint_alpha=1.0,
         )
+        outline = _tile_collision_outline_for_active_tile(px)
+        if outline is not None:
+            _draw_object_collision_outline_rgba(
+                base,
+                px,
+                px,
+                0,
+                0,
+                outline,
+                1.0,
+                0.92,
+                0.15,
+            )
         _apply_tileset_edit_rgba(px, px, base)
 
     def _tileset_atlas_display_scale() -> int:
@@ -5142,6 +5368,7 @@ def run_gui() -> int:
             state["tile_px"] = px_file
         tiles = parse_tileset_all_tiles(data, fill_index=1)
         state["tileset_tiles_pixels"] = tiles
+        state["tileset_collision_meta"] = parse_tileset_collision_meta(data)
         state["tileset_active_index"] = 0
         _tileset_load_active_tile_into_editor()
         _tileset_palette_reload_core(append_log=False)
@@ -5161,6 +5388,7 @@ def run_gui() -> int:
 
     def on_tile_list_pick(_sender: object, app_data: object) -> None:
         _tileset_flush_current_tile()
+        _tileset_flush_collision_meta()
         raw = app_data if app_data is not None else dpg.get_value("ts_tile_list")
         s = str(raw).strip()
         if not s.startswith("T"):
@@ -5189,12 +5417,15 @@ def run_gui() -> int:
             fi = 1
         frames.append(empty_tile_rows(px, fill_index=fi))
         state["tileset_tiles_pixels"] = frames
+        meta = _tileset_ensure_collision_meta()
+        meta.append(default_tile_collision_meta())
         state["tileset_active_index"] = len(frames) - 1
         _tileset_load_active_tile_into_editor()
         _refresh_tileset_edit_texture()
 
     def on_tileset_remove_tile(_sender: object, _app_data: object) -> None:
         _tileset_flush_current_tile()
+        _tileset_flush_collision_meta()
         frames = _tileset_ensure_buffers()
         if len(frames) <= 1:
             dpg.set_value(
@@ -5205,6 +5436,9 @@ def run_gui() -> int:
         idx = _tileset_active_index()
         frames.pop(idx)
         state["tileset_tiles_pixels"] = frames
+        meta = _tileset_ensure_collision_meta()
+        if idx < len(meta):
+            meta.pop(idx)
         state["tileset_active_index"] = min(idx, len(frames) - 1)
         _tileset_load_active_tile_into_editor()
         _refresh_tileset_edit_texture()
@@ -5258,7 +5492,9 @@ def run_gui() -> int:
             )
             return
         _tileset_flush_current_tile()
+        _tileset_flush_collision_meta()
         frames = _tileset_ensure_buffers()
+        meta = _tileset_ensure_collision_meta()
         pal = str(dpg.get_value("ts_tileset_palette_rel")).strip()
         if not pal:
             pal = DEFAULT_EXAMPLE_PALETTE_REL
@@ -5270,6 +5506,7 @@ def run_gui() -> int:
                 tile_px=_tileset_px_for_editor(),
                 tiles_rows=frames,
                 fill_index=parse_tileset_palette_index(),
+                collision_meta=meta,
             )
         except ValueError as e:
             dpg.set_value("ts_log", (dpg.get_value("ts_log") or "") + f"Tiles: {e}\n")
@@ -9875,6 +10112,104 @@ def run_gui() -> int:
                             callback=on_tileset_remove_tile,
                             enabled=False,
                         )
+                dpg.add_separator()
+                dpg.add_text(
+                    "Collision del tile activo (T0, T1, …): origen (0,0) = esquina inferior "
+                    "izquierda del tile; Y hacia arriba. Contorno amarillo en el editor.",
+                    wrap=520,
+                    color=(200, 220, 255, 255),
+                )
+                with dpg.group(horizontal=True):
+                    dpg.add_combo(
+                        tag="ts_tile_coll_kind",
+                        label="Collision",
+                        width=200,
+                        items=list(_TILE_COLL_KIND_LABELS),
+                        default_value=_TILE_COLL_KIND_LABELS[0],
+                        callback=on_tile_collision_kind_change,
+                        enabled=False,
+                    )
+                    dpg.add_button(
+                        tag="ts_btn_tile_coll_from_pixels",
+                        label="Desde pixeles",
+                        width=120,
+                        callback=on_tile_collision_from_pixels,
+                        enabled=False,
+                        show=False,
+                    )
+                with dpg.group(horizontal=True):
+                    dpg.add_checkbox(
+                        tag="ts_tile_coll_oneway",
+                        label="Collision unidireccional",
+                        default_value=False,
+                        callback=on_tile_collision_oneway_change,
+                        enabled=False,
+                    )
+                    dpg.add_combo(
+                        tag="ts_tile_coll_oneway_dir",
+                        label="Direccion",
+                        width=120,
+                        items=list(_TILE_ONEWAY_DIR_LABELS),
+                        default_value=_TILE_ONEWAY_DIR_LABELS[0],
+                        callback=on_tile_collision_oneway_dir_change,
+                        enabled=False,
+                        show=False,
+                    )
+                dpg.add_text(
+                    "Unidireccional: el jugador puede atravesar el tile desde esa direccion "
+                    "(p. ej. Arriba = plataforma: sube desde abajo, no desde arriba).",
+                    wrap=520,
+                    color=(160, 180, 210, 255),
+                )
+                with dpg.group(tag="ts_tile_coll_box_grp", horizontal=True, show=False):
+                    dpg.add_input_int(
+                        tag="ts_tile_coll_x0",
+                        label="X0 (izq)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_tile_collision_box_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_tile_coll_y0",
+                        label="Y0 (abajo)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_tile_collision_box_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_tile_coll_x1",
+                        label="X1 (der)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_tile_collision_box_change,
+                    )
+                    dpg.add_input_int(
+                        tag="ts_tile_coll_y1",
+                        label="Y1 (arriba)",
+                        width=88,
+                        default_value=0,
+                        min_value=-256,
+                        max_value=256,
+                        min_clamped=True,
+                        max_clamped=True,
+                        enabled=False,
+                        callback=on_tile_collision_box_change,
+                    )
                 dpg.add_separator()
                 with dpg.group(horizontal=True):
                     dpg.add_input_text(
