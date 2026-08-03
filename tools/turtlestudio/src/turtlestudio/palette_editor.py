@@ -35,6 +35,7 @@ from turtlestudio.build import (
     load_palette_lines,
     save_palette_lines,
 )
+from turtlestudio.i18n import tr
 from turtlestudio.palette_policy import PALETTE_SIZE, TRANSPARENT_PALETTE_INDEX
 
 SLOT_SIZE = 34
@@ -231,16 +232,16 @@ class PaletteEditorWidget(QWidget):
         root_layout.setSpacing(6)
 
         toolbar = QHBoxLayout()
-        toolbar.addWidget(QLabel("Paleta:"))
+        toolbar.addWidget(QLabel(tr("palette.label")))
         self.combo_palette = QComboBox()
         self.combo_palette.setMinimumWidth(200)
         self.combo_palette.currentIndexChanged.connect(self._on_palette_combo_changed)
         toolbar.addWidget(self.combo_palette)
-        self.btn_new = QPushButton("Nueva…")
+        self.btn_new = QPushButton(tr("palette.new"))
         self.btn_new.setFixedWidth(70)
         self.btn_new.clicked.connect(self._action_new_palette)
         toolbar.addWidget(self.btn_new)
-        self.btn_save = QPushButton("Guardar")
+        self.btn_save = QPushButton(tr("common.save"))
         self.btn_save.setFixedWidth(70)
         self.btn_save.clicked.connect(self._action_save)
         toolbar.addWidget(self.btn_save)
@@ -266,9 +267,7 @@ class PaletteEditorWidget(QWidget):
         scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         left_vbox.addWidget(scroll)
 
-        self.lbl_slot = QLabel(
-            f"Casilla 0 — indice {TRANSPARENT_PALETTE_INDEX} reservado (transparente)"
-        )
+        self.lbl_slot = QLabel(tr("palette.slot_hint", index=0, ti=TRANSPARENT_PALETTE_INDEX))
         self.lbl_slot.setStyleSheet("color: #aaa; font-size: 11px;")
         self.lbl_slot.setWordWrap(True)
         left_vbox.addWidget(self.lbl_slot)
@@ -281,7 +280,7 @@ class PaletteEditorWidget(QWidget):
         right_vbox.setContentsMargins(4, 0, 0, 0)
         right_vbox.setSpacing(8)
 
-        slot_group = QGroupBox("Editar casilla seleccionada")
+        slot_group = QGroupBox(tr("palette.edit_slot_group"))
         slot_form = QFormLayout(slot_group)
         slot_form.setSpacing(4)
 
@@ -319,20 +318,20 @@ class PaletteEditorWidget(QWidget):
         self.spin_g.valueChanged.connect(self._on_rgb_spinbox_changed)
         self.spin_b.valueChanged.connect(self._on_rgb_spinbox_changed)
 
-        self.btn_apply = QPushButton("Aplicar color a la casilla")
+        self.btn_apply = QPushButton(tr("palette.apply_color"))
         self.btn_apply.clicked.connect(self._action_apply_color)
         slot_form.addRow(self.btn_apply)
         right_vbox.addWidget(slot_group)
 
-        import_group = QGroupBox("Importar colores de una imagen")
+        import_group = QGroupBox(tr("palette.import_group"))
         import_vbox = QVBoxLayout(import_group)
         import_vbox.setSpacing(4)
 
         browse_row = QHBoxLayout()
-        self.btn_browse = QPushButton("Elegir imagen…")
+        self.btn_browse = QPushButton(tr("palette.browse_image"))
         self.btn_browse.clicked.connect(self._action_browse_image)
         browse_row.addWidget(self.btn_browse)
-        self.lbl_image_name = QLabel("Sin imagen")
+        self.lbl_image_name = QLabel(tr("palette.no_image"))
         self.lbl_image_name.setStyleSheet("color: #888; font-size: 11px;")
         browse_row.addWidget(self.lbl_image_name, 1)
         import_vbox.addLayout(browse_row)
@@ -345,16 +344,13 @@ class PaletteEditorWidget(QWidget):
         self.image_preview.setStyleSheet("background: #1a1a2e;")
         img_row.addWidget(self.image_preview)
 
-        img_hint = QLabel(
-            "Haz clic en un color para cargarlo en el\n"
-            "editor, luego Aplicar o 'Fijar en la casilla\nseleccionada'."
-        )
+        img_hint = QLabel(tr("palette.image_hint"))
         img_hint.setStyleSheet("color: #888; font-size: 11px;")
         img_hint.setWordWrap(True)
         img_row.addWidget(img_hint, 1)
         import_vbox.addLayout(img_row)
 
-        import_vbox.addWidget(QLabel("Colores encontrados (por frecuencia):"))
+        import_vbox.addWidget(QLabel(tr("palette.colors_found")))
         self.color_list = QListWidget()
         self.color_list.setIconSize(QSize(20, 20))
         self.color_list.setMaximumHeight(180)
@@ -362,7 +358,7 @@ class PaletteEditorWidget(QWidget):
         self.color_list.itemDoubleClicked.connect(self._on_image_color_double_clicked)
         import_vbox.addWidget(self.color_list)
 
-        self.btn_use_color = QPushButton("Fijar en la casilla seleccionada")
+        self.btn_use_color = QPushButton(tr("palette.use_color"))
         self.btn_use_color.setEnabled(False)
         self.btn_use_color.clicked.connect(self._action_use_image_color)
         import_vbox.addWidget(self.btn_use_color)
@@ -392,7 +388,7 @@ class PaletteEditorWidget(QWidget):
             hexes = load_palette_lines(path)
             self._colors = [_hex_to_rgb255(h) for h in hexes] if hexes else _default_palette_colors()
         except Exception as exc:
-            QMessageBox.warning(self, "Cargar paleta", str(exc))
+            QMessageBox.warning(self, tr("palette.load_error_title"), str(exc))
             self._colors = _default_palette_colors()
         # pad/truncate to PALETTE_SIZE so the grid always has a color per slot
         if len(self._colors) < PALETTE_SIZE:
@@ -432,9 +428,7 @@ class PaletteEditorWidget(QWidget):
             self._load_palette(rel)
 
     def _on_slot_selected(self, index: int) -> None:
-        self.lbl_slot.setText(
-            f"Casilla {index} — indice {TRANSPARENT_PALETTE_INDEX} reservado (transparente)"
-        )
+        self.lbl_slot.setText(tr("palette.slot_hint", index=index, ti=TRANSPARENT_PALETTE_INDEX))
         if index == TRANSPARENT_PALETTE_INDEX or index >= len(self._colors):
             return
         r, g, b = self._colors[index]
@@ -478,7 +472,7 @@ class PaletteEditorWidget(QWidget):
         self._colors[idx] = (r, g, b)
         self.grid.set_colors(self._colors)
         self._dirty = True
-        self.lbl_status.setText("Cambios sin guardar")
+        self.lbl_status.setText(tr("common.unsaved_changes"))
 
     def _action_use_image_color(self) -> None:
         if self._selected_image_color is None:
@@ -487,8 +481,8 @@ class PaletteEditorWidget(QWidget):
         if idx == TRANSPARENT_PALETTE_INDEX:
             QMessageBox.information(
                 self,
-                "Fijar color",
-                f"La casilla {TRANSPARENT_PALETTE_INDEX} esta reservada para transparencia.",
+                tr("palette.set_color_title"),
+                tr("palette.set_color_transparent_msg", ti=TRANSPARENT_PALETTE_INDEX),
             )
             return
         r, g, b = self._selected_image_color
@@ -496,38 +490,38 @@ class PaletteEditorWidget(QWidget):
         self._set_rgb_spinboxes(r, g, b)
         self.grid.set_colors(self._colors)
         self._dirty = True
-        self.lbl_status.setText("Cambios sin guardar")
+        self.lbl_status.setText(tr("common.unsaved_changes"))
 
     def _action_save(self) -> None:
         rel = self.combo_palette.currentText().strip()
         if not rel:
-            QMessageBox.warning(self, "Guardar paleta", "Selecciona o crea una paleta primero.")
+            QMessageBox.warning(self, tr("palette.save_error_title"), tr("palette.save_no_selection"))
             return
         path = self._palette_path(rel)
         try:
             save_palette_lines(path, [_rgb255_to_hex(c) for c in self._colors])
         except Exception as exc:
-            QMessageBox.warning(self, "Guardar paleta", str(exc))
+            QMessageBox.warning(self, tr("palette.save_error_title"), str(exc))
             return
         self._palette_rel = rel
         self._dirty = False
-        self.lbl_status.setText("Guardado.")
+        self.lbl_status.setText(tr("common.saved"))
         self.saved.emit(path)
 
     def _action_new_palette(self) -> None:
-        name, ok = QInputDialog.getText(self, "Nueva paleta", "Nombre de la nueva paleta:")
+        name, ok = QInputDialog.getText(self, tr("palette.new_title"), tr("palette.new_name_label"))
         if not ok or not name.strip():
             return
         stem = name.strip().replace(" ", "_")
         rel = f"palettes/{stem}.txt"
         path = self._palette_path(rel)
         if path.exists():
-            QMessageBox.warning(self, "Nueva paleta", f"'{rel}' ya existe.")
+            QMessageBox.warning(self, tr("palette.new_title"), tr("palette.new_exists", rel=rel))
             return
         try:
             save_palette_lines(path, list(DEFAULT_CONSOLE_PALETTE_HEX))
         except Exception as exc:
-            QMessageBox.warning(self, "Nueva paleta", str(exc))
+            QMessageBox.warning(self, tr("palette.new_title"), str(exc))
             return
         self.refresh()
         idx = self.combo_palette.findText(rel)
@@ -537,9 +531,9 @@ class PaletteEditorWidget(QWidget):
     def _action_browse_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
-            "Abrir imagen",
+            tr("palette.open_image_title"),
             "",
-            "Imagenes (*.png *.jpg *.jpeg *.bmp *.gif *.webp)",
+            tr("palette.image_filter"),
         )
         if not path:
             return
@@ -560,7 +554,7 @@ class PaletteEditorWidget(QWidget):
         try:
             self._image_colors = _extract_image_colors(image_path)
         except Exception as exc:
-            QMessageBox.warning(self, "Importar imagen", f"No se pudo leer la imagen:\n{exc}")
+            QMessageBox.warning(self, tr("palette.import_error_title"), tr("palette.import_error_msg", exc=exc))
             return
 
         self._populate_image_color_list()

@@ -1,0 +1,181 @@
+key,es,en
+common.save,Guardar,Save
+common.new,Nuevo…,New…
+common.unsaved_changes,Cambios sin guardar,Unsaved changes
+common.saved,Guardado.,Saved.
+common.zoom,Zoom:,Zoom:
+common.pencil,Lapiz,Pencil
+common.eraser,Borrador,Eraser
+common.eyedropper,Cuentagotas,Eyedropper
+common.resize,Redimensionar,Resize
+common.no_palettes,El proyecto no tiene paletas.,The project has no palettes.
+common.error,Error,Error
+palette.label,Paleta:,Palette:
+palette.new,Nueva…,New…
+palette.slot_hint,Casilla {index} — indice {ti} reservado (transparente),Slot {index} — index {ti} is reserved (transparent)
+palette.edit_slot_group,Editar casilla seleccionada,Edit selected slot
+palette.apply_color,Aplicar color a la casilla,Apply color to slot
+palette.import_group,Importar colores de una imagen,Import colors from an image
+palette.browse_image,Elegir imagen…,Choose image…
+palette.no_image,Sin imagen,No image
+palette.image_hint,"Haz clic en un color para cargarlo en el
+editor, luego Aplicar o 'Fijar en la casilla
+seleccionada'.","Click a color to load it into the
+editor, then Apply or 'Set on the
+selected slot'."
+palette.colors_found,Colores encontrados (por frecuencia):,Colors found (by frequency):
+palette.use_color,Fijar en la casilla seleccionada,Set on selected slot
+palette.load_error_title,Cargar paleta,Load palette
+palette.set_color_title,Fijar color,Set color
+palette.set_color_transparent_msg,La casilla {ti} esta reservada para transparencia.,Slot {ti} is reserved for transparency.
+palette.save_error_title,Guardar paleta,Save palette
+palette.save_no_selection,Selecciona o crea una paleta primero.,Select or create a palette first.
+palette.new_title,Nueva paleta,New palette
+palette.new_name_label,Nombre de la nueva paleta:,Name of the new palette:
+palette.new_exists,'{rel}' ya existe.,'{rel}' already exists.
+palette.open_image_title,Abrir imagen,Open image
+palette.image_filter,Imagenes (*.png *.jpg *.jpeg *.bmp *.gif *.webp),Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp)
+palette.import_error_title,Importar imagen,Import image
+palette.import_error_msg,"No se pudo leer la imagen:
+{exc}","Could not read the image:
+{exc}"
+sprite.label,Sprite:,Sprite:
+sprite.frame_label,Fotograma:,Frame:
+sprite.frame_count,/ {n},/ {n}
+sprite.add_frame,+ Fotograma,+ Frame
+sprite.remove_frame,- Fotograma,- Frame
+sprite.blocks_w,Bloques ancho:,Blocks wide:
+sprite.blocks_h,Bloques alto:,Blocks tall:
+sprite.px_per_block,Px por bloque:,Px per block:
+sprite.origin_x,Origen X:,Origin X:
+sprite.origin_y,Origen Y:,Origin Y:
+sprite.palette_hint,Paleta del sprite (0–30):,Sprite palette (0–30):
+sprite.open_error_title,Abrir sprite,Open sprite
+sprite.new_title,Nuevo sprite,New sprite
+sprite.new_id_label,Id del sprite:,Sprite id:
+sprite.save_error_title,Guardar sprite,Save sprite
+scene.label,Escena:,Scene:
+scene.new_scene_button,Nueva…,New…
+scene.delete_button,Eliminar,Delete
+scene.activate_button,Activar,Activate
+scene.paint_layer_label,Capa de pintura:,Paint layer:
+scene.paint_layer_none,Ninguna (solo vista),None (view only)
+scene.layer_n,Capa {n},Layer {n}
+scene.layer_n_active,Capa {n} activa,Layer {n} active
+scene.properties_group,Propiedades de la escena,Scene properties
+scene.id_label,Id:,Id:
+scene.palette_label,Paleta:,Palette:
+scene.script_label,Script (stem):,Script (stem):
+scene.world_steps_x,Pasos de mundo X:,World steps X:
+scene.world_steps_y,Pasos de mundo Y:,World steps Y:
+scene.background_group,Fondo,Background
+scene.background_asset_label,Fondo (backgrounds/):,Background (backgrounds/):
+scene.color_label,Color:,Color:
+scene.opacity_label,Opacidad:,Opacity:
+scene.tile_layers_group,Capas de tiles,Tile layers
+scene.tile_layer_hint,Elige 'Capa de pintura' a la derecha del lienzo para pintar celdas.,Pick a 'Paint layer' to the right of the canvas to paint cells.
+scene.objects_group,Objetos en la escena,Objects in the scene
+scene.add_object,Añadir,Add
+scene.remove_object,Quitar,Remove
+scene.x_label,X:,X:
+scene.y_label,Y:,Y:
+scene.camera_group,Camara,Camera
+scene.mode_label,Modo:,Mode:
+scene.camera_target_placeholder,id de objeto (vacio = auto),object id (empty = auto)
+scene.camera_target_label,Objetivo:,Target:
+scene.margin_x_label,Margen X:,Margin X:
+scene.margin_y_label,Margen Y:,Margin Y:
+scene.active_suffix,  (activa),  (active)
+scene.no_background,(ninguno),(none)
+scene.read_error_title,Escenas,Scenes
+scene.read_error_msg,No se pudo leer {manifest}: {e},Could not read {manifest}: {e}
+scene.new_scene_title,Nueva escena,New scene
+scene.new_scene_id_label,Id de la escena:,Scene id:
+scene.new_scene_exists,Ya existe una escena {sid}.,Scene {sid} already exists.
+scene.delete_confirm_title,Eliminar escena,Delete scene
+scene.delete_min_scenes,Debe existir al menos una escena.,At least one scene must exist.
+scene.delete_confirm_msg,¿Eliminar la escena {sid}?,Delete scene {sid}?
+scene.save_error_title,Guardar escenas,Save scenes
+tileset.label,Tileset:,Tileset:
+tileset.tiles_label,Tiles:,Tiles:
+tileset.add_tile,+ Tile,+ Tile
+tileset.remove_tile,- Tile,- Tile
+tileset.px_per_tile,Px por tile:,Px per tile:
+tileset.palette_label,Paleta:,Palette:
+tileset.palette_hint,Paleta del tile (0–30):,Tile palette (0–30):
+tileset.collision_group,Colision del tile,Tile collision
+tileset.collision_type,Tipo:,Type:
+tileset.auto_shape,Auto (segun pixeles),Auto (from pixels)
+tileset.oneway,Un solo sentido,One-way
+tileset.direction,Direccion:,Direction:
+tileset.open_error_title,Abrir tileset,Open tileset
+tileset.new_title,Nuevo tileset,New tileset
+tileset.new_id_label,Id del tileset:,Tileset id:
+tileset.save_error_title,Guardar tileset,Save tileset
+background.label,Fondo:,Background:
+background.mode_label,Modo:,Mode:
+background.mode_solid,Solido,Solid
+background.mode_indexed,Pixeles indexados,Indexed pixels
+background.width_px,Ancho (px):,Width (px):
+background.height_px,Alto (px):,Height (px):
+background.solid_color_label,Color solido:,Solid color:
+background.palette_hint,Paleta (0–30):,Palette (0–30):
+background.open_error_title,Abrir fondo,Open background
+background.new_title,Nuevo fondo,New background
+background.new_id_label,Id del fondo:,Background id:
+background.new_palette_label,Paleta:,Palette:
+background.save_error_title,Guardar fondo,Save background
+mainwindow.section_sprites,Sprites,Sprites
+mainwindow.section_objects,Objetos,Objects
+mainwindow.section_fonts,Fuentes,Fonts
+mainwindow.section_backgrounds,Fondos,Backgrounds
+mainwindow.section_tiles,Tiles,Tiles
+mainwindow.section_scenes,Escenas,Scenes
+mainwindow.section_palettes,Paletas,Palettes
+mainwindow.section_scripts,Scripts,Scripts
+mainwindow.empty_page,Abre o crea un proyecto TurtleStudio.,Open or create a TurtleStudio project.
+mainwindow.menu_file,&Archivo,&File
+mainwindow.menu_open_project,&Abrir proyecto…,&Open project…
+mainwindow.menu_new_project,&Nuevo proyecto…,&New project…
+mainwindow.open_project_title,Abrir proyecto TurtleStudio,Open TurtleStudio project
+mainwindow.new_project_folder_title,Carpeta para el nuevo proyecto,Folder for the new project
+mainwindow.new_project_title,Nuevo proyecto,New project
+mainwindow.new_project_name_label,Nombre del proyecto:,Project name:
+mainwindow.open_project_error_title,Error al abrir proyecto,Error opening project
+mainwindow.placeholder_not_ported,"Editor pendiente de portar para:
+{rel}","Editor not yet ported for:
+{rel}"
+object.label,Objeto:,Object:
+object.id_label,Id:,Id:
+object.name_label,Nombre:,Name:
+object.sprite_label,Sprite:,Sprite:
+object.script_label,"Script (stem, opcional):","Script (stem, optional):"
+object.animations_group,Animaciones,Animations
+object.add_animation,Añadir…,Add…
+object.remove_animation,Quitar,Remove
+object.new_animation_title,Nueva animacion,New animation
+object.new_animation_name_label,Nombre de la animacion:,Animation name:
+object.new_animation_sprite_label,Sprite para la animacion:,Sprite for the animation:
+object.collision_group,Colision,Collision
+object.has_collision,Tiene colision,Has collision
+object.collision_mode_label,Forma:,Shape:
+object.auto_shape,Auto (segun sprite),Auto (from sprite)
+object.points_label,Puntos:,Points:
+object.open_error_title,Abrir objeto,Open object
+object.new_title,Nuevo objeto,New object
+object.new_id_label,Id del objeto:,Object id:
+object.no_sprites,El proyecto no tiene sprites.,The project has no sprites.
+object.new_sprite_label,Sprite:,Sprite:
+object.save_error_title,Guardar objeto,Save object
+font.label,Fuente:,Font:
+font.charset_label,Caracteres:,Characters:
+font.glyph_px_label,Px por glifo:,Px per glyph:
+font.line_height_label,Alto de linea:,Line height:
+font.baseline_label,Linea base:,Baseline:
+font.palette_label,Paleta:,Palette:
+font.palette_hint,Paleta del glifo (0–30):,Glyph palette (0–30):
+font.preview_group,Vista previa de texto,Text preview
+font.open_error_title,Abrir fuente,Open font
+font.new_title,Nueva fuente,New font
+font.new_id_label,Id de la fuente:,Font id:
+font.save_error_title,Guardar fuente,Save font

@@ -23,7 +23,13 @@ from PyQt6.QtWidgets import (
 )
 
 from turtlestudio.palette_editor import PaletteEditorWidget
+from turtlestudio.background_editor import BackgroundEditorWidget
+from turtlestudio.font_editor import FontEditorWidget
+from turtlestudio.i18n import tr
+from turtlestudio.object_editor import ObjectEditorWidget
+from turtlestudio.scene_editor import SceneEditorWidget
 from turtlestudio.sprite_editor import SpriteEditorWidget
+from turtlestudio.tileset_editor import TilesetEditorWidget
 from turtlestudio.project import (
     MANIFEST_NAME,
     STANDARD_SUBDIRS,
@@ -36,14 +42,14 @@ from turtlestudio.project import (
 # Dispatch is by directory, not file suffix: every TurtleStudio asset is plain
 # JSON, so ".json" alone can't tell a sprite from a tileset apart.
 _ASSET_SECTIONS: tuple[tuple[str, str], ...] = (
-    ("Sprites", "objects/Sprites"),
-    ("Objetos", "objects/Objects"),
-    ("Fuentes", "objects/Fonts"),
-    ("Fondos", "backgrounds"),
-    ("Tiles", "tiles"),
-    ("Escenas", "scenes"),
-    ("Paletas", "palettes"),
-    ("Scripts", "scripts"),
+    (tr("mainwindow.section_sprites"), "objects/Sprites"),
+    (tr("mainwindow.section_objects"), "objects/Objects"),
+    (tr("mainwindow.section_fonts"), "objects/Fonts"),
+    (tr("mainwindow.section_backgrounds"), "backgrounds"),
+    (tr("mainwindow.section_tiles"), "tiles"),
+    (tr("mainwindow.section_scenes"), "scenes"),
+    (tr("mainwindow.section_palettes"), "palettes"),
+    (tr("mainwindow.section_scripts"), "scripts"),
 )
 
 
@@ -97,13 +103,13 @@ class MainWindow(QMainWindow):
 
     def _build_menu(self) -> None:
         menu = self.menuBar()
-        file_menu = menu.addMenu("&Archivo")
+        file_menu = menu.addMenu(tr("mainwindow.menu_file"))
 
-        open_action = QAction("&Abrir proyecto…", self)
+        open_action = QAction(tr("mainwindow.menu_open_project"), self)
         open_action.triggered.connect(self._action_open_project)
         file_menu.addAction(open_action)
 
-        new_action = QAction("&Nuevo proyecto…", self)
+        new_action = QAction(tr("mainwindow.menu_new_project"), self)
         new_action.triggered.connect(self._action_new_project)
         file_menu.addAction(new_action)
 
@@ -119,7 +125,7 @@ class MainWindow(QMainWindow):
 
         self.center_stack = _CenterStack()
         self.center_stack.currentChanged.connect(lambda _i: self.center_stack.updateGeometry())
-        self._empty_page = _PlaceholderPage("Abre o crea un proyecto TurtleStudio.")
+        self._empty_page = _PlaceholderPage(tr("mainwindow.empty_page"))
         self.center_stack.addWidget(self._empty_page)
 
         self.palette_editor = PaletteEditorWidget(Path("."))
@@ -127,6 +133,21 @@ class MainWindow(QMainWindow):
 
         self.sprite_editor = SpriteEditorWidget(Path("."))
         self.center_stack.addWidget(self.sprite_editor)
+
+        self.scene_editor = SceneEditorWidget(Path("."))
+        self.center_stack.addWidget(self.scene_editor)
+
+        self.tileset_editor = TilesetEditorWidget(Path("."))
+        self.center_stack.addWidget(self.tileset_editor)
+
+        self.background_editor = BackgroundEditorWidget(Path("."))
+        self.center_stack.addWidget(self.background_editor)
+
+        self.object_editor = ObjectEditorWidget(Path("."))
+        self.center_stack.addWidget(self.object_editor)
+
+        self.font_editor = FontEditorWidget(Path("."))
+        self.center_stack.addWidget(self.font_editor)
 
         splitter.addWidget(self.center_stack)
 
@@ -137,21 +158,21 @@ class MainWindow(QMainWindow):
     # -- project actions ---------------------------------------------------------
 
     def _action_open_project(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Abrir proyecto TurtleStudio")
+        path = QFileDialog.getExistingDirectory(self, tr("mainwindow.open_project_title"))
         if path:
             self.open_project(Path(path))
 
     def _action_new_project(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, "Carpeta para el nuevo proyecto")
+        path = QFileDialog.getExistingDirectory(self, tr("mainwindow.new_project_folder_title"))
         if not path:
             return
-        name, ok = QInputDialog.getText(self, "Nuevo proyecto", "Nombre del proyecto:")
+        name, ok = QInputDialog.getText(self, tr("mainwindow.new_project_title"), tr("mainwindow.new_project_name_label"))
         if not ok:
             return
         try:
             create_project(Path(path), display_name=name or None)
         except (ValueError, OSError) as e:
-            QMessageBox.critical(self, "Error", str(e))
+            QMessageBox.critical(self, tr("common.error"), str(e))
             return
         self.open_project(Path(path))
 
@@ -160,13 +181,18 @@ class MainWindow(QMainWindow):
         try:
             info = load_project(root)
         except ValueError as e:
-            QMessageBox.critical(self, "Error al abrir proyecto", str(e))
+            QMessageBox.critical(self, tr("mainwindow.open_project_error_title"), str(e))
             return
         self.project = info
         self.project_root = root
         self.setWindowTitle(f"TurtleStudio — {info.name}")
         self.palette_editor.set_project_root(root)
         self.sprite_editor.set_project_root(root)
+        self.scene_editor.set_project_root(root)
+        self.tileset_editor.set_project_root(root)
+        self.background_editor.set_project_root(root)
+        self.object_editor.set_project_root(root)
+        self.font_editor.set_project_root(root)
         self._refresh_project_tree()
 
     # -- project tree ---------------------------------------------------------
@@ -222,7 +248,32 @@ class MainWindow(QMainWindow):
             self.center_stack.setCurrentWidget(self.sprite_editor)
             return
 
-        placeholder = _PlaceholderPage(f"Editor pendiente de portar para:\n{rel}")
+        if rel.startswith("scenes/"):
+            self.scene_editor.open_scene(path.stem)
+            self.center_stack.setCurrentWidget(self.scene_editor)
+            return
+
+        if rel.startswith("tiles/"):
+            self.tileset_editor.open_tileset(path.stem)
+            self.center_stack.setCurrentWidget(self.tileset_editor)
+            return
+
+        if rel.startswith("backgrounds/"):
+            self.background_editor.open_background(path.stem)
+            self.center_stack.setCurrentWidget(self.background_editor)
+            return
+
+        if rel.startswith("objects/Objects/"):
+            self.object_editor.open_object(path.stem)
+            self.center_stack.setCurrentWidget(self.object_editor)
+            return
+
+        if rel.startswith("objects/Fonts/"):
+            self.font_editor.open_font(path.stem)
+            self.center_stack.setCurrentWidget(self.font_editor)
+            return
+
+        placeholder = _PlaceholderPage(tr("mainwindow.placeholder_not_ported", rel=rel))
         self.center_stack.addWidget(placeholder)
         self.center_stack.setCurrentWidget(placeholder)
 

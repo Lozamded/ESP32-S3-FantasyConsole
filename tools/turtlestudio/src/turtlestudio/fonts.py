@@ -240,7 +240,14 @@ def save_font_json(
     glyphs: dict[str, list[list[int]]],
     charset: str = LATIN_CHARSET,
     fill_index: int = 1,
+    line_height: int | None = None,
+    baseline: int | None = None,
 ) -> Path:
+    """Escribe/actualiza `objects/Fonts/<id>.json`.
+
+    `line_height`/`baseline` explicitos tienen prioridad; si se omiten (None),
+    se preserva el valor previo del archivo (o `glyph_px` si es un archivo nuevo).
+    """
     fid = validate_font_id(font_id)
     validate_palette_file_under_project(project_root, palette_rel)
     px = normalize_glyph_px(glyph_px)
@@ -266,6 +273,10 @@ def save_font_json(
             bl = int(previous.get("baseline", px))
         except (TypeError, ValueError):
             bl = px
+    if line_height is not None:
+        lh = int(line_height)
+    if baseline is not None:
+        bl = int(baseline)
     payload = font_payload(
         fid,
         palette_rel=palette_rel,

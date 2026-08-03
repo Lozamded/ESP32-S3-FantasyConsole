@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.i18n import tr
 from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import (
     PALETTE_SIZE,
@@ -233,15 +234,15 @@ class SpriteEditorWidget(QWidget):
         outer.setContentsMargins(6, 6, 6, 6)
 
         top_row = QHBoxLayout()
-        top_row.addWidget(QLabel("Sprite:"))
+        top_row.addWidget(QLabel(tr("sprite.label")))
         self.combo_sprite = QComboBox()
         self.combo_sprite.setMinimumWidth(180)
         self.combo_sprite.currentTextChanged.connect(self._on_sprite_combo_changed)
         top_row.addWidget(self.combo_sprite)
-        self.btn_new = QPushButton("Nuevo…")
+        self.btn_new = QPushButton(tr("common.new"))
         self.btn_new.clicked.connect(self._action_new_sprite)
         top_row.addWidget(self.btn_new)
-        self.btn_save = QPushButton("Guardar")
+        self.btn_save = QPushButton(tr("common.save"))
         self.btn_save.clicked.connect(self._action_save)
         top_row.addWidget(self.btn_save)
         top_row.addStretch()
@@ -262,20 +263,20 @@ class SpriteEditorWidget(QWidget):
         canvas_col.addWidget(canvas_scroll, stretch=1)
 
         tools = QHBoxLayout()
-        self.btn_pencil = QPushButton("Lapiz")
+        self.btn_pencil = QPushButton(tr("common.pencil"))
         self.btn_pencil.setCheckable(True)
         self.btn_pencil.setChecked(True)
         self.btn_pencil.clicked.connect(lambda: self._set_tool(Tool.PENCIL))
         tools.addWidget(self.btn_pencil)
-        self.btn_eraser = QPushButton("Borrador")
+        self.btn_eraser = QPushButton(tr("common.eraser"))
         self.btn_eraser.setCheckable(True)
         self.btn_eraser.clicked.connect(lambda: self._set_tool(Tool.ERASER))
         tools.addWidget(self.btn_eraser)
-        self.btn_dropper = QPushButton("Cuentagotas")
+        self.btn_dropper = QPushButton(tr("common.eyedropper"))
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
-        tools.addWidget(QLabel("Zoom:"))
+        tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(4, 48)
         self.zoom_spin.setValue(16)
@@ -285,17 +286,17 @@ class SpriteEditorWidget(QWidget):
         canvas_col.addLayout(tools)
 
         frame_row = QHBoxLayout()
-        frame_row.addWidget(QLabel("Fotograma:"))
+        frame_row.addWidget(QLabel(tr("sprite.frame_label")))
         self.frame_spin = QSpinBox()
         self.frame_spin.setRange(1, MAX_SPRITE_FRAMES)
         self.frame_spin.valueChanged.connect(self._on_frame_spin_changed)
         frame_row.addWidget(self.frame_spin)
-        self.lbl_frame_count = QLabel("/ 1")
+        self.lbl_frame_count = QLabel(tr("sprite.frame_count", n=1))
         frame_row.addWidget(self.lbl_frame_count)
-        self.btn_add_frame = QPushButton("+ Fotograma")
+        self.btn_add_frame = QPushButton(tr("sprite.add_frame"))
         self.btn_add_frame.clicked.connect(self._action_add_frame)
         frame_row.addWidget(self.btn_add_frame)
-        self.btn_del_frame = QPushButton("- Fotograma")
+        self.btn_del_frame = QPushButton(tr("sprite.remove_frame"))
         self.btn_del_frame.clicked.connect(self._action_remove_frame)
         frame_row.addWidget(self.btn_del_frame)
         frame_row.addStretch()
@@ -307,28 +308,28 @@ class SpriteEditorWidget(QWidget):
         form = QFormLayout()
         self.spin_blocks_w = QSpinBox()
         self.spin_blocks_w.setRange(1, MAX_BLOCKS_PER_AXIS)
-        form.addRow("Bloques ancho:", self.spin_blocks_w)
+        form.addRow(tr("sprite.blocks_w"), self.spin_blocks_w)
         self.spin_blocks_h = QSpinBox()
         self.spin_blocks_h.setRange(1, MAX_BLOCKS_PER_AXIS)
-        form.addRow("Bloques alto:", self.spin_blocks_h)
+        form.addRow(tr("sprite.blocks_h"), self.spin_blocks_h)
         self.spin_cell_px = QSpinBox()
         self.spin_cell_px.setRange(1, 64)
         self.spin_cell_px.setValue(DEFAULT_CELL_PX)
-        form.addRow("Px por bloque:", self.spin_cell_px)
-        self.btn_resize = QPushButton("Redimensionar")
+        form.addRow(tr("sprite.px_per_block"), self.spin_cell_px)
+        self.btn_resize = QPushButton(tr("common.resize"))
         self.btn_resize.clicked.connect(self._action_resize)
         form.addRow(self.btn_resize)
         self.spin_origin_x = QSpinBox()
         self.spin_origin_x.setRange(0, MAX_BLOCKS_PER_AXIS * 64)
         self.spin_origin_x.valueChanged.connect(self._on_origin_changed)
-        form.addRow("Origen X:", self.spin_origin_x)
+        form.addRow(tr("sprite.origin_x"), self.spin_origin_x)
         self.spin_origin_y = QSpinBox()
         self.spin_origin_y.setRange(0, MAX_BLOCKS_PER_AXIS * 64)
         self.spin_origin_y.valueChanged.connect(self._on_origin_changed)
-        form.addRow("Origen Y:", self.spin_origin_y)
+        form.addRow(tr("sprite.origin_y"), self.spin_origin_y)
         side.addLayout(form)
 
-        side.addWidget(QLabel("Paleta del sprite (0–30):"))
+        side.addWidget(QLabel(tr("sprite.palette_hint")))
         self.grid = PaletteGridWidget()
         self.grid.slot_selected.connect(self._on_slot_selected)
         side.addWidget(self.grid)
@@ -358,7 +359,7 @@ class SpriteEditorWidget(QWidget):
         try:
             data = read_sprite_file(self.project_root, stem)
         except ValueError as e:
-            QMessageBox.warning(self, "Abrir sprite", str(e))
+            QMessageBox.warning(self, tr("sprite.open_error_title"), str(e))
             return
         cell_px, pw, ph = sprite_pixel_dimensions(data)
         self.sprite_id = stem
@@ -391,7 +392,7 @@ class SpriteEditorWidget(QWidget):
         self.frame_spin.blockSignals(True)
         self.frame_spin.setValue(1)
         self.frame_spin.blockSignals(False)
-        self.lbl_frame_count.setText(f"/ {len(self._frames)}")
+        self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
 
         self.grid.set_colors(self._load_palette_colors(self.palette_rel))
         self._refresh_canvas()
@@ -408,7 +409,7 @@ class SpriteEditorWidget(QWidget):
 
     def _mark_dirty(self) -> None:
         self._dirty = True
-        self.lbl_status.setText("Cambios sin guardar")
+        self.lbl_status.setText(tr("common.unsaved_changes"))
 
     def _set_tool(self, tool: Tool) -> None:
         self.canvas.set_tool(tool)
@@ -448,14 +449,14 @@ class SpriteEditorWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _action_new_sprite(self) -> None:
-        name, ok = QInputDialog.getText(self, "Nuevo sprite", "Id del sprite:")
+        name, ok = QInputDialog.getText(self, tr("sprite.new_title"), tr("sprite.new_id_label"))
         if not ok or not name.strip():
             return
         try:
             sid = validate_sprite_id(name.strip())
             write_empty_sprite_json(self.project_root, sid)
         except ValueError as e:
-            QMessageBox.warning(self, "Nuevo sprite", str(e))
+            QMessageBox.warning(self, tr("sprite.new_title"), str(e))
             return
         self.refresh_sprite_list()
         self.open_sprite(sid)
@@ -486,7 +487,7 @@ class SpriteEditorWidget(QWidget):
         self.frame_spin.blockSignals(True)
         self.frame_spin.setValue(self._frame_index + 1)
         self.frame_spin.blockSignals(False)
-        self.lbl_frame_count.setText(f"/ {len(self._frames)}")
+        self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
         self._mark_dirty()
         self._refresh_canvas()
 
@@ -499,7 +500,7 @@ class SpriteEditorWidget(QWidget):
         self.frame_spin.blockSignals(True)
         self.frame_spin.setValue(self._frame_index + 1)
         self.frame_spin.blockSignals(False)
-        self.lbl_frame_count.setText(f"/ {len(self._frames)}")
+        self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
         self._mark_dirty()
         self._refresh_canvas()
 
@@ -520,8 +521,8 @@ class SpriteEditorWidget(QWidget):
                 origin_y=self.origin_y,
             )
         except ValueError as e:
-            QMessageBox.warning(self, "Guardar sprite", str(e))
+            QMessageBox.warning(self, tr("sprite.save_error_title"), str(e))
             return
         self._dirty = False
-        self.lbl_status.setText("Guardado.")
+        self.lbl_status.setText(tr("common.saved"))
         self.saved.emit(self.project_root)
