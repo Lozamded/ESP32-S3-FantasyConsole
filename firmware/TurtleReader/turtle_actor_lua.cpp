@@ -117,6 +117,33 @@ static int l_flip_h(lua_State* L) {
   return 0;
 }
 
+/**
+ * text(str, font_id [, dx, dy, color_index]) — overlay de texto del actor actual,
+ * persistente hasta el siguiente text(). text("") lo borra. (dx, dy) offset opcional
+ * (0,0 = ancla del actor). `color_index` (0..30) opcional tiñe el texto en vez de usar
+ * los colores propios del glifo.
+ * NOTA: firma distinta a la de la VM ENTRY (text(sx, sy, str, font_id, color_index),
+ * coords absolutas escena) — aqui es relativo al actor, como flip_h/set_anim.
+ * Ver spec/lua/firmware-bridge-v0.md.
+ */
+static int l_text(lua_State* L) {
+  const char* str = luaL_checkstring(L, 1);
+  const char* font_id = luaL_optstring(L, 2, "");
+  const int dx = static_cast<int>(luaL_optinteger(L, 3, 0));
+  const int dy = static_cast<int>(luaL_optinteger(L, 4, 0));
+  const int color_index = static_cast<int>(luaL_optinteger(L, 5, -1));
+  turtle_scene_actor_set_text(str, dx, dy, font_id, color_index);
+  return 0;
+}
+
+/** text_width(str, font_id) -> ancho en px, sin dibujar. */
+static int l_text_width(lua_State* L) {
+  const char* str = luaL_checkstring(L, 1);
+  const char* font_id = luaL_checkstring(L, 2);
+  lua_pushinteger(L, turtle_scene_measure_text_active(font_id, str));
+  return 1;
+}
+
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
@@ -146,6 +173,12 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_flip_h);
   lua_setglobal(L, "flip_h");
+
+  lua_pushcfunction(L, l_text);
+  lua_setglobal(L, "text");
+
+  lua_pushcfunction(L, l_text_width);
+  lua_setglobal(L, "text_width");
 }
 
 static bool load_script_update_ref(int actor_index, const char* stem) {

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -114,11 +114,22 @@ def scene_world_pixel_size(
 
 @dataclass(frozen=True)
 class BackgroundLayer:
-    """Capa de fondo a pantalla completa (misma area que la escena). Indices en la paleta de la escena."""
+    """Capa de fondo a pantalla completa (misma area que la escena). Indices en la paleta de la escena.
+
+    `background`/`parallax_x`/`fixed`/`repeat_x` (spec/scene-v0.md, "Capas de fondo con imagen")
+    son opcionales: sin `background` la capa es solo color plano (comportamiento de siempre, usado
+    para derivar el cls() via firmware_background_index_from_layers). Con `background`, el firmware
+    carga esa imagen en SU PROPIO buffer (ademas del fondo principal) y la desplaza a `parallax_x`
+    veces la camara -- costo real de RAM/render por capa habilitada, no es gratis.
+    """
 
     enabled: bool
     color_index: int
     opacity: int  # 0..255 para mezcla en vista previa del estudio
+    background: str = ""
+    parallax_x: float = 1.0
+    fixed: bool = False
+    repeat_x: bool = False
 
 
 _DEFAULT_SCENE_BACKGROUND_LAYERS: tuple[BackgroundLayer, ...] = (
@@ -415,6 +426,8 @@ def parse_background_layers(
     n_colors: int,
 ) -> tuple[BackgroundLayer, ...]:
     """Cuatro capas de fondo a pantalla completa; si falta el array, se deriva de legacy_flat_index."""
+    from turtlestudio.scene_parallax import MAX_PARALLAX_X, MIN_PARALLAX_X
+
     fb = clamp_palette_color_index(legacy_flat_index, n_colors=n_colors)
     if not isinstance(raw, list):
         return default_background_layers(fb)
@@ -436,7 +449,15 @@ def parse_background_layers(
             except (TypeError, ValueError):
                 op = 255
             op = max(0, min(255, op))
-            out.append(BackgroundLayer(en, ci, op))
+            bg = str(d.get("background", "") or "").strip()
+            try:
+                px = float(d.get("parallax_x", 1.0))
+            except (TypeError, ValueError):
+                px = 1.0
+            px = max(MIN_PARALLAX_X, min(MAX_PARALLAX_X, px))
+            fixed = bool(d.get("fixed", False))
+            repeat_x = bool(d.get("repeat_x", False))
+            out.append(BackgroundLayer(en, ci, op, bg, px, fixed, repeat_x))
         else:
             out.append(BackgroundLayer(True, fb, 255) if i == 0 else BackgroundLayer(False, 1, 255))
     return tuple(out)
@@ -457,7 +478,16 @@ def firmware_background_index_from_layers(
 
 def background_layers_to_json_list(layers: tuple[BackgroundLayer, ...]) -> list[dict[str, Any]]:
     return [
-        {"enabled": ly.enabled, "color_index": ly.color_index, "opacity": ly.opacity} for ly in layers
+        {
+            "enabled": ly.enabled,
+            "color_index": ly.color_index,
+            "opacity": ly.opacity,
+            "background": ly.background,
+            "parallax_x": ly.parallax_x,
+            "fixed": ly.fixed,
+            "repeat_x": ly.repeat_x,
+        }
+        for ly in layers
     ]
 
 
@@ -545,11 +575,16 @@ def _parse_scenes_from_manifest(
             o_placements = parse_scene_objects_raw(raw_objs, world_w=ww, world_h=wh)
             stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
 
-            bg_asset = parse_scene_background_stem(
+            # Migracion: el campo suelto "background" (fondo principal, pre-unificacion) se
+            # convierte en background_layers[0].background si esa capa todavia no tiene imagen
+            # propia asignada. Layer 1 es ahora la unica forma de asignar el fondo base/horneado.
+            legacy_bg_asset = parse_scene_background_stem(
                 project_root,
                 item.get("background", item.get("background_id", "")),
                 scene_palette_rel=pal,
             )
+            if legacy_bg_asset and not layers[0].background:
+                layers = (replace(layers[0], background=legacy_bg_asset, enabled=True),) + layers[1:]
             tile_ly = parse_tile_layers(
                 item.get("tile_layers"),
                 tile_px=tile_px,
@@ -575,7 +610,7 @@ def _parse_scenes_from_manifest(
                     objects=o_placements,
                     script=stem,
                     background_layers=layers,
-                    background=bg_asset,
+                    background="",
                     tile_layers=tile_ly,
                     world_steps_x=wsx,
                     world_steps_y=wsy,
@@ -706,7 +741,6 @@ def _write_mirror_scene_json_files(
             "background_layers": list(row["background_layers"])
             if isinstance(row.get("background_layers"), list)
             else background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
-            "background": str(row.get("background", "") or ""),
             "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
             "tile_layers": list(row["tile_layers"])
             if isinstance(row.get("tile_layers"), list)
@@ -762,7 +796,6 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
                 "palette": DEFAULT_EXAMPLE_PALETTE_REL,
                 "background_index": 1,
                 "background_layers": background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
-                "background": "",
                 "script": DEFAULT_INITIAL_SCENE_ID,
                 "objects": [],
                 "tile_layers": [],
@@ -913,16 +946,25 @@ def _normalize_scenes_for_save(
             legacy_flat_index=bg,
             n_colors=n,
         )
+        # Migracion: el campo suelto "background" (pre-unificacion) pasa a
+        # background_layers[0].background si esa capa no tiene imagen propia todavia.
+        # A partir de aqui la unica forma soportada de asignar un fondo es por capa.
+        legacy_bg_saved = validate_scene_background_for_save(
+            root,
+            item.get("background", item.get("background_id", "")),
+            scene_palette_rel=pal,
+        )
+        if legacy_bg_saved and not layers[0].background:
+            layers = (replace(layers[0], background=legacy_bg_saved, enabled=True),) + layers[1:]
+        layers = tuple(
+            replace(ly, background=validate_scene_background_for_save(root, ly.background, scene_palette_rel=pal))
+            for ly in layers
+        )
         bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
         raw_objs = item.get("objects", [])
         if not isinstance(raw_objs, list):
             raw_objs = []
         stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
-        bg_saved = validate_scene_background_for_save(
-            root,
-            item.get("background", item.get("background_id", "")),
-            scene_palette_rel=pal,
-        )
         wsx = clamp_world_steps(item.get("world_steps_x", 1))
         wsy = clamp_world_steps(item.get("world_steps_y", 1))
         ww, wh = scene_world_pixel_size(wsx, wsy)
@@ -945,7 +987,6 @@ def _normalize_scenes_for_save(
             "palette": pal,
             "background_index": bg_fw,
             "background_layers": background_layers_to_json_list(layers),
-            "background": bg_saved,
             "script": stem,
             "objects": objs_ok,
             "tile_layers": tile_saved,

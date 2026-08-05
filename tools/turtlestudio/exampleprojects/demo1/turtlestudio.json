@@ -4,7 +4,7 @@
   "target_fps": 30,
   "default_anim_fps": 8,
   "entry": "scripts/global.lua",
-  "default_palette": "palettes/palette.txt",
+  "default_palette": null,
   "scenes": [
     {
       "id": "intro",
@@ -14,25 +14,40 @@
         {
           "enabled": true,
           "color_index": 14,
-          "opacity": 255
+          "opacity": 255,
+          "background": "cielo",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 0.95,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         }
       ],
-      "background": "cielo",
       "script": "intro",
       "objects": [
         {
@@ -1748,7 +1763,19 @@
         }
       ],
       "world_steps_x": 2,
-      "world_steps_y": 1
+      "world_steps_y": 1,
+      "camera": {
+        "mode": "fixed",
+        "x": 0,
+        "y": 0,
+        "margin_x": 64,
+        "margin_y": 48
+      },
+      "camera_mode": "fixed",
+      "camera_x": 0,
+      "camera_y": 0,
+      "camera_margin_x": 64,
+      "camera_margin_y": 48
     },
     {
       "id": "scene_1",
@@ -1758,25 +1785,40 @@
         {
           "enabled": true,
           "color_index": 28,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         }
       ],
-      "background": "",
       "script": "scene_1",
       "objects": [
         {
@@ -2681,7 +2723,19 @@
         }
       ],
       "world_steps_x": 1,
-      "world_steps_y": 1
+      "world_steps_y": 1,
+      "camera": {
+        "mode": "follow",
+        "x": 0,
+        "y": 0,
+        "margin_x": 64,
+        "margin_y": 48
+      },
+      "camera_mode": "follow",
+      "camera_x": 0,
+      "camera_y": 0,
+      "camera_margin_x": 64,
+      "camera_margin_y": 48
     },
     {
       "id": "scene_2",
@@ -2691,25 +2745,40 @@
         {
           "enabled": true,
           "color_index": 12,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         }
       ],
-      "background": "",
       "script": "scene_2",
       "objects": [],
       "tile_layers": [
@@ -3603,7 +3672,19 @@
         }
       ],
       "world_steps_x": 1,
-      "world_steps_y": 1
+      "world_steps_y": 1,
+      "camera": {
+        "mode": "follow",
+        "x": 0,
+        "y": 0,
+        "margin_x": 64,
+        "margin_y": 48
+      },
+      "camera_mode": "follow",
+      "camera_x": 0,
+      "camera_y": 0,
+      "camera_margin_x": 64,
+      "camera_margin_y": 48
     },
     {
       "id": "scene_3",
@@ -3613,25 +3694,40 @@
         {
           "enabled": true,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         },
         {
           "enabled": false,
           "color_index": 1,
-          "opacity": 255
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
         }
       ],
-      "background": "",
       "script": "scene_3",
       "objects": [],
       "tile_layers": [
@@ -4525,7 +4621,19 @@
         }
       ],
       "world_steps_x": 1,
-      "world_steps_y": 1
+      "world_steps_y": 1,
+      "camera": {
+        "mode": "follow",
+        "x": 0,
+        "y": 0,
+        "margin_x": 64,
+        "margin_y": 48
+      },
+      "camera_mode": "follow",
+      "camera_x": 0,
+      "camera_y": 0,
+      "camera_margin_x": 64,
+      "camera_margin_y": 48
     }
   ],
   "active_scene": "intro",

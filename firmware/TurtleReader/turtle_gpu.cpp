@@ -487,6 +487,36 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
   }
 }
 
+void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
+                                        int sample_row_len, int x_offset, bool wrap_x,
+                                        uint8_t transparent_index) {
+  if (!sample_row || sample_row_len <= 0) {
+    return;
+  }
+  const int vy = scene_y - s_cam_y;
+  const int yfb = (kH - 1) - vy;
+  if (yfb < 0 || yfb >= kH) {
+    return;
+  }
+  const uint8_t tr = clamp_color_index(transparent_index);
+  for (int vx = 0; vx < kW; ++vx) {
+    int sx = vx + x_offset;
+    if (wrap_x) {
+      sx %= sample_row_len;
+      if (sx < 0) {
+        sx += sample_row_len;
+      }
+    } else if (sx < 0 || sx >= sample_row_len) {
+      continue;
+    }
+    const uint8_t ci = sample_row[sx];
+    if (ci == tr) {
+      continue;
+    }
+    plot_fb(vx, yfb, clamp_color_index(ci));
+  }
+}
+
 void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
                                           const uint8_t* rows_top_first, int row_stride,
                                           uint8_t transparent_index, int origin_x, int origin_y,

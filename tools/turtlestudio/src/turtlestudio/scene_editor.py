@@ -80,6 +80,14 @@ from turtlestudio.scene_camera import (
     resolve_scene_camera_viewport,
     scene_camera_to_json,
 )
+from turtlestudio.scene_parallax import (
+    MAX_PARALLAX_BANDS,
+    SceneParallaxBand,
+    clamp_parallax_band,
+    parse_scene_parallax_bands_from_row,
+    scene_parallax_band_to_json,
+    scene_parallax_bands_to_json,
+)
 from turtlestudio.scene_tiles import (
     TILE_LAYER_COUNT,
     draw_scene_step_bounds_on_rgba,
@@ -322,8 +330,19 @@ def render_scene_rgba(
     pal_path = (project_root / palette_rel).resolve() if palette_rel else None
     rgbs, _ = load_palette_rgb01_for_preview(pal_path if pal_path and pal_path.is_file() else None)
 
+    # spec/scene-v0.md "Capas de fondo con imagen": capa 1 (indice 0) es la capa base -- se
+    # hornea junto a los tiles en el mundo estatico del firmware y es la unica elegible para
+    # `parallax_bands` -- las capas 2-4 son independientes. La vista previa no distingue el
+    # costo de render de cada una; solo importa el orden (0 abajo, 3 arriba).
     for ld in row.get("background_layers") or []:
         if not isinstance(ld, dict) or not ld.get("enabled"):
+            continue
+        layer_stem = str(ld.get("background", "") or "").strip()
+        if layer_stem:
+            # Ancla abajo-izquierda (igual que paint_bg_image_layers/paint_cached_world_background
+            # en firmware); sin mezcla alfa -- opacity solo aplica al color plano de respaldo
+            # de abajo, no a la imagen.
+            _paint_background_stem(rgba, fw, fh, project_root, layer_stem, palette_rel, rgbs)
             continue
         try:
             ci = int(ld.get("color_index", 1))
@@ -337,10 +356,6 @@ def render_scene_rgba(
             continue
         r, g, b = col
         _fill_rect_rgba(rgba, fw, fh, r, g, b, op)
-
-    bg_stem = str(row.get("background", "") or "").strip()
-    if bg_stem:
-        _paint_background_stem(rgba, fw, fh, project_root, bg_stem, palette_rel, rgbs)
 
     layers = parse_tile_layers(row.get("tile_layers"), tile_px=tile_px, world_w=fw, world_h=fh)
     paint_tile_layers_on_rgba(rgba, fw, fh, layers, project_root, rgbs, tile_px=tile_px)
@@ -512,7 +527,6 @@ def _new_scene_row(sid: str, palette_rel: str, tile_px: int) -> dict[str, Any]:
         "palette": palette_rel,
         "background_index": 1,
         "background_layers": background_layers_to_json_list(parse_background_layers(None, legacy_flat_index=1, n_colors=PALETTE_SIZE)),
-        "background": "",
         "script": sid,
         "objects": [],
         "tile_layers": tile_layers_to_json_list(parse_tile_layers(None, tile_px=tile_px)),
@@ -533,14 +547,21 @@ def _normalize_row(row: dict[str, Any], tile_px: int) -> dict[str, Any]:
     layers = parse_background_layers(
         r.get("background_layers"), legacy_flat_index=int(r.get("background_index", 1) or 1), n_colors=PALETTE_SIZE
     )
+    # Migracion: fondo suelto pre-unificacion -> background_layers[0].background (capa base).
+    # Validacion real de que el stem exista pasa despues, al poblar los combos de la capa.
+    legacy_bg = str(r.get("background", "") or "").strip()
+    if legacy_bg and not layers[0].background:
+        from dataclasses import replace as _replace
+
+        layers = (_replace(layers[0], background=legacy_bg, enabled=True),) + layers[1:]
     r["background_layers"] = background_layers_to_json_list(layers)
+    r.pop("background", None)
     tile_layers = parse_tile_layers(r.get("tile_layers"), tile_px=tile_px, world_w=ww, world_h=wh)
     r["tile_layers"] = tile_layers_to_json_list(tile_layers)
     placements = parse_scene_objects_raw(r.get("objects"), world_w=ww, world_h=wh)
     r["objects"] = [{"id": p.id, "x": p.x, "y": p.y} for p in placements]
     cam = parse_scene_camera_from_row(r)
     r["camera"] = scene_camera_to_json(cam)
-    r["background"] = str(r.get("background", "") or "")
     r["script"] = str(r.get("script", r.get("id", DEFAULT_INITIAL_SCENE_ID)) or r.get("id", DEFAULT_INITIAL_SCENE_ID))
     return r
 
@@ -642,6 +663,7 @@ class SceneEditorWidget(QWidget):
         left_layout.addWidget(self._build_tile_layers_group())
         left_layout.addWidget(self._build_objects_group())
         left_layout.addWidget(self._build_camera_group())
+        left_layout.addWidget(self._build_parallax_bands_group())
         left_layout.addStretch()
 
         left_scroll.setWidget(left_inner)
@@ -709,12 +731,11 @@ class SceneEditorWidget(QWidget):
     def _build_background_group(self) -> QGroupBox:
         box = QGroupBox(tr("scene.background_group"))
         layout = QVBoxLayout(box)
-        row = QHBoxLayout()
-        row.addWidget(QLabel(tr("scene.background_asset_label")))
-        self.combo_background = QComboBox()
-        self.combo_background.currentTextChanged.connect(self._on_background_stem_changed)
-        row.addWidget(self.combo_background)
-        layout.addLayout(row)
+
+        hint = QLabel(tr("scene.bg_layer_image_hint"))
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
 
         self.bg_layer_rows: list[dict[str, Any]] = []
         for i in range(4):
@@ -733,7 +754,46 @@ class SceneEditorWidget(QWidget):
             spin_op.valueChanged.connect(lambda v, idx=i: self._on_bg_layer_changed(idx))
             lrow.addWidget(spin_op)
             layout.addLayout(lrow)
-            self.bg_layer_rows.append({"enabled": chk, "color": spin_color, "opacity": spin_op})
+
+            img_row = QHBoxLayout()
+            img_row.addWidget(QLabel(tr("scene.background_asset_label")))
+            combo_bg = QComboBox()
+            combo_bg.currentIndexChanged.connect(lambda v, idx=i: self._on_bg_layer_changed(idx))
+            img_row.addWidget(combo_bg, stretch=1)
+            img_row.addWidget(QLabel(tr("scene.parallax_x_label")))
+            spin_px = QDoubleSpinBox()
+            spin_px.setRange(0.0, 2.0)
+            spin_px.setSingleStep(0.05)
+            spin_px.setDecimals(2)
+            spin_px.valueChanged.connect(lambda v, idx=i: self._on_bg_layer_changed(idx))
+            img_row.addWidget(spin_px)
+            chk_fixed = QCheckBox(tr("scene.parallax_fixed_label"))
+            chk_fixed.toggled.connect(lambda v, idx=i: self._on_bg_layer_changed(idx))
+            img_row.addWidget(chk_fixed)
+            chk_repeat = QCheckBox(tr("scene.parallax_repeat_x_label"))
+            chk_repeat.toggled.connect(lambda v, idx=i: self._on_bg_layer_changed(idx))
+            img_row.addWidget(chk_repeat)
+            layout.addLayout(img_row)
+
+            if i == 0:
+                # Capa base: se hornea en el mundo estatico del firmware y usa el grupo de
+                # escena "Bandas de parallax" en vez de un Parallax X por capa (spec/scene-v0.md).
+                disabled_hint = tr("scene.bg_layer1_parallax_disabled_hint")
+                for w in (spin_px, chk_fixed, chk_repeat):
+                    w.setEnabled(False)
+                    w.setToolTip(disabled_hint)
+
+            self.bg_layer_rows.append(
+                {
+                    "enabled": chk,
+                    "color": spin_color,
+                    "opacity": spin_op,
+                    "background": combo_bg,
+                    "parallax_x": spin_px,
+                    "fixed": chk_fixed,
+                    "repeat_x": chk_repeat,
+                }
+            )
         return box
 
     def _build_tile_layers_group(self) -> QGroupBox:
@@ -817,6 +877,69 @@ class SceneEditorWidget(QWidget):
         form.addRow(tr("scene.margin_y_label"), self.spin_cam_margin_y)
         return box
 
+    def _build_parallax_bands_group(self) -> QGroupBox:
+        box = QGroupBox(tr("scene.parallax_group"))
+        layout = QVBoxLayout(box)
+        hint = QLabel(tr("scene.parallax_hint"))
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.chk_parallax_enabled = QCheckBox(tr("scene.parallax_enabled_label"))
+        self.chk_parallax_enabled.toggled.connect(self._on_parallax_enabled_toggled)
+        layout.addWidget(self.chk_parallax_enabled)
+
+        self.list_parallax_bands = QListWidget()
+        self.list_parallax_bands.currentRowChanged.connect(self._on_parallax_band_selected)
+        layout.addWidget(self.list_parallax_bands)
+
+        band_btn_row = QHBoxLayout()
+        self.btn_add_parallax_band = QPushButton(tr("scene.parallax_add_band"))
+        self.btn_add_parallax_band.clicked.connect(self._action_add_parallax_band)
+        band_btn_row.addWidget(self.btn_add_parallax_band)
+        self.btn_remove_parallax_band = QPushButton(tr("scene.parallax_remove_band"))
+        self.btn_remove_parallax_band.clicked.connect(self._action_remove_parallax_band)
+        band_btn_row.addWidget(self.btn_remove_parallax_band)
+        layout.addLayout(band_btn_row)
+
+        edit_form = QFormLayout()
+        max_y = SCENE_PIXEL_H * 2 - 1
+        self.spin_parallax_y0 = QSpinBox()
+        self.spin_parallax_y0.setRange(0, max_y)
+        self.spin_parallax_y0.valueChanged.connect(self._on_parallax_band_edited)
+        edit_form.addRow(tr("scene.parallax_y0_label"), self.spin_parallax_y0)
+        self.spin_parallax_y1 = QSpinBox()
+        self.spin_parallax_y1.setRange(0, max_y)
+        self.spin_parallax_y1.valueChanged.connect(self._on_parallax_band_edited)
+        edit_form.addRow(tr("scene.parallax_y1_label"), self.spin_parallax_y1)
+        self.spin_parallax_x = QDoubleSpinBox()
+        self.spin_parallax_x.setRange(0.0, 2.0)
+        self.spin_parallax_x.setSingleStep(0.05)
+        self.spin_parallax_x.setDecimals(2)
+        self.spin_parallax_x.valueChanged.connect(self._on_parallax_band_edited)
+        edit_form.addRow(tr("scene.parallax_x_label"), self.spin_parallax_x)
+        layout.addLayout(edit_form)
+        flags_row = QHBoxLayout()
+        self.chk_parallax_fixed = QCheckBox(tr("scene.parallax_fixed_label"))
+        self.chk_parallax_fixed.toggled.connect(self._on_parallax_band_edited)
+        flags_row.addWidget(self.chk_parallax_fixed)
+        self.chk_parallax_repeat_x = QCheckBox(tr("scene.parallax_repeat_x_label"))
+        self.chk_parallax_repeat_x.toggled.connect(self._on_parallax_band_edited)
+        flags_row.addWidget(self.chk_parallax_repeat_x)
+        layout.addLayout(flags_row)
+
+        self._parallax_editor_widgets: list[Any] = [
+            self.list_parallax_bands,
+            self.btn_add_parallax_band,
+            self.btn_remove_parallax_band,
+            self.spin_parallax_y0,
+            self.spin_parallax_y1,
+            self.spin_parallax_x,
+            self.chk_parallax_fixed,
+            self.chk_parallax_repeat_x,
+        ]
+        return box
+
     # ------------------------------------------------------------------
     # Loading state into the form
     # ------------------------------------------------------------------
@@ -852,13 +975,13 @@ class SceneEditorWidget(QWidget):
             self.spin_world_y.setValue(int(row.get("world_steps_y", 1)))
 
             palette_rel = str(row.get("palette", ""))
-            self._refresh_background_combo(palette_rel, str(row.get("background", "")))
-            self._load_bg_layers(row)
+            self._load_bg_layers(row, palette_rel=palette_rel)
             self._refresh_tileset_combos(palette_rel)
             self._load_tile_layers(row)
             self._refresh_object_combo(palette_rel)
             self._load_objects(row)
             self._load_camera(row)
+            self._load_parallax_bands(row)
         finally:
             self._suspend = False
         self._refresh_tile_picker()
@@ -878,29 +1001,37 @@ class SceneEditorWidget(QWidget):
             self.combo_palette.setCurrentIndex(max(0, idx))
         self.combo_palette.blockSignals(False)
 
-    def _refresh_background_combo(self, palette_rel: str, current: str) -> None:
-        self.combo_background.blockSignals(True)
-        self.combo_background.clear()
-        self.combo_background.addItem(tr("scene.no_background"), "")
-        for stem in list_background_stems_for_palette(self.project_root, palette_rel):
-            self.combo_background.addItem(stem, stem)
-        idx = self.combo_background.findData(current)
-        self.combo_background.setCurrentIndex(max(0, idx))
-        self.combo_background.blockSignals(False)
+    def _refresh_bg_layer_combos(self, palette_rel: str) -> None:
+        stems = list_background_stems_for_palette(self.project_root, palette_rel)
+        for widgets in self.bg_layer_rows:
+            combo = widgets["background"]
+            current = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(tr("scene.no_background"), "")
+            for stem in stems:
+                combo.addItem(stem, stem)
+            idx = combo.findData(current)
+            combo.setCurrentIndex(max(0, idx))
+            combo.blockSignals(False)
 
-    def _load_bg_layers(self, row: dict[str, Any]) -> None:
+    def _load_bg_layers(self, row: dict[str, Any], *, palette_rel: str) -> None:
+        self._refresh_bg_layer_combos(palette_rel)
         layers = row.get("background_layers") or []
         for i, widgets in enumerate(self.bg_layer_rows):
             d = layers[i] if i < len(layers) and isinstance(layers[i], dict) else {}
-            widgets["enabled"].blockSignals(True)
-            widgets["color"].blockSignals(True)
-            widgets["opacity"].blockSignals(True)
+            for w in widgets.values():
+                w.blockSignals(True)
             widgets["enabled"].setChecked(bool(d.get("enabled")))
             widgets["color"].setValue(int(d.get("color_index", 1)))
             widgets["opacity"].setValue(int(d.get("opacity", 255)))
-            widgets["enabled"].blockSignals(False)
-            widgets["color"].blockSignals(False)
-            widgets["opacity"].blockSignals(False)
+            idx = widgets["background"].findData(str(d.get("background", "")))
+            widgets["background"].setCurrentIndex(max(0, idx))
+            widgets["parallax_x"].setValue(float(d.get("parallax_x", 1.0)))
+            widgets["fixed"].setChecked(bool(d.get("fixed", False)))
+            widgets["repeat_x"].setChecked(bool(d.get("repeat_x", False)))
+            for w in widgets.values():
+                w.blockSignals(False)
 
     def _refresh_tileset_combos(self, palette_rel: str) -> None:
         stems = list_tileset_stems_for_palette(self.project_root, palette_rel)
@@ -968,6 +1099,63 @@ class SceneEditorWidget(QWidget):
         self.edit_cam_target.blockSignals(False)
         self.spin_cam_margin_x.blockSignals(False)
         self.spin_cam_margin_y.blockSignals(False)
+
+    @staticmethod
+    def _parallax_band_summary(d: dict[str, Any]) -> str:
+        y0 = int(d.get("y0", 0))
+        y1 = int(d.get("y1", 0))
+        px = float(d.get("parallax_x", 1.0))
+        extra = []
+        if d.get("fixed"):
+            extra.append(tr("scene.parallax_fixed_label"))
+        if d.get("repeat_x"):
+            extra.append(tr("scene.parallax_repeat_x_label"))
+        suffix = f"  ({', '.join(extra)})" if extra else ""
+        return f"Y {y0}-{y1}  x{px:.2f}{suffix}"
+
+    def _set_parallax_controls_enabled(self, enabled: bool) -> None:
+        for w in self._parallax_editor_widgets:
+            w.setEnabled(enabled)
+        if not enabled:
+            self._load_parallax_band_editor(None)
+
+    def _load_parallax_band_editor(self, d: dict[str, Any] | None) -> None:
+        """Rellena el sub-panel de edicion con la banda `d` seleccionada, o lo limpia/
+        deshabilita si `d` es None (nada seleccionado en la lista)."""
+        widgets = (
+            self.spin_parallax_y0,
+            self.spin_parallax_y1,
+            self.spin_parallax_x,
+            self.chk_parallax_fixed,
+            self.chk_parallax_repeat_x,
+        )
+        for w in widgets:
+            w.blockSignals(True)
+        vals = d or {}
+        self.spin_parallax_y0.setValue(int(vals.get("y0", 0)))
+        self.spin_parallax_y1.setValue(int(vals.get("y1", 0)))
+        self.spin_parallax_x.setValue(float(vals.get("parallax_x", 1.0)))
+        self.chk_parallax_fixed.setChecked(bool(vals.get("fixed", False)))
+        self.chk_parallax_repeat_x.setChecked(bool(vals.get("repeat_x", False)))
+        for w in widgets:
+            w.blockSignals(False)
+            w.setEnabled(d is not None and self.chk_parallax_enabled.isChecked())
+
+    def _load_parallax_bands(self, row: dict[str, Any]) -> None:
+        bands = row.get("parallax_bands")
+        has_bands = isinstance(bands, list)
+        self.chk_parallax_enabled.blockSignals(True)
+        self.chk_parallax_enabled.setChecked(has_bands)
+        self.chk_parallax_enabled.blockSignals(False)
+        self.list_parallax_bands.blockSignals(True)
+        self.list_parallax_bands.clear()
+        if has_bands:
+            for d in bands:
+                if isinstance(d, dict):
+                    self.list_parallax_bands.addItem(self._parallax_band_summary(d))
+        self.list_parallax_bands.blockSignals(False)
+        self._set_parallax_controls_enabled(has_bands)
+        self._load_parallax_band_editor(None)
 
     def _refresh_tile_picker(self) -> None:
         row = self._current_row()
@@ -1085,7 +1273,7 @@ class SceneEditorWidget(QWidget):
             return
         row["palette"] = text
         self._mark_dirty()
-        self._refresh_background_combo(text, str(row.get("background", "")))
+        self._refresh_bg_layer_combos(text)
         self._refresh_tileset_combos(text)
         self._refresh_object_combo(text)
         self._refresh_tile_picker()
@@ -1109,22 +1297,19 @@ class SceneEditorWidget(QWidget):
         ww, wh = scene_world_pixel_size(row["world_steps_x"], row["world_steps_y"])
         layers = parse_tile_layers(row.get("tile_layers"), tile_px=self._tile_px, world_w=ww, world_h=wh)
         row["tile_layers"] = tile_layers_to_json_list(layers)
+        if isinstance(row.get("parallax_bands"), list):
+            # Reacota y0/y1 al nuevo alto de mundo; no usar apply_scene_parallax_bands_to_row
+            # aqui porque una lista vacia (bandas activas pero sin ninguna aun) borraria el
+            # campo entero y desactivaria sin querer el checkbox del grupo.
+            bands = parse_scene_parallax_bands_from_row(row, world_h=wh)
+            row["parallax_bands"] = scene_parallax_bands_to_json(bands)
+        self._load_parallax_bands(row)
         self._mark_dirty()
         self._refresh_canvas()
 
     # ------------------------------------------------------------------
     # Slots — background
     # ------------------------------------------------------------------
-
-    def _on_background_stem_changed(self, _text: str) -> None:
-        if self._suspend:
-            return
-        row = self._current_row()
-        if row is None:
-            return
-        row["background"] = self.combo_background.currentData() or ""
-        self._mark_dirty()
-        self._refresh_canvas()
 
     def _on_bg_layer_changed(self, _index: int) -> None:
         if self._suspend:
@@ -1139,6 +1324,10 @@ class SceneEditorWidget(QWidget):
                     "enabled": widgets["enabled"].isChecked(),
                     "color_index": widgets["color"].value(),
                     "opacity": widgets["opacity"].value(),
+                    "background": widgets["background"].currentData() or "",
+                    "parallax_x": widgets["parallax_x"].value(),
+                    "fixed": widgets["fixed"].isChecked(),
+                    "repeat_x": widgets["repeat_x"].isChecked(),
                 }
             )
         row["background_layers"] = layers
@@ -1279,6 +1468,91 @@ class SceneEditorWidget(QWidget):
             "margin_x": self.spin_cam_margin_x.value(),
             "margin_y": self.spin_cam_margin_y.value(),
         }
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _parallax_world_h(self, row: dict[str, Any]) -> int:
+        ws_x = int(row.get("world_steps_x", 1))
+        ws_y = int(row.get("world_steps_y", 1))
+        _ww, wh = scene_world_pixel_size(ws_x, ws_y)
+        return wh
+
+    def _on_parallax_enabled_toggled(self, checked: bool) -> None:
+        if self._suspend:
+            return
+        row = self._current_row()
+        if row is None:
+            return
+        if checked:
+            if not isinstance(row.get("parallax_bands"), list):
+                row["parallax_bands"] = []
+        else:
+            row.pop("parallax_bands", None)
+        self._mark_dirty()
+        self._load_parallax_bands(row)
+        self._refresh_canvas()
+
+    def _action_add_parallax_band(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        bands = row.get("parallax_bands")
+        if not isinstance(bands, list):
+            return
+        if len(bands) >= MAX_PARALLAX_BANDS:
+            QMessageBox.warning(
+                self, tr("scene.parallax_group"), tr("scene.parallax_max_bands", n=MAX_PARALLAX_BANDS)
+            )
+            return
+        wh = self._parallax_world_h(row)
+        bands.append(scene_parallax_band_to_json(clamp_parallax_band(SceneParallaxBand(), world_h=wh)))
+        self._mark_dirty()
+        self._load_parallax_bands(row)
+        self.list_parallax_bands.setCurrentRow(len(bands) - 1)
+        self._refresh_canvas()
+
+    def _action_remove_parallax_band(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        bands = row.get("parallax_bands")
+        if not isinstance(bands, list):
+            return
+        idx = self.list_parallax_bands.currentRow()
+        if 0 <= idx < len(bands):
+            del bands[idx]
+            self._mark_dirty()
+            self._load_parallax_bands(row)
+            self._refresh_canvas()
+
+    def _on_parallax_band_selected(self, index: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        bands = row.get("parallax_bands")
+        d = bands[index] if isinstance(bands, list) and 0 <= index < len(bands) else None
+        self._load_parallax_band_editor(d)
+
+    def _on_parallax_band_edited(self, *_args: Any) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        bands = row.get("parallax_bands")
+        idx = self.list_parallax_bands.currentRow()
+        if not isinstance(bands, list) or not (0 <= idx < len(bands)):
+            return
+        wh = self._parallax_world_h(row)
+        raw = SceneParallaxBand(
+            y0=self.spin_parallax_y0.value(),
+            y1=self.spin_parallax_y1.value(),
+            parallax_x=self.spin_parallax_x.value(),
+            fixed=self.chk_parallax_fixed.isChecked(),
+            repeat_x=self.chk_parallax_repeat_x.isChecked(),
+        )
+        bands[idx] = scene_parallax_band_to_json(clamp_parallax_band(raw, world_h=wh))
+        self.list_parallax_bands.blockSignals(True)
+        self.list_parallax_bands.item(idx).setText(self._parallax_band_summary(bands[idx]))
+        self.list_parallax_bands.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
 

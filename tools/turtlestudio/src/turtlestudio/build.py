@@ -357,6 +357,11 @@ def collect_studio_bundle_files(
         b = str(row.get("background", "")).strip()
         if b:
             bg_stems.add(b)
+        for ld in row.get("background_layers") or []:
+            if isinstance(ld, dict):
+                lb = str(ld.get("background", "")).strip()
+                if lb:
+                    bg_stems.add(lb)
 
     # Todos los JSON en objects/Objects/ van al paquete SD (no solo los colocados en escena).
     oids: set[str] = set(list_object_json_stems(root)) | oids_in_scenes

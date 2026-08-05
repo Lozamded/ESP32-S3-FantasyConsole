@@ -74,6 +74,18 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
                                           const uint8_t* rows_top_first, int row_stride,
                                           uint8_t transparent_index, int origin_x, int origin_y,
                                           bool flip_h);
+/**
+ * Una fila del framebuffer con su propio offset horizontal de muestreo (spec/scene-v0.md,
+ * bandas de parallax). `scene_y` ubica la fila en espacio escena (Y arriba) para el mapeo
+ * camara->pantalla habitual (igual que blit_indexed_scene). `sample_row`/`sample_row_len` es
+ * la fila fuente completa (ancho de esa fila del bitmap origen, no del viewport). Cada columna
+ * de pantalla `vx` (0..ancho viewport-1) muestrea `sample_row[vx + x_offset]`; si `wrap_x` es
+ * true esa columna se ajusta modulo `sample_row_len` (bandas lentas que deben repetirse), si no
+ * las columnas fuera de rango quedan transparentes.
+ */
+void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
+                                        int sample_row_len, int x_offset, bool wrap_x,
+                                        uint8_t transparent_index);
 void turtle_gpu_flip(void);
 
 /** Origen de camara en espacio escena (esquina inf-izq del viewport). Por defecto (0,0). */

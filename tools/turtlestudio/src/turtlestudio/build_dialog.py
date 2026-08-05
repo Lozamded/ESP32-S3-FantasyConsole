@@ -1,0 +1,196 @@
+"""Export tab — wraps build.py's full project -> `.turtlecart`/SD-package pipeline."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PyQt6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPlainTextEdit,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from turtlestudio.build import (
+    DEFAULT_PACKAGE_DIR_NAME,
+    clean_export_package_dir,
+    collect_studio_bundle_files,
+    format_cart_package_log,
+    write_cart_package,
+)
+from turtlestudio.i18n import tr
+from turtlestudio.palette_policy import TRANSPARENT_PALETTE_INDEX
+from turtlestudio.project import manifest_path
+from turtlestudio.verify_package import verify_package_dir
+
+
+class BuildDialogWidget(QWidget):
+    def __init__(self, project_root: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.project_root = project_root
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_project_root(self, root: Path) -> None:
+        self.project_root = root
+        self.refresh()
+
+    def refresh(self) -> None:
+        data = self._read_manifest()
+        self.combo_scene.blockSignals(True)
+        self.combo_scene.clear()
+        scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
+        ids = [str(s.get("id", "")).strip() for s in scenes if isinstance(s, dict) and s.get("id")]
+        self.combo_scene.addItems(ids)
+        active = str(data.get("active_scene", "")).strip()
+        idx = self.combo_scene.findText(active)
+        self.combo_scene.setCurrentIndex(max(0, idx))
+        self.combo_scene.blockSignals(False)
+        if not self.edit_output.text().strip():
+            self.edit_output.setText(str(self.project_root / DEFAULT_PACKAGE_DIR_NAME))
+        self.log.clear()
+
+    # ------------------------------------------------------------------
+    # Build UI
+    # ------------------------------------------------------------------
+
+    def _build_ui(self) -> None:
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(6, 6, 6, 6)
+
+        out_row = QHBoxLayout()
+        out_row.addWidget(QLabel(tr("build.output_label")))
+        self.edit_output = QLineEdit()
+        out_row.addWidget(self.edit_output, stretch=1)
+        self.btn_browse = QPushButton(tr("build.browse"))
+        self.btn_browse.clicked.connect(self._action_browse_output)
+        out_row.addWidget(self.btn_browse)
+        outer.addLayout(out_row)
+
+        scene_row = QHBoxLayout()
+        scene_row.addWidget(QLabel(tr("build.initial_scene_label")))
+        self.combo_scene = QComboBox()
+        self.combo_scene.setMinimumWidth(160)
+        scene_row.addWidget(self.combo_scene)
+        scene_row.addStretch()
+        outer.addLayout(scene_row)
+
+        self.chk_clean = QCheckBox(tr("build.clean_checkbox"))
+        self.chk_clean.setChecked(True)
+        outer.addWidget(self.chk_clean)
+
+        btn_row = QHBoxLayout()
+        self.btn_export = QPushButton(tr("build.export_button"))
+        self.btn_export.clicked.connect(self._action_export)
+        btn_row.addWidget(self.btn_export)
+        btn_row.addStretch()
+        outer.addLayout(btn_row)
+
+        self.log = QPlainTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setStyleSheet("font-family: monospace;")
+        outer.addWidget(self.log, stretch=1)
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _read_manifest(self) -> dict:
+        try:
+            return json.loads(manifest_path(self.project_root).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _append_log(self, text: str) -> None:
+        self.log.appendPlainText(text)
+
+    # ------------------------------------------------------------------
+    # Slots / actions
+    # ------------------------------------------------------------------
+
+    def _action_browse_output(self) -> None:
+        start = self.edit_output.text().strip() or str(self.project_root)
+        path = QFileDialog.getExistingDirectory(self, tr("build.browse_title"), start)
+        if path:
+            self.edit_output.setText(path)
+
+    def _action_export(self) -> None:
+        self.log.clear()
+        if not manifest_path(self.project_root).is_file():
+            QMessageBox.warning(self, tr("build.export_error_title"), tr("build.no_project_msg"))
+            return
+        data = self._read_manifest()
+        if not data:
+            QMessageBox.warning(self, tr("build.export_error_title"), tr("build.no_project_msg"))
+            return
+
+        entry_rel = str(data.get("entry", "scripts/global.lua")).strip() or "scripts/global.lua"
+        entry_path = self.project_root / entry_rel
+        if not entry_path.is_file():
+            QMessageBox.warning(
+                self, tr("build.export_error_title"), tr("build.entry_missing_msg", path=entry_path)
+            )
+            return
+        entry_body = entry_path.read_text(encoding="utf-8")
+
+        scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
+        chosen_scene = self.combo_scene.currentText().strip() or str(data.get("active_scene", "")).strip()
+        if not chosen_scene:
+            QMessageBox.warning(self, tr("build.export_error_title"), tr("build.no_scenes_msg"))
+            return
+
+        pal_rel = data.get("default_palette")
+        pal_path = (self.project_root / pal_rel).resolve() if isinstance(pal_rel, str) and pal_rel else None
+
+        output_text = self.edit_output.text().strip() or str(self.project_root / DEFAULT_PACKAGE_DIR_NAME)
+        output = Path(output_text)
+
+        try:
+            if self.chk_clean.isChecked():
+                clean_export_package_dir(output, project_root=self.project_root)
+
+            pkg = collect_studio_bundle_files(
+                self.project_root,
+                scenes=scenes,
+                active_scene=chosen_scene,
+                transparent_index=TRANSPARENT_PALETTE_INDEX,
+                entry_relpath=entry_rel,
+            )
+            result = write_cart_package(
+                output,
+                entry_relpath=entry_rel,
+                main_lua_body=entry_body,
+                palette_path=pal_path,
+                embedded_files=pkg.embedded,
+                sidecar_files=pkg.sidecar,
+                initial_scene=chosen_scene,
+            )
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, tr("build.export_error_title"), str(e))
+            self._append_log(f"ERROR: {e}")
+            return
+
+        self._append_log(format_cart_package_log(result, initial_scene=chosen_scene))
+        if pkg.lua_export_notes:
+            self._append_log(tr("build.lua_notes_header"))
+            for note in pkg.lua_export_notes:
+                self._append_log(note)
+
+        errors = verify_package_dir(result.package_dir)
+        if errors:
+            self._append_log(tr("build.verify_failed_header", n=len(errors)))
+            for e in errors:
+                self._append_log(f"  - {e}")
+        else:
+            self._append_log(tr("build.verify_ok"))

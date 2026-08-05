@@ -9,25 +9,40 @@
     {
       "enabled": true,
       "color_index": 14,
-      "opacity": 255
+      "opacity": 255,
+      "background": "cielo",
+      "parallax_x": 1.0,
+      "fixed": false,
+      "repeat_x": false
     },
     {
       "enabled": false,
       "color_index": 1,
-      "opacity": 255
+      "opacity": 255,
+      "background": "",
+      "parallax_x": 1.0,
+      "fixed": false,
+      "repeat_x": false
     },
     {
       "enabled": false,
       "color_index": 1,
-      "opacity": 255
+      "opacity": 255,
+      "background": "",
+      "parallax_x": 0.95,
+      "fixed": false,
+      "repeat_x": false
     },
     {
       "enabled": false,
       "color_index": 1,
-      "opacity": 255
+      "opacity": 255,
+      "background": "",
+      "parallax_x": 1.0,
+      "fixed": false,
+      "repeat_x": false
     }
   ],
-  "background": "cielo",
   "objects": [
     {
       "id": "character",
@@ -1743,8 +1758,7 @@
   ],
   "world_steps_x": 2,
   "camera": {
-    "mode": "follow",
-    "target": "character",
+    "mode": "fixed",
     "x": 0,
     "y": 0,
     "margin_x": 64,

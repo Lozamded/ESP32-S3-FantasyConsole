@@ -8,6 +8,8 @@ Al **exportar el paquete SD**, los pixeles indexados se convierten a binario:
 |-----------|-----|
 | `.tbg` | Fondo (`TBG\0`) |
 | `.tsp` | Sprite (`TSP\0`) |
+| `.tts` | Tileset (`TTS\0`) |
+| `.tfn` | Fuente (`TFN\0`) |
 | `.json` | Objetos (pequenos, legibles) |
 
 ## Cabecera (little-endian)
@@ -71,6 +73,36 @@ Tiles sin dato de colision explicito en el proyecto exportan `kind`=0 (solid), i
 
 Firmware: `turtle_tileset_load_tts` en `turtle_tileset.cpp` decodifica este bloque si `version`=1; en `version`=0 (binarios legacy) usa el fallback por JSON (`tileset_load_collision_meta` en `turtle_scene.cpp`, que ya no aplica cuando hay bloque embebido). Tool: `tileset_json_to_tts` / `_encode_tile_collision_block` en `tools/turtlestudio/src/turtlestudio/asset_bin.py`.
 
+## Fuente (`.tfn`)
+
+Cabecera de 14 bytes (little-endian), distinta de la tabla general (no reutiliza `pixel_w`/`pixel_h`/`mode`, ya que una fuente es N glifos cuadrados, no una sola imagen):
+
+| Offset | Campo |
+|--------|--------|
+| 0 | Magic `TFN\0` |
+| 4 | `version` u8 (=0) |
+| 5 | `flags` u8 (=0) |
+| 6 | `glyph_px` u16 (glifo cuadrado, mismo tamano para todos) |
+| 8 | `line_height` u16 |
+| 10 | `baseline` u16 |
+| 12 | `glyph_count` u16 |
+
+### Glifos
+
+Inmediatamente tras la cabecera, `glyph_count` registros de tamano variable, uno por caracter:
+
+| Campo | Tamano |
+|-------|--------|
+| `advance` u8 | 1 (px de avance horizontal; 1..255) |
+| `chunk_len` u32 LE | 4 |
+| chunk | `chunk_len` bytes: blob indexado `glyph_px`×`glyph_px` (mismo formato que `.tsp`, magic forzado a `TSP\0`) |
+
+**El `.tfn` no guarda que caracter corresponde a cada glifo.** El orden de los registros es el mismo que el campo `charset` del JSON de la fuente en el momento de exportar (`font_json_to_tfn` en `tools/turtlestudio/src/turtlestudio/asset_bin.py`). Hoy ningun flujo del editor permite un `charset` distinto al `LATIN_CHARSET` por defecto (`tools/turtlestudio/src/turtlestudio/fonts.py`: espacio, A-Z, a-z, 0-9, `.,!?:;'-`), asi que el firmware asume ese orden fijo (`turtle_font_charset_index` en `turtle_font.cpp`) en vez de leer un charset embebido. **Si el editor alguna vez permite personalizar el charset, este formato debe subir a `version`=1 con el charset embebido**, para no descuadrar glifos en firmware antiguo.
+
+Glifos ausentes en el JSON exportan con relleno solido (indice de paleta 1), no transparente — ver `parse_font_glyphs(..., fill_index=1)`.
+
+Firmware: `turtle_font_load_tfn` en `turtle_font.cpp` (decodifica igual que `turtle_tileset_load_tts` decodifica tiles, reutilizando `turtle_asset_bin_decode_indexed` por glifo). Tool: `font_json_to_tfn` en `tools/turtlestudio/src/turtlestudio/asset_bin.py`. Verificacion sin hardware: `firmware/host_tests/run_font_test.sh` decodifica un `.tfn` real con el firmware compilado en host y lo compara byte a byte contra `decode_font_blob` (Python).
+
 ## Bundle
 
 Referencias en `studio/project_bundle.json`:
@@ -78,6 +110,9 @@ Referencias en `studio/project_bundle.json`:
 ```json
 "backgrounds": {
   "cielo": { "kind": "turtlestudio.background_ref", "file": "backgrounds/cielo.tbg" }
+},
+"fonts": {
+  "default": { "kind": "turtlestudio.font_ref", "file": "fonts/default.tfn" }
 }
 ```
 

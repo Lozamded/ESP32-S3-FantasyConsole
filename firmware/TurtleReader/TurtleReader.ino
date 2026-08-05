@@ -28,6 +28,15 @@ static const int SD_CS_PIN = 47; //blanco
 
 SPIClass sdSPI(FSPI);
 
+// Declarados aqui (no junto a loadCartRunLua mas abajo) porque l_text/l_text_width
+// (bindings Lua de la VM ENTRY, ver mas abajo) necesitan leer g_bundle.
+static TurtleCartBuffer g_cart = {};
+static TurtleCartBuffer g_bundle = {};
+static char g_initial_scene[64] = "intro";
+static bool g_has_bundle = false;
+static bool g_runtime_active = false;
+static uint32_t g_last_tick_ms = 0;
+
 #if defined(ESP32) || defined(ESP_PLATFORM)
 static void log_heap_caps(const char* tag) {
   const size_t dram = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
@@ -81,6 +90,34 @@ static int l_serial_print(lua_State* L) {
   return 0;
 }
 
+/**
+ * text(sx, sy, str, font_id [, color_index]) -> ancho dibujado (px). (sx, sy) = esquina
+ * inferior izquierda del primer glifo, espacio escena (misma convencion que spix). Fuente
+ * resuelta/cacheada desde el bundle del cartucho (ver spec/asset-bin-v0.md "Fuente").
+ * `color_index` (0..30) opcional tiñe el texto con ese color en vez de los colores propios
+ * del glifo (ver spec/lua/firmware-bridge-v0.md "Texto").
+ */
+static int l_text(lua_State* L) {
+  const int sx = static_cast<int>(luaL_checkinteger(L, 1));
+  const int sy = static_cast<int>(luaL_checkinteger(L, 2));
+  const char* str = luaL_checkstring(L, 3);
+  const char* font_id = luaL_checkstring(L, 4);
+  const int color_index = static_cast<int>(luaL_optinteger(L, 5, -1));
+  const int w =
+      turtle_scene_draw_text(g_bundle.data, g_bundle.len, font_id, sx, sy, str, color_index);
+  lua_pushinteger(L, w);
+  return 1;
+}
+
+/** text_width(str, font_id) -> ancho en px, sin dibujar. */
+static int l_text_width(lua_State* L) {
+  const char* str = luaL_checkstring(L, 1);
+  const char* font_id = luaL_checkstring(L, 2);
+  const int w = turtle_scene_measure_text(g_bundle.data, g_bundle.len, font_id, str);
+  lua_pushinteger(L, w);
+  return 1;
+}
+
 static bool runCartEntryLua(const char* source, size_t source_len, const char* chunkName) {
   if (!source || source_len == 0) {
     Serial.println("Lua: ENTRY vacio");
@@ -99,6 +136,11 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
 
   turtle_gpu_register_lua(L);
   turtle_input_register_lua(L);
+
+  lua_pushcfunction(L, l_text);
+  lua_setglobal(L, "text");
+  lua_pushcfunction(L, l_text_width);
+  lua_setglobal(L, "text_width");
 
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {
@@ -121,13 +163,6 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_close(L);
   return true;
 }
-
-static TurtleCartBuffer g_cart = {};
-static TurtleCartBuffer g_bundle = {};
-static char g_initial_scene[64] = "intro";
-static bool g_has_bundle = false;
-static bool g_runtime_active = false;
-static uint32_t g_last_tick_ms = 0;
 
 /** Lua + paleta; carga cartucho pequeno y bundle en sidecar. */
 static bool loadCartRunLua(const char* path) {

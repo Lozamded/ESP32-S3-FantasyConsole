@@ -24,12 +24,14 @@ from PyQt6.QtWidgets import (
 
 from turtlestudio.palette_editor import PaletteEditorWidget
 from turtlestudio.background_editor import BackgroundEditorWidget
+from turtlestudio.build_dialog import BuildDialogWidget
 from turtlestudio.font_editor import FontEditorWidget
 from turtlestudio.i18n import tr
 from turtlestudio.object_editor import ObjectEditorWidget
 from turtlestudio.scene_editor import SceneEditorWidget
 from turtlestudio.sprite_editor import SpriteEditorWidget
 from turtlestudio.tileset_editor import TilesetEditorWidget
+from turtlestudio.workspace_tabs import TabKind, TabRef, WorkspaceTabs
 from turtlestudio.project import (
     MANIFEST_NAME,
     STANDARD_SUBDIRS,
@@ -113,10 +115,26 @@ class MainWindow(QMainWindow):
         new_action.triggered.connect(self._action_new_project)
         file_menu.addAction(new_action)
 
+        file_menu.addSeparator()
+
+        export_action = QAction(tr("mainwindow.menu_export"), self)
+        export_action.triggered.connect(self._action_show_export)
+        file_menu.addAction(export_action)
+
     # -- ui ---------------------------------------------------------
 
     def _build_ui(self) -> None:
+        outer = QWidget()
+        outer_layout = QVBoxLayout(outer)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        self.workspace_tabs = WorkspaceTabs()
+        self.workspace_tabs.tab_selected.connect(self._on_workspace_tab_selected)
+        outer_layout.addWidget(self.workspace_tabs)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        outer_layout.addWidget(splitter, stretch=1)
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderHidden(True)
@@ -149,11 +167,25 @@ class MainWindow(QMainWindow):
         self.font_editor = FontEditorWidget(Path("."))
         self.center_stack.addWidget(self.font_editor)
 
+        self.build_dialog = BuildDialogWidget(Path("."))
+        self.center_stack.addWidget(self.build_dialog)
+
+        self._tab_widgets: dict[TabKind, QWidget] = {
+            TabKind.SCENE_EDITOR: self.scene_editor,
+            TabKind.SPRITE_EDITOR: self.sprite_editor,
+            TabKind.TILESET_EDITOR: self.tileset_editor,
+            TabKind.BACKGROUND_EDITOR: self.background_editor,
+            TabKind.OBJECT_EDITOR: self.object_editor,
+            TabKind.FONT_EDITOR: self.font_editor,
+            TabKind.PALETTE_EDITOR: self.palette_editor,
+            TabKind.EXPORT: self.build_dialog,
+        }
+
         splitter.addWidget(self.center_stack)
 
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
-        self.setCentralWidget(splitter)
+        self.setCentralWidget(outer)
 
     # -- project actions ---------------------------------------------------------
 
@@ -161,6 +193,14 @@ class MainWindow(QMainWindow):
         path = QFileDialog.getExistingDirectory(self, tr("mainwindow.open_project_title"))
         if path:
             self.open_project(Path(path))
+
+    def _action_show_export(self) -> None:
+        self.workspace_tabs.select(TabKind.EXPORT)
+
+    def _on_workspace_tab_selected(self, ref: TabRef) -> None:
+        widget = self._tab_widgets.get(ref.kind)
+        if widget is not None:
+            self.center_stack.setCurrentWidget(widget)
 
     def _action_new_project(self) -> None:
         path = QFileDialog.getExistingDirectory(self, tr("mainwindow.new_project_folder_title"))
@@ -193,7 +233,12 @@ class MainWindow(QMainWindow):
         self.background_editor.set_project_root(root)
         self.object_editor.set_project_root(root)
         self.font_editor.set_project_root(root)
+        self.build_dialog.set_project_root(root)
         self._refresh_project_tree()
+        # WorkspaceTabs auto-selects its first tab (Scene) during construction, before
+        # tab_selected got connected here, so center_stack never followed it — sync once
+        # explicitly rather than relying on a signal that already fired.
+        self.center_stack.setCurrentWidget(self.scene_editor)
 
     # -- project tree ---------------------------------------------------------
 
@@ -240,37 +285,37 @@ class MainWindow(QMainWindow):
 
         if rel.startswith("palettes/"):
             self.palette_editor.open_palette_relpath(rel)
-            self.center_stack.setCurrentWidget(self.palette_editor)
+            self.workspace_tabs.select(TabKind.PALETTE_EDITOR)
             return
 
         if rel.startswith("objects/Sprites/"):
             self.sprite_editor.open_sprite(path.stem)
-            self.center_stack.setCurrentWidget(self.sprite_editor)
+            self.workspace_tabs.select(TabKind.SPRITE_EDITOR)
             return
 
         if rel.startswith("scenes/"):
             self.scene_editor.open_scene(path.stem)
-            self.center_stack.setCurrentWidget(self.scene_editor)
+            self.workspace_tabs.select(TabKind.SCENE_EDITOR)
             return
 
         if rel.startswith("tiles/"):
             self.tileset_editor.open_tileset(path.stem)
-            self.center_stack.setCurrentWidget(self.tileset_editor)
+            self.workspace_tabs.select(TabKind.TILESET_EDITOR)
             return
 
         if rel.startswith("backgrounds/"):
             self.background_editor.open_background(path.stem)
-            self.center_stack.setCurrentWidget(self.background_editor)
+            self.workspace_tabs.select(TabKind.BACKGROUND_EDITOR)
             return
 
         if rel.startswith("objects/Objects/"):
             self.object_editor.open_object(path.stem)
-            self.center_stack.setCurrentWidget(self.object_editor)
+            self.workspace_tabs.select(TabKind.OBJECT_EDITOR)
             return
 
         if rel.startswith("objects/Fonts/"):
             self.font_editor.open_font(path.stem)
-            self.center_stack.setCurrentWidget(self.font_editor)
+            self.workspace_tabs.select(TabKind.FONT_EDITOR)
             return
 
         placeholder = _PlaceholderPage(tr("mainwindow.placeholder_not_ported", rel=rel))

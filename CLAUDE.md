@@ -54,7 +54,7 @@ No CLI build — flash `firmware/TurtleReader/TurtleReader.ino` (with the other 
 
 Plain-text container: `TURTLECART:0` header, `ENTRY:<path>` (the boot Lua file), optional `INITIAL_SCENE:`, optional `BUNDLE_FILE:` (path to a sidecar `studio/project_bundle.json`), optional `PALETTE:` block (up to 32 `#RRGGBB` lines, index 31 always transparent), then one or more `---FILE:<path>---` ... `---END---` embedded files (only the ENTRY Lua is embedded here — the bundle/assets are sidecar files on the SD card, not embedded, to save RAM on the ESP32).
 
-The recommended distribution unit is a whole exported `build/` folder copied to the SD root: `main.turtlecart` + `backgrounds/*.tbg` + `sprites/*.tsp` + `objects/*.json` + `scripts/*.lua` + `COPIAR_A_SD.txt`. See `spec/asset-bin-v0.md` for the binary asset formats.
+The recommended distribution unit is a whole exported `build/` folder copied to the SD root: `main.turtlecart` + `backgrounds/*.tbg` + `sprites/*.tsp` + `tiles/*.tts` + `fonts/*.tfn` + `objects/*.json` + `scripts/*.lua` + `COPIAR_A_SD.txt`. See `spec/asset-bin-v0.md` for the binary asset formats. `.tfn` fonts are decodable and drawable via `text()`/`text_width()` from both Lua VMs (see the two-Lua-VMs section below), with different call signatures — ENTRY draws immediately at absolute coords, actors set a persistent per-actor overlay.
 
 ### Scene / coordinate system (spec: `spec/scene-v0.md`)
 
@@ -66,12 +66,12 @@ A "world" can be up to 2x the viewport per axis (`world_steps_x/y` in the scene 
 
 They do **not** share a `lua_state`:
 
-1. **ENTRY VM** — runs once in `setup()`, from the Lua block embedded in `main.turtlecart` (conventionally `scripts/global.lua`). API: `print, cls, pix, spix, flip, W, H, COLORS, btn, btnp`. Implemented in `TurtleReader.ino` + `turtle_gpu.cpp`.
-2. **Actor VM(s)** — one per scene actor with a `"script"` field, ticked every frame via `_update(dt)` (`dt` in seconds). Scripts live at `/scripts/<stem>.lua` on the SD card, referenced by `objects/<id>.json`. API: `print, btn, btnp, axis, posx, posy, move, on_ground, set_anim, play_anim, flip_h`. Implemented in `turtle_actor_lua.cpp` (VM lifecycle) + `turtle_scene.cpp` (actor state, drawing, collision, `move`).
+1. **ENTRY VM** — runs once in `setup()`, from the Lua block embedded in `main.turtlecart` (conventionally `scripts/global.lua`). API: `print, cls, pix, spix, flip, W, H, COLORS, btn, btnp, text, text_width`. `text(sx, sy, str, font_id [, color_index])` draws immediately at absolute scene coords — but gets wiped the instant a scene begins (`turtle_scene_begin_runtime` does `cls`+`snapshot_static`), so it only persists for no-bundle/splash carts. Implemented in `TurtleReader.ino` + `turtle_gpu.cpp` (+ `turtle_scene.cpp`/`turtle_font.cpp` for `text`/`text_width`).
+2. **Actor VM(s)** — one per scene actor with a `"script"` field, ticked every frame via `_update(dt)` (`dt` in seconds). Scripts live at `/scripts/<stem>.lua` on the SD card, referenced by `objects/<id>.json`. API: `print, btn, btnp, axis, posx, posy, move, on_ground, set_anim, play_anim, flip_h, text, text_width`. `text(str, font_id [, dx, dy, color_index])` has a different signature than ENTRY's — it's a setter on the active actor (like `set_anim`), persists until the next `text()` call, and its redraw is integrated into the actor dirty-rect pass rather than an immediate blit (required for correct erasure — see `spec/lua/firmware-bridge-v0.md`'s "Texto" section for why). Optional `color_index` (both VMs) tints every non-transparent glyph pixel with that palette index instead of the glyph's own baked color, e.g. for reusing one font in multiple HUD colors. Implemented in `turtle_actor_lua.cpp` (VM lifecycle) + `turtle_scene.cpp` (actor state, drawing, collision, `move`, text overlay).
 
 Boot order: mount SD → load `main.turtlecart` + bundle into RAM → apply palette → run ENTRY Lua → `turtle_scene_begin_runtime` (C++ draws background/tiles, creates actors, `turtle_actor_lua_init` loads/binds actor scripts) → `flip()`.
 
-Per-frame loop: `turtle_input_poll()` → `turtle_scene_runtime_tick(dt_ms)` (1. actor `_update(dt)` calls, 2. C++ sprite animation tick, 3. C++ redraw of actors over the static background/tile layer) → `turtle_gpu_flip()`. The background/tile layer is drawn once and not repainted; only sprites redraw per frame.
+Per-frame loop: `turtle_input_poll()` → `turtle_scene_runtime_tick(dt_ms)` (1. actor `_update(dt)` calls, 2. C++ sprite animation tick, 3. C++ redraw of actors + text overlays over the static background/tile layer) → `turtle_gpu_flip()`. The background/tile layer is drawn once and not repainted; only sprites (and any actor text) redraw per frame.
 
 `move(dx, dy)` resolves per-axis collision against solid tiles (and one-way platforms) and scene bounds, updates `grounded`, and returns actual pixels moved; see `spec/lua/physics-v0.md` and `turtle_tile_collision.cpp`/`.h` for the tile collision shapes (`solid`, `none`, `aabb`/`triangle`/`hexagon` approximated as AABB, optional one-way direction).
 
@@ -83,6 +83,7 @@ Per-frame loop: `turtle_input_poll()` → `turtle_scene_runtime_tick(dt_ms)` (1.
 | `turtle_cart.cpp/.h` | `.turtlecart` text-format parsing |
 | `turtle_asset_bin.cpp/.h` | Binary asset (`.tbg`/`.tsp`) decoding |
 | `turtle_tileset.cpp/.h` | Tileset (`.tts`) loading |
+| `turtle_font.cpp/.h` | Font (`.tfn`) loading, measuring, drawing (`text`/`text_width` in both VMs) |
 | `turtle_tile_collision.cpp/.h` | Per-tile collision metadata/shapes |
 | `turtle_scene.cpp/.h` | Scene runtime: actors, drawing, collision, animation, camera (largest file, ~3.2k lines) |
 | `turtle_actor_lua.cpp/.h` | Per-actor Lua VM lifecycle and C-function bindings |

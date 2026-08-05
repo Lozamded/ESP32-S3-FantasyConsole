@@ -108,8 +108,20 @@ function _update(dt)
 
   local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
   local ax, ay = move(mx, my)
-  if ax ~= 0 then
+
+  if ax == mx then
     rem_x = rem_x - ax
+  else
+    -- Bloqueado por un tile: descarta el remanente en vez de acumularlo,
+    -- si no el movimiento pendiente se "libera" de golpe (teletransporte) al despejarse.
+    rem_x = 0.0
   end
+
+  if my > 0 and ay < my then
+    -- Golpeo un techo subiendo: corta el impulso, si no queda pegado
+    -- bajo la plataforma hasta que la gravedad reduzca vy por su cuenta.
+    vy = 0
+  end
+
   update_anim(ax)
 end

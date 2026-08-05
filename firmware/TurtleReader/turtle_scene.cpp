@@ -3,6 +3,7 @@
 #include "turtle_actor_lua.h"
 #include "turtle_asset_bin.h"
 #include "turtle_cart.h"
+#include "turtle_font.h"
 #include "turtle_gpu.h"
 #include "turtle_tileset.h"
 #include "turtle_tile_collision.h"
@@ -37,6 +38,8 @@ constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;
 constexpr int kMaxTileLayers = 4;
 constexpr int kMaxTileCols = 34;  /* kMaxWorldW / 16 */
 constexpr int kMaxTileRows = 25;  /* kMaxWorldH / 16 */
+/** spec/scene-v0.md: bandas de parallax horizontal por rango Y de escena. */
+constexpr int kMaxParallaxBands = 8;
 
 struct TileLayer {
   bool enabled;
@@ -53,6 +56,36 @@ struct Placement {
   char obj_id[32];
   int x;
   int y;
+};
+
+/** spec/scene-v0.md: rango Y (escena, inclusive) con su propio factor de scroll
+ *  horizontal sobre el mismo s_world_bg. Filas fuera de todas las bandas usan
+ *  el comportamiento de hoy (parallax_x=1, fixed=false, repeat_x=false). */
+struct ParallaxBand {
+  int16_t y0;
+  int16_t y1;
+  float parallax_x;
+  bool fixed;
+  bool repeat_x;
+};
+
+constexpr int kMaxBgImageLayers = 4;
+
+/** spec/scene-v0.md "Capas de fondo con imagen": capa extra de background_layers[i] con
+ *  su propia imagen (ademas del `background` principal, que sigue siendo el unico elegible
+ *  para parallax_bands). Un solo factor de scroll uniforme (sin bandas por fila): mas barato
+ *  de renderizar, y evita tener que elegir "que capa tiene bandas" en mas de un lugar. Cada
+ *  capa habilitada reserva su propio buffer (alloc_scene_pixel_buffer), ademas de s_world_bg. */
+struct BgImageLayer {
+  bool enabled;
+  char background_id[48];
+  float parallax_x;
+  bool fixed;
+  bool repeat_x;
+  uint8_t* pixels;
+  int pw;
+  int ph;
+  bool loaded;
 };
 
 struct SceneActor {
@@ -82,6 +115,20 @@ struct SceneActor {
   int prev_blit_w;
   int prev_blit_h;
   bool has_prev_blit;
+  // Overlay de texto (turtle_scene_actor_set_text): rect propio, independiente del
+  // prev_blit_* del sprite (no coinciden). Persiste hasta que el script vuelva a llamar
+  // text() o lo borre con text(nil)/text(""), igual que set_anim con la animacion activa.
+  char text_buf[48];
+  int text_dx;
+  int text_dy;
+  char text_font_id[48];
+  int text_color;  // -1 = sin tinte (colores propios del glifo), 0..30 = tinte solido
+  bool has_text;
+  int text_prev_blit_x;
+  int text_prev_blit_y;
+  int text_prev_blit_w;
+  int text_prev_blit_h;
+  bool text_has_prev_blit;
 };
 
 TURTLE_BSS_PSRAM static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
@@ -119,8 +166,16 @@ static char s_camera_target[48];
 static int s_camera_margin_x = 64;
 static int s_camera_margin_y = 48;
 static int s_runtime_bg = 0;
+static ParallaxBand s_parallax_bands[kMaxParallaxBands];
+static int s_parallax_band_count = 0;
+static BgImageLayer s_bg_image_layers[kMaxBgImageLayers];
+static int s_bg_image_layer_count = 0;
 
 static void coll_tileset_cache_clear(void);
+static void font_cache_clear_all(void);
+static const ParallaxBand* find_parallax_band(int scene_y);
+static const TurtleFont* font_cache_get(const char* json, const char* json_end,
+                                        const char* font_id);
 static char s_seen_asset_paths[24][112];
 static int s_seen_asset_paths_count = 0;
 
@@ -176,9 +231,28 @@ static void world_bg_release(void) {
   s_world_bg_h = 0;
 }
 
+static void bg_image_layers_release(void) {
+  for (int i = 0; i < kMaxBgImageLayers; ++i) {
+    BgImageLayer* ly = &s_bg_image_layers[i];
+    if (ly->pixels) {
+#if defined(ESP32) || defined(ESP_PLATFORM)
+      heap_caps_free(ly->pixels);
+#else
+      free(ly->pixels);
+#endif
+    }
+    ly->pixels = nullptr;
+    ly->pw = 0;
+    ly->ph = 0;
+    ly->loaded = false;
+  }
+  s_bg_image_layer_count = 0;
+}
+
 static void scene_asset_buffers_release(void) {
   s_world_static_ready = false;
   world_bg_release();
+  bg_image_layers_release();
 }
 
 static void world_buffer_put_scene_pixel(int sx, int sy, uint8_t ci) {
@@ -281,6 +355,7 @@ static void sprite_cache_clear_all(void) {
   s_sprite_cache_count = 0;
   object_cache_clear_all();
   coll_tileset_cache_clear();
+  font_cache_clear_all();
   scene_asset_buffers_release();
 }
 
@@ -392,6 +467,27 @@ static bool parse_int_bounded(const char* p, const char* e, int* out) {
   return true;
 }
 
+static bool parse_float_bounded(const char* p, const char* e, float* out) {
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= e) {
+    return false;
+  }
+  char buf[32];
+  size_t i = 0;
+  while (p < e && i + 1 < sizeof(buf) &&
+         (*p == '-' || *p == '+' || *p == '.' || isdigit(static_cast<unsigned char>(*p)))) {
+    buf[i++] = *p++;
+  }
+  if (i == 0) {
+    return false;
+  }
+  buf[i] = '\0';
+  *out = static_cast<float>(atof(buf));
+  return true;
+}
+
 static bool json_extract_string_for_key(const char* s, const char* e, const char* key_name,
                                         char* out, size_t outsz) {
   char pattern[40];
@@ -446,6 +542,28 @@ static bool json_extract_int_for_key(const char* s, const char* e, const char* k
     ++p;
   }
   return parse_int_bounded(p, e, outv);
+}
+
+static bool json_extract_float_for_key(const char* s, const char* e, const char* key_name,
+                                       float* outv) {
+  char pattern[40];
+  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
+  const char* p = strstr_bounded(s, e, pattern);
+  if (!p) {
+    return false;
+  }
+  p += strlen(pattern);
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= e || *p != ':') {
+    return false;
+  }
+  ++p;
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  return parse_float_bounded(p, e, outv);
 }
 
 static bool extract_palette_index_sprite(const char* inner, const char* inner_end, int* pal_idx) {
@@ -562,8 +680,17 @@ static bool find_tileset_inner(const char* json, const char* json_end, const cha
   return find_asset_inner(json, json_end, "tilesets", tileset_id, inner, inner_end);
 }
 
+static bool find_font_inner(const char* json, const char* json_end, const char* font_id,
+                            const char** inner, const char** inner_end) {
+  return find_asset_inner(json, json_end, "fonts", font_id, inner, inner_end);
+}
+
 static bool buffer_is_turtle_tileset_bin(const char* data, size_t len) {
   return len >= 10 && data && data[0] == 'T' && data[1] == 'T' && data[2] == 'S' && data[3] == 0;
+}
+
+static bool buffer_is_turtle_font_bin(const char* data, size_t len) {
+  return len >= 14 && data && data[0] == 'T' && data[1] == 'F' && data[2] == 'N' && data[3] == 0;
 }
 
 static bool buffer_is_turtle_asset_bin(const char* data, size_t len) {
@@ -1117,6 +1244,26 @@ static bool draw_indexed_asset_at_origin(const char* inner, const char* inner_en
   return true;
 }
 
+/** Bandas de parallax activas (spec/scene-v0.md): una fila a la vez, cada una con su
+ *  propio offset horizontal segun la banda que cubra ese scene_y (find_parallax_band).
+ *  Filas sin banda usan parallax_x=1/fixed=false/repeat_x=false, es decir el mismo
+ *  mapeo que el blit unico de paint_cached_world_background. */
+static void paint_world_background_banded(int cam_x, int vis_y0, int vis_y1,
+                                          uint8_t transparent_index) {
+  for (int scene_y = vis_y0; scene_y <= vis_y1; ++scene_y) {
+    const int row_top = (s_world_bg_h - 1) - scene_y;
+    const uint8_t* row =
+        s_world_bg + static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w);
+    const ParallaxBand* band = find_parallax_band(scene_y);
+    const float parallax_x = band ? band->parallax_x : 1.0f;
+    const bool fixed = band ? band->fixed : false;
+    const bool repeat_x = band ? band->repeat_x : false;
+    const int x_offset = fixed ? 0 : static_cast<int>(cam_x * parallax_x);
+    turtle_gpu_blit_indexed_row_banded(scene_y, row, s_world_bg_w, x_offset, repeat_x,
+                                       transparent_index);
+  }
+}
+
 static void paint_cached_world_background(uint8_t transparent_index) {
   if (!s_world_bg || s_world_bg_w <= 0 || s_world_bg_h <= 0) {
     return;
@@ -1153,12 +1300,61 @@ static void paint_cached_world_background(uint8_t transparent_index) {
     return;
   }
 
+  if (s_parallax_band_count > 0) {
+    paint_world_background_banded(cam_x, vis_y0, vis_y1, transparent_index);
+    return;
+  }
+
   const int row_top = (s_world_bg_h - 1) - vis_y1;
   const uint8_t* src = s_world_bg +
                        static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w) +
                        static_cast<size_t>(vis_x0);
   turtle_gpu_blit_indexed_scene(vis_x0, vis_y0, vis_w, vis_h, src, s_world_bg_w,
                                 transparent_index);
+}
+
+/** spec/scene-v0.md "Capas de fondo con imagen": una pasada extra por capa habilitada,
+ *  encima del fondo principal y por debajo de los tiles. A diferencia de este ultimo, no
+ *  se hornea (cada capa debe poder desplazarse a su propio ritmo segun la camara), asi que
+ *  se repinta cada vez que se repinta el fondo -- ese es el costo en tiempo de frame que
+ *  paga cada capa habilitada, ademas de su propio buffer en RAM. */
+static void paint_bg_image_layers(uint8_t transparent_index) {
+  if (s_bg_image_layer_count <= 0) {
+    return;
+  }
+  int cam_x = 0;
+  int cam_y = 0;
+  turtle_gpu_get_camera(&cam_x, &cam_y);
+
+  int vis_y0 = cam_y;
+  int vis_y1 = cam_y + kSceneH - 1;
+  if (vis_y0 < 0) {
+    vis_y0 = 0;
+  }
+  if (vis_y1 >= s_world_h) {
+    vis_y1 = s_world_h - 1;
+  }
+  if (vis_y1 < vis_y0) {
+    return;
+  }
+
+  for (int i = 0; i < s_bg_image_layer_count; ++i) {
+    const BgImageLayer* ly = &s_bg_image_layers[i];
+    if (!ly->loaded || !ly->pixels || ly->pw <= 0 || ly->ph <= 0) {
+      continue;
+    }
+    const int x_offset = ly->fixed ? 0 : static_cast<int>(cam_x * ly->parallax_x);
+    for (int scene_y = vis_y0; scene_y <= vis_y1; ++scene_y) {
+      if (scene_y >= ly->ph) {
+        // Capa mas baja que el mundo: ancla abajo, no cubre filas por encima de su altura.
+        continue;
+      }
+      const int row_top = (ly->ph - 1) - scene_y;
+      const uint8_t* row = ly->pixels + static_cast<size_t>(row_top) * static_cast<size_t>(ly->pw);
+      turtle_gpu_blit_indexed_row_banded(scene_y, row, ly->pw, x_offset, ly->repeat_x,
+                                         transparent_index);
+    }
+  }
 }
 
 static bool draw_solid_asset_at_origin(const char* inner, const char* inner_end, const char* label,
@@ -1190,14 +1386,70 @@ static bool draw_solid_asset_at_origin(const char* inner, const char* inner_end,
   return true;
 }
 
+/** spec/scene-v0.md "Capas de fondo con imagen": capa 1 (indice 0 de background_layers) es la
+ *  capa base -- su "background" es el que se hornea en el mundo estatico junto a los tiles
+ *  (unico elegible para parallax_bands; capas 2-4 quedan en s_bg_image_layers, independientes).
+ *  Solo se lee el "background" del PRIMER objeto del array (nunca una busqueda libre en toda
+ *  la escena, para no cruzarse con el "background" propio de las capas 2-4). Si esa capa no
+ *  tiene imagen, cae al campo suelto "background" a nivel de escena (formato pre-unificacion,
+ *  carts ya exportados) buscando solo fuera del array de capas. */
+static bool resolve_scene_base_background_id(const char* sc_start, const char* sc_end, char* out,
+                                              size_t outsz) {
+  out[0] = '\0';
+  const char* after_layers = sc_start;
+  const char* pk = strstr_bounded(sc_start, sc_end, "\"background_layers\"");
+  if (pk) {
+    const char* p = pk + strlen("\"background_layers\"");
+    while (p < sc_end && *p != '[') {
+      ++p;
+    }
+    if (p < sc_end) {
+      ++p;
+      bool first = true;
+      while (p < sc_end && *p != ']') {
+        while (p < sc_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+          ++p;
+        }
+        if (p >= sc_end || *p != '{') {
+          break;
+        }
+        const char* oe = json_object_end(p);
+        if (!oe) {
+          break;
+        }
+        if (first) {
+          json_extract_string_for_key(p, oe, "background", out, outsz);
+          first = false;
+        }
+        p = oe;
+      }
+      while (p < sc_end && *p != ']') {
+        ++p;
+      }
+      if (p < sc_end) {
+        ++p;
+      }
+      after_layers = p;
+    }
+  }
+  if (out[0]) {
+    return true;
+  }
+  char before[48];
+  before[0] = '\0';
+  if (pk && json_extract_string_for_key(sc_start, pk, "background", before, sizeof before) &&
+      before[0]) {
+    snprintf(out, outsz, "%s", before);
+    return true;
+  }
+  return json_extract_string_for_key(after_layers, sc_end, "background", out, outsz) && out[0];
+}
+
 static bool draw_background_for_scene(const char* json, const char* json_end,
                                       const char* scene_start, const char* scene_end,
                                       uint8_t transparent_index) {
   char bg_id[48];
-  if (!json_extract_string_for_key(scene_start, scene_end, "background", bg_id, sizeof bg_id)) {
-    return true;
-  }
-  if (!bg_id[0]) {
+  if (!resolve_scene_base_background_id(scene_start, scene_end, bg_id, sizeof bg_id)) {
     return true;
   }
 
@@ -1384,6 +1636,27 @@ static void actor_sprite_scene_bounds(const SceneActor* a, int* out_x0, int* out
   *out_h = a->ph;
 }
 
+/**
+ * Rectangulo en escena del overlay de texto del actor (si tiene uno activo con fuente
+ * resoluble). false si no hay texto que dibujar este frame (para no ensuciar el rect
+ * previo de draw_all_actors con datos parciales).
+ */
+static bool actor_text_scene_bounds(const SceneActor* a, int* out_x0, int* out_y0, int* out_w,
+                                    int* out_h) {
+  if (!a->has_text || !a->text_buf[0] || !a->text_font_id[0]) {
+    return false;
+  }
+  const TurtleFont* font = font_cache_get(s_runtime_json, s_runtime_json_end, a->text_font_id);
+  if (!font) {
+    return false;
+  }
+  *out_x0 = a->x + a->text_dx;
+  *out_y0 = a->y + a->text_dy;
+  *out_w = turtle_font_measure(font, a->text_buf);
+  *out_h = font->glyph_px;
+  return true;
+}
+
 static bool draw_actor_runtime(int actor_index) {
   if (!s_runtime_json || !s_runtime_json_end || actor_index < 0 || actor_index >= s_actor_count) {
     return false;
@@ -1408,6 +1681,26 @@ static bool draw_actor_runtime(int actor_index) {
 
   actor_sprite_scene_bounds(a, &a->prev_blit_x, &a->prev_blit_y, &a->prev_blit_w, &a->prev_blit_h);
   a->has_prev_blit = true;
+
+  int tx0 = 0, ty0 = 0, tw = 0, th = 0;
+  if (actor_text_scene_bounds(a, &tx0, &ty0, &tw, &th)) {
+    const TurtleFont* font = font_cache_get(s_runtime_json, s_runtime_json_end, a->text_font_id);
+    if (font) {
+      if (a->text_color >= 0) {
+        turtle_font_draw_scene_tint(font, tx0, ty0, a->text_buf, s_runtime_transp,
+                                    static_cast<uint8_t>(a->text_color));
+      } else {
+        turtle_font_draw_scene(font, tx0, ty0, a->text_buf, s_runtime_transp);
+      }
+    }
+    a->text_prev_blit_x = tx0;
+    a->text_prev_blit_y = ty0;
+    a->text_prev_blit_w = tw;
+    a->text_prev_blit_h = th;
+    a->text_has_prev_blit = true;
+  } else {
+    a->text_has_prev_blit = false;
+  }
   return true;
 }
 
@@ -1579,6 +1872,174 @@ static void parse_scene_camera(const char* sc_start, const char* sc_end) {
   s_camera_margin_x = clamp_camera_margin(s_camera_margin_x, kSceneW);
   s_camera_margin_y = clamp_camera_margin(s_camera_margin_y, kSceneH);
   clamp_camera_to_world(&s_cam_x, &s_cam_y);
+}
+
+/** spec/scene-v0.md "Bandas de parallax horizontal": array opcional
+ *  `"parallax_bands"` en el bloque de la escena. Llamar despues de
+ *  parse_scene_world() (usa s_world_h para acotar y0/y1). Sin el campo (o
+ *  array vacio), s_parallax_band_count queda en 0 y paint_cached_world_background
+ *  usa el blit unico de siempre (comportamiento identico a hoy). */
+static void parse_scene_parallax_bands(const char* sc_start, const char* sc_end) {
+  s_parallax_band_count = 0;
+  const char* pk = strstr_bounded(sc_start, sc_end, "\"parallax_bands\"");
+  if (!pk) {
+    return;
+  }
+  const char* p = pk + strlen("\"parallax_bands\"");
+  while (p < sc_end && *p != '[') {
+    ++p;
+  }
+  if (p >= sc_end) {
+    return;
+  }
+  ++p;
+  const int max_y = (s_world_h > 0 ? s_world_h : kSceneH) - 1;
+  while (p < sc_end && *p != ']' && s_parallax_band_count < kMaxParallaxBands) {
+    while (p < sc_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= sc_end || *p == ']') {
+      break;
+    }
+    if (*p != '{') {
+      break;
+    }
+    const char* oe = json_object_end(p);
+    if (!oe) {
+      break;
+    }
+    int y0 = 0;
+    int y1 = 0;
+    float px = 1.0f;
+    bool fixed = false;
+    bool repeat_x = false;
+    json_extract_int_for_key(p, oe, "y0", &y0);
+    json_extract_int_for_key(p, oe, "y1", &y1);
+    if (!json_extract_float_for_key(p, oe, "parallax_x", &px)) {
+      px = 1.0f;
+    }
+    json_extract_bool_for_key(p, oe, "fixed", &fixed);
+    json_extract_bool_for_key(p, oe, "repeat_x", &repeat_x);
+
+    if (y0 > y1) {
+      const int t = y0;
+      y0 = y1;
+      y1 = t;
+    }
+    if (y0 < 0) {
+      y0 = 0;
+    }
+    if (y1 < 0) {
+      y1 = 0;
+    }
+    if (y0 > max_y) {
+      y0 = max_y;
+    }
+    if (y1 > max_y) {
+      y1 = max_y;
+    }
+    if (px < 0.0f) {
+      px = 0.0f;
+    } else if (px > 2.0f) {
+      px = 2.0f;
+    }
+
+    ParallaxBand* band = &s_parallax_bands[s_parallax_band_count++];
+    band->y0 = static_cast<int16_t>(y0);
+    band->y1 = static_cast<int16_t>(y1);
+    band->parallax_x = px;
+    band->fixed = fixed;
+    band->repeat_x = repeat_x;
+
+    p = oe;
+  }
+}
+
+static const ParallaxBand* find_parallax_band(int scene_y) {
+  for (int i = 0; i < s_parallax_band_count; ++i) {
+    const ParallaxBand* b = &s_parallax_bands[i];
+    if (scene_y >= b->y0 && scene_y <= b->y1) {
+      return b;
+    }
+  }
+  return nullptr;
+}
+
+/** spec/scene-v0.md "Capas de fondo con imagen": array `"background_layers"` en el bloque
+ *  de la escena (mismo array que ya escribe TurtleStudio para las 4 capas de color plano;
+ *  aqui solo se leen los campos nuevos `background`/`parallax_x`/`fixed`/`repeat_x`,
+ *  `color_index`/`opacity` siguen siendo del dominio de firmware_background_index_from_layers
+ *  en Python, ya resuelto en el `background_index` plano que usa cls()). Solo llena metadatos;
+ *  la carga real del asset (con su propio buffer PSRAM) la hace load_bg_image_layers().
+ */
+static void parse_scene_bg_image_layers(const char* sc_start, const char* sc_end) {
+  s_bg_image_layer_count = 0;
+  const char* pk = strstr_bounded(sc_start, sc_end, "\"background_layers\"");
+  if (!pk) {
+    return;
+  }
+  const char* p = pk + strlen("\"background_layers\"");
+  while (p < sc_end && *p != '[') {
+    ++p;
+  }
+  if (p >= sc_end) {
+    return;
+  }
+  ++p;
+  // El primer objeto del array (indice 0) es la capa base: se hornea en el mundo estatico
+  // (resolve_scene_base_background_id / bake_indexed_background_into_world), no vive en
+  // s_bg_image_layers -- solo las capas 2-4 son BgImageLayer independientes.
+  bool first = true;
+  while (p < sc_end && *p != ']' && s_bg_image_layer_count < kMaxBgImageLayers) {
+    while (p < sc_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= sc_end || *p == ']') {
+      break;
+    }
+    if (*p != '{') {
+      break;
+    }
+    const char* oe = json_object_end(p);
+    if (!oe) {
+      break;
+    }
+    if (first) {
+      first = false;
+      p = oe;
+      continue;
+    }
+    BgImageLayer* ly = &s_bg_image_layers[s_bg_image_layer_count++];
+    bool enabled = false;
+    json_extract_bool_for_key(p, oe, "enabled", &enabled);
+    ly->enabled = enabled;
+    if (!json_extract_string_for_key(p, oe, "background", ly->background_id,
+                                     sizeof ly->background_id)) {
+      ly->background_id[0] = '\0';
+    }
+    float px = 1.0f;
+    if (!json_extract_float_for_key(p, oe, "parallax_x", &px)) {
+      px = 1.0f;
+    }
+    if (px < 0.0f) {
+      px = 0.0f;
+    } else if (px > 2.0f) {
+      px = 2.0f;
+    }
+    ly->parallax_x = px;
+    bool fixed = false;
+    json_extract_bool_for_key(p, oe, "fixed", &fixed);
+    ly->fixed = fixed;
+    bool repeat_x = false;
+    json_extract_bool_for_key(p, oe, "repeat_x", &repeat_x);
+    ly->repeat_x = repeat_x;
+    ly->pixels = nullptr;
+    ly->pw = 0;
+    ly->ph = 0;
+    ly->loaded = false;
+
+    p = oe;
+  }
 }
 
 static void resolve_player_actor_index(void) {
@@ -1843,6 +2304,98 @@ static bool resolve_tileset_tts(const char* json, const char* json_end, const ch
   return true;
 }
 
+/** Carga un .tfn desde el bundle (ref o inline) o SD (/fonts/<id>.tfn) directo. */
+static bool resolve_font_tfn(const char* json, const char* json_end, const char* font_id,
+                             AssetSdLoad* sd, TurtleFont* font) {
+  turtle_font_free(font);
+
+  const char* inner = nullptr;
+  const char* inner_end = nullptr;
+  if (find_font_inner(json, json_end, font_id, &inner, &inner_end)) {
+    const char* asset_inner = inner;
+    const char* asset_inner_end = inner_end;
+    if (!sd->resolve(inner, inner_end, &asset_inner, &asset_inner_end)) {
+      return false;
+    }
+    const size_t blob_len = (asset_inner_end > asset_inner)
+                                ? static_cast<size_t>(asset_inner_end - asset_inner)
+                                : 0;
+    if (!buffer_is_turtle_font_bin(asset_inner, blob_len)) {
+      Serial.printf("turtle_scene: fuente \"%s\" en bundle no es .tfn binario\n", font_id);
+      return false;
+    }
+    return turtle_font_load_tfn(reinterpret_cast<const uint8_t*>(asset_inner), blob_len, font);
+  }
+
+  char path[80];
+  snprintf(path, sizeof path, "/fonts/%s.tfn", font_id);
+  if (!sd->load_path(path)) {
+    Serial.printf("turtle_scene: fuente \"%s\" no en bundle ni %s en SD\n", font_id, path);
+    return false;
+  }
+  if (!buffer_is_turtle_font_bin(sd->buf.data, sd->buf.len)) {
+    Serial.printf("turtle_scene: %s no es .tfn valido\n", path);
+    return false;
+  }
+  return turtle_font_load_tfn(reinterpret_cast<const uint8_t*>(sd->buf.data), sd->buf.len, font);
+}
+
+// Pequena cache residente de fuentes ya decodificadas (glifos redibujados cada frame en
+// HUD/dialogo; re-decodificar por caracter/frame seria un desperdicio, y una fuente
+// completa es pequena frente al resto de buffers del runtime — ver spec/asset-bin-v0.md).
+// Tamano fijo (no una entrada por fuente vista) para no mantener N structs residentes sin
+// limite, mismo espiritu que el comentario de s_tileset_coll de mas arriba.
+constexpr int kMaxFontCache = 4;
+
+struct FontCacheEntry {
+  char id[48] = "";
+  TurtleFont font = {};
+  bool valid = false;
+};
+
+static FontCacheEntry s_font_cache[kMaxFontCache];
+static int s_font_cache_next_evict = 0;
+
+static void font_cache_clear_all(void) {
+  for (int i = 0; i < kMaxFontCache; ++i) {
+    turtle_font_free(&s_font_cache[i].font);
+    s_font_cache[i].id[0] = '\0';
+    s_font_cache[i].valid = false;
+  }
+  s_font_cache_next_evict = 0;
+}
+
+static const TurtleFont* font_cache_get(const char* json, const char* json_end,
+                                        const char* font_id) {
+  if (!font_id || !font_id[0]) {
+    return nullptr;
+  }
+  for (int i = 0; i < kMaxFontCache; ++i) {
+    if (s_font_cache[i].valid && strcmp(s_font_cache[i].id, font_id) == 0) {
+      return &s_font_cache[i].font;
+    }
+  }
+  int slot = -1;
+  for (int i = 0; i < kMaxFontCache; ++i) {
+    if (!s_font_cache[i].valid) {
+      slot = i;
+      break;
+    }
+  }
+  if (slot < 0) {
+    slot = s_font_cache_next_evict;
+    s_font_cache_next_evict = (s_font_cache_next_evict + 1) % kMaxFontCache;
+  }
+  s_font_cache[slot].valid = false;
+  AssetSdLoad sd;
+  if (!resolve_font_tfn(json, json_end, font_id, &sd, &s_font_cache[slot].font)) {
+    return nullptr;
+  }
+  snprintf(s_font_cache[slot].id, sizeof s_font_cache[slot].id, "%s", font_id);
+  s_font_cache[slot].valid = true;
+  return &s_font_cache[slot].font;
+}
+
 static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram) {
   if (need == 0 || need > kScenePixelsMaxBytes) {
     return nullptr;
@@ -1906,10 +2459,7 @@ static bool bake_indexed_background_into_world(const char* json, const char* jso
                                                const char* scene_start,
                                                const char* scene_end) {
   char bg_id[48];
-  if (!json_extract_string_for_key(scene_start, scene_end, "background", bg_id, sizeof bg_id)) {
-    return true;
-  }
-  if (!bg_id[0]) {
+  if (!resolve_scene_base_background_id(scene_start, scene_end, bg_id, sizeof bg_id)) {
     return true;
   }
 
@@ -1975,6 +2525,76 @@ static bool bake_indexed_background_into_world(const char* json, const char* jso
   }
   return decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph, s_world_bg,
                                         s_world_bg_w);
+}
+
+/** Carga una capa extra (spec/scene-v0.md "Capas de fondo con imagen") en SU PROPIO buffer
+ *  (no se hornea junto a s_world_bg: necesita permanecer independiente para poder desplazarse
+ *  a su propio parallax_x en paint_bg_image_layers). Solo acepta assets indexed_pixels/.tbg;
+ *  un fondo solido no aporta nada como capa aparte (ya existe color_index/opacity para eso). */
+static bool load_one_bg_image_layer(const char* json, const char* json_end, BgImageLayer* ly) {
+  if (!ly->enabled || !ly->background_id[0]) {
+    return false;
+  }
+  const char* inner = nullptr;
+  const char* inner_end = nullptr;
+  if (!find_background_inner(json, json_end, ly->background_id, &inner, &inner_end)) {
+    Serial.printf("turtle_scene: capa fondo \"%s\" no encontrada en bundle\n", ly->background_id);
+    return false;
+  }
+  AssetSdLoad sd;
+  const char* asset_inner = inner;
+  const char* asset_inner_end = inner_end;
+  if (!sd.resolve(inner, inner_end, &asset_inner, &asset_inner_end)) {
+    return false;
+  }
+  const size_t blob_len =
+      (asset_inner_end > asset_inner) ? static_cast<size_t>(asset_inner_end - asset_inner) : 0;
+  int pw = 0;
+  int ph = 0;
+  if (!read_asset_bin_dims(asset_inner, blob_len, &pw, &ph) &&
+      !resolve_pixel_dims_sprite(asset_inner, asset_inner_end, &pw, &ph)) {
+    return false;
+  }
+  if (!render_mode_is_indexed_pixels(asset_inner, asset_inner_end) &&
+      !buffer_is_turtle_asset_bin(asset_inner, blob_len)) {
+    Serial.printf("turtle_scene: capa fondo \"%s\" no es indexed_pixels; se omite\n",
+                  ly->background_id);
+    return false;
+  }
+  if (pw <= 0 || ph <= 0) {
+    return false;
+  }
+  const size_t need = static_cast<size_t>(pw) * static_cast<size_t>(ph);
+  int in_psram = 0;
+  uint8_t* buf = alloc_scene_pixel_buffer(need, &in_psram);
+  if (!buf) {
+    Serial.printf("turtle_scene: sin RAM para capa fondo \"%s\" (%dx%d)\n", ly->background_id, pw,
+                  ph);
+    return false;
+  }
+  if (!decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, ly->background_id, pw, ph, buf,
+                                      pw)) {
+#if defined(ESP32) || defined(ESP_PLATFORM)
+    heap_caps_free(buf);
+#else
+    free(buf);
+#endif
+    return false;
+  }
+  ly->pixels = buf;
+  ly->pw = pw;
+  ly->ph = ph;
+  ly->loaded = true;
+  Serial.printf("turtle_scene: capa fondo \"%s\" %dx%d cargada (%s, parallax_x=%d/100)\n",
+                ly->background_id, pw, ph, in_psram ? "PSRAM" : "DRAM",
+                static_cast<int>(ly->parallax_x * 100));
+  return true;
+}
+
+static void load_bg_image_layers(const char* json, const char* json_end) {
+  for (int i = 0; i < s_bg_image_layer_count; ++i) {
+    load_one_bg_image_layer(json, json_end, &s_bg_image_layers[i]);
+  }
 }
 
 static void bake_tile_cell_into_world(int gx, int gy, int rows, int px, const uint8_t* tile,
@@ -2069,6 +2689,7 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
   if (!bake_indexed_background_into_world(json, json_end, scene_start, scene_end)) {
     Serial.println("turtle_scene: aviso: fondo indexado no horneado");
   }
+  load_bg_image_layers(json, json_end);
   if (!bake_tile_layers_into_world(json, json_end, scene_start, scene_end, s_runtime_transp)) {
     Serial.println("turtle_scene: aviso: tiles no horneados");
   }
@@ -2551,6 +3172,11 @@ static bool init_actor_from_placement(const char* json, const char* json_end,
   actor->anim_name[0] = '\0';
   actor->flip_h = false;
   actor->has_prev_blit = false;
+  actor->has_text = false;
+  actor->text_has_prev_blit = false;
+  actor->text_buf[0] = '\0';
+  actor->text_font_id[0] = '\0';
+  actor->text_color = -1;
 
   AssetSdLoad sd;
   const char* asset_inner = nullptr;
@@ -2806,10 +3432,12 @@ static void paint_scene_static_layers(void) {
   turtle_gpu_cls(static_cast<uint8_t>(s_runtime_bg));
   if (s_world_static_ready && s_world_bg) {
     paint_cached_world_background(s_runtime_transp);
+    paint_bg_image_layers(s_runtime_transp);
     return;
   }
   if (s_world_bg) {
     paint_cached_world_background(s_runtime_transp);
+    paint_bg_image_layers(s_runtime_transp);
   } else if (!draw_background_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
                                           s_runtime_sc_end, s_runtime_transp)) {
     Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
@@ -2864,6 +3492,17 @@ static void draw_all_actors(void) {
     int cx0 = 0, cy0 = 0, cw = 0, ch = 0;
     actor_sprite_scene_bounds(a, &cx0, &cy0, &cw, &ch);
     turtle_gpu_dirty_mark_scene_rect(cx0, cy0, cw, ch);
+
+    // Overlay de texto: rect independiente del sprite (union con su propio prev_blit_*,
+    // ver draw_actor_runtime). Mismo motivo que arriba: borra donde estaba, pinta donde va.
+    if (a->text_has_prev_blit) {
+      turtle_gpu_dirty_mark_scene_rect(a->text_prev_blit_x, a->text_prev_blit_y,
+                                       a->text_prev_blit_w, a->text_prev_blit_h);
+    }
+    int tx0 = 0, ty0 = 0, tw = 0, th = 0;
+    if (actor_text_scene_bounds(a, &tx0, &ty0, &tw, &th)) {
+      turtle_gpu_dirty_mark_scene_rect(tx0, ty0, tw, th);
+    }
   }
   turtle_gpu_dirty_slack_for_scale();
   turtle_gpu_restore_static_dirty();
@@ -2943,6 +3582,8 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
   }
   parse_scene_world(sc_start, sc_end);
   parse_scene_camera(sc_start, sc_end);
+  parse_scene_parallax_bands(sc_start, sc_end);
+  parse_scene_bg_image_layers(sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -3019,6 +3660,8 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   parse_scene_timing(json, json_end, sc_start, sc_end);
   parse_scene_world(sc_start, sc_end);
   parse_scene_camera(sc_start, sc_end);
+  parse_scene_parallax_bands(sc_start, sc_end);
+  parse_scene_bg_image_layers(sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -3072,6 +3715,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
       draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
     } else {
       paint_cached_world_background(s_runtime_transp);
+      paint_bg_image_layers(s_runtime_transp);
     }
   } else {
     if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
@@ -3270,4 +3914,68 @@ void turtle_scene_actor_set_flip_h(bool flip_h) {
     return;
   }
   s_actors[s_lua_actor_target].flip_h = flip_h;
+}
+
+void turtle_scene_actor_set_text(const char* str, int dx, int dy, const char* font_id,
+                                 int color_index) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return;
+  }
+  SceneActor* a = &s_actors[s_lua_actor_target];
+  // text(nil)/text("") borra el overlay; persiste si no se vuelve a llamar (igual que
+  // set_anim con la animacion activa) — el script NO necesita llamar text() cada frame
+  // solo para mantener visible un valor de HUD que no cambio.
+  if (!str || !str[0] || !font_id || !font_id[0]) {
+    a->has_text = false;
+    a->text_buf[0] = '\0';
+    return;
+  }
+  snprintf(a->text_buf, sizeof a->text_buf, "%s", str);
+  snprintf(a->text_font_id, sizeof a->text_font_id, "%s", font_id);
+  a->text_dx = dx;
+  a->text_dy = dy;
+  a->text_color = color_index;
+  a->has_text = true;
+}
+
+int turtle_scene_measure_text_active(const char* font_id, const char* str) {
+  if (!s_runtime_json || !s_runtime_json_end || !font_id || !str) {
+    return 0;
+  }
+  const TurtleFont* font = font_cache_get(s_runtime_json, s_runtime_json_end, font_id);
+  if (!font) {
+    return 0;
+  }
+  return turtle_font_measure(font, str);
+}
+
+int turtle_scene_draw_text(const char* bundle_json, size_t bundle_json_len, const char* font_id,
+                           int sx, int sy, const char* str, int color_index) {
+  if (!bundle_json || bundle_json_len == 0 || !font_id || !str) {
+    return 0;
+  }
+  const TurtleFont* font =
+      font_cache_get(bundle_json, bundle_json + bundle_json_len, font_id);
+  if (!font) {
+    return 0;
+  }
+  if (color_index >= 0) {
+    return turtle_font_draw_scene_tint(font, sx, sy, str,
+                                       static_cast<uint8_t>(kDefaultTransparentIndex),
+                                       static_cast<uint8_t>(color_index));
+  }
+  return turtle_font_draw_scene(font, sx, sy, str, static_cast<uint8_t>(kDefaultTransparentIndex));
+}
+
+int turtle_scene_measure_text(const char* bundle_json, size_t bundle_json_len,
+                              const char* font_id, const char* str) {
+  if (!bundle_json || bundle_json_len == 0 || !font_id || !str) {
+    return 0;
+  }
+  const TurtleFont* font =
+      font_cache_get(bundle_json, bundle_json + bundle_json_len, font_id);
+  if (!font) {
+    return 0;
+  }
+  return turtle_font_measure(font, str);
 }

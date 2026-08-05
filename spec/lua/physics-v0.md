@@ -89,6 +89,43 @@ end
 
 Altura aproximada del salto: `jump_speed² / (2 * gravity)` (p. ej. 240 y 420 → ~69 px).
 
+### Bugs comunes al usar `move()` con acumulador X y gravedad
+
+`move(dx, dy)` devuelve `ax, ay` — los pixeles **realmente** aplicados por eje, que pueden
+ser menores que lo pedido si hay un tile solido en el camino. Ignorar esa diferencia produce
+dos bugs clasicos:
+
+1. **Personaje pegado bajo una plataforma**: si saltas y golpeas un techo, `ay` sale recortado
+   pero nada pone `vy` a 0 al momento del impacto. `vy` sigue siendo positivo (solo baja poco a
+   poco por gravedad), asi que el siguiente fotograma vuelves a pedir subir, vuelves a chocar, y
+   el personaje queda flotando pegado al techo varios fotogramas hasta que la gravedad reduzca
+   `vy` por debajo de 0 por su cuenta.
+2. **Teletransporte al despejar un choque lateral**: si acumulas el movimiento horizontal en un
+   remanente flotante (`rem_x`) y solo lo descuentas cuando el movimiento se aplico completo,
+   el remanente sigue creciendo fotograma a fotograma mientras estas bloqueado (p. ej. contra el
+   canto de un bloque en pleno salto). En cuanto el choque se despeja, ese remanente acumulado
+   se pide de una sola vez y `move()` lo mueve casi entero en un fotograma — se ve como un salto
+   brusco en la direccion de avance.
+
+Patron recomendado: comparar lo pedido contra lo aplicado y cortar/descartar en vez de dejar que
+se acumule.
+
+```lua
+local mx = math.floor(rem_x + 0.5)
+local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
+local ax, ay = move(mx, my)
+
+if ax == mx then
+  rem_x = rem_x - ax
+else
+  rem_x = 0.0  -- bloqueado: descarta el remanente, no lo dejes creciendo
+end
+
+if my > 0 and ay < my then
+  vy = 0  -- golpeo un techo subiendo: corta el impulso ahi mismo
+end
+```
+
 ## Ejemplo plataformero
 
 Ver `scripts/character.lua` en demo1: LEFT/RIGHT, gravedad y salto con **A**.
