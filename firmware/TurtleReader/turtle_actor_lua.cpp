@@ -246,6 +246,10 @@ void turtle_actor_lua_init(void) {
   }
 
   luaL_openlibs(s_L);
+  // GC generacional: mejor ajustado que el incremental por defecto para el patron de
+  // asignacion tipico de _update(dt) por actor (muchas tablas/closures chicas de vida
+  // corta por frame); evita picos de tiempo de frame por pausas del incremental.
+  lua_gc(s_L, LUA_GCGEN, 0, 0);
   lua_getglobal(s_L, "math");
   if (!lua_istable(s_L, -1)) {
     lua_pop(s_L, 1);

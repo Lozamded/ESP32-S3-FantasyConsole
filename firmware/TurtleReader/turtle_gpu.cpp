@@ -25,14 +25,27 @@ static uint16_t s_palette[kNColors];
 
 static bool s_dirty_valid = false;
 static bool s_force_full_flip = true;
-static int s_dirty_x0 = 0;
-static int s_dirty_y0 = 0;
-static int s_dirty_x1 = 0;
-static int s_dirty_y1 = 0;
 static int s_cam_x = 0;
 static int s_cam_y = 0;
 
+// Grilla de celdas sucias (en vez de un unico rect englobante): dos sprites en extremos
+// opuestos de la pantalla ya no inflan la region sucia a casi toda la pantalla, cada uno
+// solo ensucia sus propias celdas. 16px/celda: 17x13 celdas, barrerla entera cada frame
+// es trivial (<=221 iteraciones) frente al costo de SPI/paleta que evita.
+static constexpr int kTileSize = 16;
+static constexpr int kGridCols = (kW + kTileSize - 1) / kTileSize;
+static constexpr int kGridRows = (kH + kTileSize - 1) / kTileSize;
+static uint8_t s_dirty_cell[kGridRows][kGridCols];
+
 static void dirty_mark_fb_clamped(int x0, int y0, int x1, int y1) {
+  // +-1px: mismo margen que antes cubria turtle_gpu_dirty_slack_for_scale() sobre el bbox
+  // final (holgura de redondeo fb->panel), aplicado por-rect aca en vez de una vez al
+  // final -- evita tener que dilatar celdas *enteras* de 16px de la grilla para lograr el
+  // mismo margen de 1px real (eso infla muchisimo el area sucia de un actor chico).
+  x0 -= 1;
+  y0 -= 1;
+  x1 += 1;
+  y1 += 1;
   if (x0 < 0) {
     x0 = 0;
   }
@@ -48,26 +61,41 @@ static void dirty_mark_fb_clamped(int x0, int y0, int x1, int y1) {
   if (x0 > x1 || y0 > y1) {
     return;
   }
-  if (!s_dirty_valid) {
-    s_dirty_x0 = x0;
-    s_dirty_y0 = y0;
-    s_dirty_x1 = x1;
-    s_dirty_y1 = y1;
-    s_dirty_valid = true;
-    return;
+  const int cx0 = x0 / kTileSize;
+  const int cx1 = x1 / kTileSize;
+  const int cy0 = y0 / kTileSize;
+  const int cy1 = y1 / kTileSize;
+  for (int cy = cy0; cy <= cy1; ++cy) {
+    for (int cx = cx0; cx <= cx1; ++cx) {
+      s_dirty_cell[cy][cx] = 1;
+    }
   }
-  if (x0 < s_dirty_x0) {
-    s_dirty_x0 = x0;
+  s_dirty_valid = true;
+}
+
+/**
+ * Recorre celdas sucias contiguas (horizontalmente) en la fila de grilla `cy`, empezando
+ * en *cx. Devuelve false cuando no queda ninguna racha desde *cx en adelante. Usado tanto
+ * para restaurar la capa estatica como para el flush a pantalla, fusionando celdas sueltas
+ * en un solo rect en vez de una llamada/copia por celda de 16x16.
+ */
+static bool dirty_row_next_span(int cy, int* cx, int* out_cx0, int* out_cx1) {
+  int cx0 = *cx;
+  while (cx0 < kGridCols && !s_dirty_cell[cy][cx0]) {
+    ++cx0;
   }
-  if (y0 < s_dirty_y0) {
-    s_dirty_y0 = y0;
+  if (cx0 >= kGridCols) {
+    *cx = cx0;
+    return false;
   }
-  if (x1 > s_dirty_x1) {
-    s_dirty_x1 = x1;
+  int cx1 = cx0;
+  while (cx1 + 1 < kGridCols && s_dirty_cell[cy][cx1 + 1]) {
+    ++cx1;
   }
-  if (y1 > s_dirty_y1) {
-    s_dirty_y1 = y1;
-  }
+  *out_cx0 = cx0;
+  *out_cx1 = cx1;
+  *cx = cx1 + 1;
+  return true;
 }
 
 static constexpr uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -265,6 +293,32 @@ static bool ensure_panel_rgb_buffer(size_t need_pixels) {
   return true;
 }
 
+// LUT del reescalado nearest-neighbor fb(264x198) -> panel (fijo por sesion: mismo panel/
+// rotacion siempre). Evita repetir (px*kW)/panelW y (py*kH)/panelH -division entera- por
+// cada pixel de cada fila de cada flip; se calcula una vez y se cachea.
+static int16_t s_lut_lx[480];
+static int16_t s_lut_ly[480];
+static bool s_lut_ready = false;
+static int s_lut_panelW = -1;
+static int s_lut_panelH = -1;
+
+static void ensure_upscale_lut(int panelW, int panelH) {
+  if (s_lut_ready && s_lut_panelW == panelW && s_lut_panelH == panelH) {
+    return;
+  }
+  const int nx = panelW < 480 ? panelW : 480;
+  const int ny = panelH < 480 ? panelH : 480;
+  for (int px = 0; px < nx; ++px) {
+    s_lut_lx[px] = static_cast<int16_t>((px * kW) / panelW);
+  }
+  for (int py = 0; py < ny; ++py) {
+    s_lut_ly[py] = static_cast<int16_t>((py * kH) / panelH);
+  }
+  s_lut_panelW = panelW;
+  s_lut_panelH = panelH;
+  s_lut_ready = true;
+}
+
 static void turtle_fb_flush_full_to_display(void) {
   if (!s_display_ok) {
     return;
@@ -277,14 +331,16 @@ static void turtle_fb_flush_full_to_display(void) {
     return;
   }
 
+  ensure_upscale_lut(panelW, panelH);
+
   const size_t need = static_cast<size_t>(panelW) * static_cast<size_t>(panelH);
   if (!ensure_panel_rgb_buffer(need)) {
     uint16_t line[480];
     for (int py = 0; py < panelH; py++) {
-      const int ly = (py * kH) / panelH;
+      const int ly = s_lut_ly[py];
       const uint8_t* row = &s_fb[ly * kW];
       for (int px = 0; px < panelW; px++) {
-        const int lx = (px * kW) / panelW;
+        const int lx = s_lut_lx[px];
         line[px] = s_palette[row[lx]];
       }
       s_display.pushImage(0, py, panelW, 1, line);
@@ -293,11 +349,11 @@ static void turtle_fb_flush_full_to_display(void) {
   }
 
   for (int py = 0; py < panelH; py++) {
-    const int ly = (py * kH) / panelH;
+    const int ly = s_lut_ly[py];
     const uint8_t* row = &s_fb[ly * kW];
     uint16_t* dst = &s_panel_rgb[static_cast<size_t>(py) * static_cast<size_t>(panelW)];
     for (int px = 0; px < panelW; px++) {
-      const int lx = (px * kW) / panelW;
+      const int lx = s_lut_lx[px];
       dst[px] = s_palette[row[lx]];
     }
   }
@@ -317,56 +373,99 @@ static void turtle_fb_flush_dirty_to_display(void) {
   if (panelW <= 0 || panelH <= 0) {
     return;
   }
+  ensure_upscale_lut(panelW, panelH);
 
-  const int xfb0 = s_dirty_x0;
-  const int yfb0 = s_dirty_y0;
-  const int xfb1 = s_dirty_x1;
-  const int yfb1 = s_dirty_y1;
-
-  int px0 = (xfb0 * panelW) / kW;
-  int px1 = ((xfb1 + 1) * panelW - 1) / kW;
-  if (px0 < 0) {
-    px0 = 0;
-  }
-  if (px1 >= panelW) {
-    px1 = panelW - 1;
-  }
-
-  int py0 = (yfb0 * panelH) / kH;
-  int py1 = ((yfb1 + 1) * panelH - 1) / kH;
-  if (py0 < 0) {
-    py0 = 0;
-  }
-  if (py1 >= panelH) {
-    py1 = panelH - 1;
-  }
-
-  uint16_t line[480];
+  const size_t panel_pixels = static_cast<size_t>(panelW) * static_cast<size_t>(panelH);
+  const bool have_buf = ensure_panel_rgb_buffer(panel_pixels);
+  uint16_t fallback_line[480];
 
   s_display.startWrite();
-  for (int py = py0; py <= py1; ++py) {
-    const int ly = (py * kH) / panelH;
-    if (ly < yfb0 || ly > yfb1) {
-      continue;
+  // Cada fila de grilla puede tener varias rachas de celdas sucias separadas por celdas
+  // limpias (p. ej. dos actores lejos entre si); cada racha se funde en un solo rect y se
+  // envia con un solo pushImage (DMA de un bloque contiguo) en vez de linea por linea.
+  for (int cy = 0; cy < kGridRows; ++cy) {
+    const int yfb0 = cy * kTileSize;
+    if (yfb0 >= kH) {
+      break;
     }
-    const uint8_t* row = &s_fb[ly * kW];
-
-    const int pw = px1 - px0 + 1;
-    if (pw <= 0 || pw > static_cast<int>(sizeof(line) / sizeof(line[0]))) {
-      continue;
+    int yfb1 = yfb0 + kTileSize - 1;
+    if (yfb1 >= kH) {
+      yfb1 = kH - 1;
     }
 
-    for (int i = 0; i < pw; ++i) {
-      const int px = px0 + i;
-      int lx = (px * kW) / panelW;
-      if (lx < xfb0) {
-        lx = xfb0;
-      } else if (lx > xfb1) {
-        lx = xfb1;
+    int cx = 0;
+    int cx0 = 0;
+    int cx1 = 0;
+    while (dirty_row_next_span(cy, &cx, &cx0, &cx1)) {
+      const int xfb0 = cx0 * kTileSize;
+      int xfb1 = cx1 * kTileSize + kTileSize - 1;
+      if (xfb1 >= kW) {
+        xfb1 = kW - 1;
       }
-      line[i] = s_palette[row[lx]];
+
+      int px0 = (xfb0 * panelW) / kW;
+      int px1 = ((xfb1 + 1) * panelW - 1) / kW;
+      if (px0 < 0) {
+        px0 = 0;
+      }
+      if (px1 >= panelW) {
+        px1 = panelW - 1;
+      }
+      int py0 = (yfb0 * panelH) / kH;
+      int py1 = ((yfb1 + 1) * panelH - 1) / kH;
+      if (py0 < 0) {
+        py0 = 0;
+      }
+      if (py1 >= panelH) {
+        py1 = panelH - 1;
+      }
+
+      const int pw = px1 - px0 + 1;
+      const int ph = py1 - py0 + 1;
+      if (pw <= 0 || ph <= 0) {
+        continue;
+      }
+
+      if (have_buf && static_cast<size_t>(pw) * static_cast<size_t>(ph) <= s_panel_rgb_cap) {
+        for (int py = py0; py <= py1; ++py) {
+          const int ly = s_lut_ly[py];
+          if (ly < yfb0 || ly > yfb1) {
+            continue;
+          }
+          const uint8_t* row = &s_fb[ly * kW];
+          uint16_t* dst = &s_panel_rgb[static_cast<size_t>(py - py0) * static_cast<size_t>(pw)];
+          for (int i = 0; i < pw; ++i) {
+            int lx = s_lut_lx[px0 + i];
+            if (lx < xfb0) {
+              lx = xfb0;
+            } else if (lx > xfb1) {
+              lx = xfb1;
+            }
+            dst[i] = s_palette[row[lx]];
+          }
+        }
+        s_display.pushImage(px0, py0, pw, ph, s_panel_rgb);
+      } else if (pw <= static_cast<int>(sizeof(fallback_line) / sizeof(fallback_line[0]))) {
+        // Sin buffer PSRAM contiguo disponible: cae a linea por linea (correcto, mas lento).
+        for (int py = py0; py <= py1; ++py) {
+          const int ly = s_lut_ly[py];
+          if (ly < yfb0 || ly > yfb1) {
+            continue;
+          }
+          const uint8_t* row = &s_fb[ly * kW];
+          for (int i = 0; i < pw; ++i) {
+            int lx = s_lut_lx[px0 + i];
+            if (lx < xfb0) {
+              lx = xfb0;
+            } else if (lx > xfb1) {
+              lx = xfb1;
+            }
+            fallback_line[i] = s_palette[row[lx]];
+          }
+          s_display.pushImage(px0, py, pw, 1, fallback_line);
+        }
+      }
     }
-    s_display.pushImage(px0, py, pw, 1, line);
   }
   s_display.endWrite();
 }
@@ -556,6 +655,9 @@ void turtle_gpu_flip(void) {
 }
 
 void turtle_gpu_dirty_reset(void) {
+  // Incondicional: s_dirty_valid puede quedar en false (tras un flip) con celdas de un
+  // frame anterior todavia marcadas en la grilla -- no alcanza con mirar el flag.
+  memset(s_dirty_cell, 0, sizeof(s_dirty_cell));
   s_dirty_valid = false;
 }
 
@@ -573,44 +675,50 @@ void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h) {
   dirty_mark_fb_clamped(sx0, yfb0, sx1, yfb1);
 }
 
-/** Ensancha la region sucia 1 px en fb (errores de redondeo al escalar al panel). */
-void turtle_gpu_dirty_slack_for_scale(void) {
-  if (!s_dirty_valid) {
-    return;
-  }
-  if (s_dirty_x0 > 0) {
-    --s_dirty_x0;
-  }
-  if (s_dirty_x1 < kW - 1) {
-    ++s_dirty_x1;
-  }
-  if (s_dirty_y0 > 0) {
-    --s_dirty_y0;
-  }
-  if (s_dirty_y1 < kH - 1) {
-    ++s_dirty_y1;
-  }
-}
+/**
+ * No-op: el margen de holgura por redondeo fb->panel ahora se aplica por-rect dentro de
+ * dirty_mark_fb_clamped (ver comentario ahi). Se mantiene por compatibilidad de API --
+ * turtle_scene.cpp la sigue llamando una vez por frame despues de marcar los rects.
+ */
+void turtle_gpu_dirty_slack_for_scale(void) {}
 
 bool turtle_gpu_dirty_valid(void) {
   return s_dirty_valid;
 }
 
 void turtle_gpu_dirty_mark_fb_full(void) {
-  dirty_mark_fb_clamped(0, 0, kW - 1, kH - 1);
+  memset(s_dirty_cell, 1, sizeof(s_dirty_cell));
+  s_dirty_valid = true;
 }
 
 void turtle_gpu_restore_static_dirty(void) {
   if (!s_has_static || !s_dirty_valid) {
     return;
   }
-  const int x0 = s_dirty_x0;
-  const int y0 = s_dirty_y0;
-  const int x1 = s_dirty_x1;
-  const int y1 = s_dirty_y1;
-  for (int y = y0; y <= y1; ++y) {
-    memcpy(&s_fb[y * kW + x0], &s_static_fb[y * kW + x0],
-           static_cast<size_t>(x1 - x0 + 1));
+  for (int cy = 0; cy < kGridRows; ++cy) {
+    const int y0 = cy * kTileSize;
+    if (y0 >= kH) {
+      break;
+    }
+    int y1 = y0 + kTileSize - 1;
+    if (y1 >= kH) {
+      y1 = kH - 1;
+    }
+
+    int cx = 0;
+    int cx0 = 0;
+    int cx1 = 0;
+    while (dirty_row_next_span(cy, &cx, &cx0, &cx1)) {
+      const int x0 = cx0 * kTileSize;
+      int x1 = cx1 * kTileSize + kTileSize - 1;
+      if (x1 >= kW) {
+        x1 = kW - 1;
+      }
+      const size_t n = static_cast<size_t>(x1 - x0 + 1);
+      for (int y = y0; y <= y1; ++y) {
+        memcpy(&s_fb[y * kW + x0], &s_static_fb[y * kW + x0], n);
+      }
+    }
   }
 }
 

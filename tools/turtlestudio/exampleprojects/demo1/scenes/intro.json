@@ -4,11 +4,11 @@
   "id": "intro",
   "palette": "palettes/palette.txt",
   "script": "intro",
-  "bg_color_index": 14,
+  "bg_color_index": 0,
   "background_layers": [
     {
       "enabled": true,
-      "color_index": 14,
+      "color_index": 0,
       "opacity": 255,
       "background": "cielo",
       "parallax_x": 1.0,
@@ -1757,6 +1757,20 @@
     }
   ],
   "world_steps_x": 2,
+  "parallax_bands": [
+    {
+      "y0": 0,
+      "y1": 52,
+      "parallax_x": 0.75,
+      "repeat_x": true
+    },
+    {
+      "y0": 53,
+      "y1": 68,
+      "parallax_x": 0.85,
+      "repeat_x": true
+    }
+  ],
   "camera": {
     "mode": "fixed",
     "x": 0,

@@ -77,6 +77,50 @@ Ejemplo minimo en `examples/minimal/`.
 
 **Nota:** si el Lua contiene la cadena literal `---END---`, el firmware podria truncar el script; el builder emite un `warnings.warn`.
 
+## Play (playtest en vivo, opcional)
+
+El tab **Play** de la ventana (`turtlestudio gui`) corre la logica real de un proyecto
+-- scripts de actor/ENTRY en Lua 5.4, colision, camara -- directamente sobre el estado
+en memoria del proyecto, sin build/flash/SD ni emulador. No requiere instalarlo para
+usar el resto de TurtleStudio; si `lupa` no esta disponible el tab se deshabilita
+mostrando por que, en vez de romper el arranque de la app.
+
+**`pip install lupa` a secas NO sirve**: el wheel de PyPI trae Lua 5.5, una version
+distinta a la vendorizada en `firmware/libraries/lua54` (5.4.6) contra la que estan
+escritos los scripts de actor. Hay que compilar `lupa` a mano contra esos mismos
+fuentes de Lua 5.4.6, para tener paridad exacta con lo que corre en el ESP32-S3:
+
+```bash
+cd tools/turtlestudio
+source .venv/bin/activate
+
+# 1. Compilar el Lua 5.4.6 vendorizado como libreria estatica de host.
+LUA_SRC=../../firmware/libraries/lua54/src
+mkdir -p /tmp/liblua54 && cd /tmp/liblua54
+gcc -std=c99 -O1 -c "$LUA_SRC"/*.c
+ar rcs liblua54.a *.o
+cd -
+
+# 2. Bajar el sdist de lupa (NO el wheel) y compilarlo apuntando a esa libreria.
+pip download --no-binary lupa --no-deps -d /tmp/lupa_src lupa
+cd /tmp/lupa_src && tar xf lupa-*.tar.gz && cd lupa-*/
+python3 setup.py build_ext \
+  --lua-lib=/tmp/liblua54/liblua54.a \
+  --lua-includes="$LUA_SRC" \
+  install
+```
+
+Verificacion rapida (debe decir `Lua 5.4`, no `5.5`):
+
+```bash
+python3 -c "import lupa; print(lupa.LuaRuntime().lua_implementation)"
+```
+
+Luego `pip install -e ".[play]"` queda como referencia de la dependencia opcional en
+`pyproject.toml`, pero el paso que realmente importa es el build de arriba -- un
+`pip install -e ".[play]"` normal, sin este build previo, instalaria el wheel 5.5 y
+seria incorrecto para este proyecto.
+
 ## Proximos pasos (roadmap interno)
 
 1. ~~CLI `build`~~

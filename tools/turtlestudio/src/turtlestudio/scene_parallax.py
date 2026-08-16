@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from turtlestudio.scene_tiles import _blend_rgba_pixel_inplace, scene_y_to_framebuffer_y
+
 MAX_PARALLAX_BANDS = 8
 DEFAULT_PARALLAX_X = 1.0
 MIN_PARALLAX_X = 0.0
@@ -120,3 +122,60 @@ def find_parallax_band(y: int, bands: list[SceneParallaxBand]) -> SceneParallaxB
         if band.y0 <= y <= band.y1:
             return band
     return None
+
+
+_PARALLAX_BAND_RGBA = (0.25, 0.85, 0.75, 0.16)
+_PARALLAX_BAND_BORDER_RGBA = (0.25, 0.85, 0.75, 0.55)
+_PARALLAX_BAND_SELECTED_RGBA = (1.0, 0.95, 0.25, 0.9)
+_PARALLAX_BAND_REPEAT_HATCH_RGBA = (0.9, 1.0, 0.95, 0.4)
+_PARALLAX_BAND_REPEAT_HATCH_SPACING = 8
+
+
+def draw_scene_parallax_bands_on_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    bands: list[SceneParallaxBand],
+    *,
+    selected_index: int | None = None,
+    band_rgba: tuple[float, float, float, float] = _PARALLAX_BAND_RGBA,
+    border_rgba: tuple[float, float, float, float] = _PARALLAX_BAND_BORDER_RGBA,
+    selected_border_rgba: tuple[float, float, float, float] = _PARALLAX_BAND_SELECTED_RGBA,
+    repeat_hatch_rgba: tuple[float, float, float, float] = _PARALLAX_BAND_REPEAT_HATCH_RGBA,
+    repeat_hatch_spacing: int = _PARALLAX_BAND_REPEAT_HATCH_SPACING,
+) -> None:
+    """Superpone cada banda como una franja horizontal translucida (rango y0..y1, espacio
+    escena) con bordes, para que sea obvio a que filas de la Capa 1 afecta cada una. La banda
+    seleccionada en la lista del editor se resalta con un borde mas grueso y brillante. Las
+    bandas con `repeat_x` llevan ademas un rayado diagonal, para distinguir de un vistazo
+    cuales repiten la imagen horizontalmente."""
+    if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
+        return
+    for i, band in enumerate(bands):
+        y0 = max(0, min(fh - 1, int(band.y0)))
+        y1 = max(0, min(fh - 1, int(band.y1)))
+        if y0 > y1:
+            y0, y1 = y1, y0
+        yfb_top = scene_y_to_framebuffer_y(y1, fb_h=fh)
+        yfb_bot = scene_y_to_framebuffer_y(y0, fb_h=fh)
+        y_lo, y_hi = min(yfb_top, yfb_bot), max(yfb_top, yfb_bot)
+
+        fr, fg, fb_, fa = band_rgba
+        hr, hg, hb, ha = repeat_hatch_rgba
+        spacing = max(2, int(repeat_hatch_spacing))
+        for y_fb in range(y_lo, y_hi + 1):
+            row_base = y_fb * fw * 4
+            for x in range(fw):
+                _blend_rgba_pixel_inplace(rgba, row_base + x * 4, fr, fg, fb_, fa)
+                if band.repeat_x and (x + y_fb) % spacing == 0:
+                    _blend_rgba_pixel_inplace(rgba, row_base + x * 4, hr, hg, hb, ha)
+
+        is_selected = selected_index == i
+        br, bg, bb, ba = selected_border_rgba if is_selected else border_rgba
+        thickness = 2 if is_selected else 1
+        for t in range(thickness):
+            for y_fb in (y_lo + t, y_hi - t):
+                if 0 <= y_fb < fh:
+                    row_base = y_fb * fw * 4
+                    for x in range(fw):
+                        _blend_rgba_pixel_inplace(rgba, row_base + x * 4, br, bg, bb, ba)

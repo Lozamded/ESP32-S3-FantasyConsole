@@ -70,8 +70,8 @@ scene.world_steps_x,Pasos de mundo X:,World steps X:
 scene.world_steps_y,Pasos de mundo Y:,World steps Y:
 scene.background_group,Fondo,Background
 scene.background_asset_label,Fondo (backgrounds/):,Background (backgrounds/):
-scene.bg_layer_image_hint,"Capa 1 es la capa base: se hornea junto a los tiles en el mundo estatico (se dibuja una vez, no cada fotograma) y su scroll horizontal se controla con el grupo 'Bandas de parallax' de arriba, no con los campos Parallax X de esta fila. Capas 2-4 son independientes: cada una reserva su propio buffer en RAM y se repinta cada fotograma con scroll segun su propio Parallax X -- no hay limite de PSRAM documentado en este repo, prueba en hardware real. Usa imagenes pequenas con 'Repetir X' para las capas lejanas.","Layer 1 is the base layer: it's baked together with tiles into the static world buffer (drawn once, not every frame) and its horizontal scroll is controlled by the 'Parallax bands' group above, not this row's Parallax X fields. Layers 2-4 are independent: each reserves its own RAM buffer and repaints every scrolling frame using its own Parallax X -- there's no documented PSRAM ceiling in this repo, test on real hardware. Use small images with 'Repeat X' for distant layers."
-scene.bg_layer1_parallax_disabled_hint,Capa 1 usa 'Bandas de parallax' (arriba) en su lugar.,Layer 1 uses 'Parallax bands' (above) instead.
+scene.bg_layer_image_hint,"Capa 1 es la capa base: se hornea junto a los tiles en el mundo estatico (se dibuja una vez, no cada fotograma) y su scroll horizontal se controla con el grupo 'Bandas de parallax' que aparece debajo al activar esta capa, no con los campos Parallax X de esta fila. Capas 2-4 son independientes: cada una reserva su propio buffer en RAM y se repinta cada fotograma con scroll segun su propio Parallax X -- no hay limite de PSRAM documentado en este repo, prueba en hardware real. Usa imagenes pequenas con 'Repetir X' para las capas lejanas.","Layer 1 is the base layer: it's baked together with tiles into the static world buffer (drawn once, not every frame) and its horizontal scroll is controlled by the 'Parallax bands' group shown below once this layer is enabled, not this row's Parallax X fields. Layers 2-4 are independent: each reserves its own RAM buffer and repaints every scrolling frame using its own Parallax X -- there's no documented PSRAM ceiling in this repo, test on real hardware. Use small images with 'Repeat X' for distant layers."
+scene.bg_layer1_parallax_disabled_hint,Capa 1 usa 'Bandas de parallax' (debajo) en su lugar.,Layer 1 uses 'Parallax bands' (below) instead.
 scene.color_label,Color:,Color:
 scene.opacity_label,Opacidad:,Opacity:
 scene.tile_layers_group,Capas de tiles,Tile layers
@@ -87,8 +87,8 @@ scene.camera_target_placeholder,id de objeto (vacio = auto),object id (empty = a
 scene.camera_target_label,Objetivo:,Target:
 scene.margin_x_label,Margen X:,Margin X:
 scene.margin_y_label,Margen Y:,Margin Y:
-scene.parallax_group,Bandas de parallax,Parallax bands
-scene.parallax_hint,"Rango Y de escena con su propio scroll horizontal (parallax_x). Sin banda activa para una fila: comportamiento de hoy (1.0, sin repetir).","Scene Y-range with its own horizontal scroll (parallax_x). Rows with no active band behave as today (1.0, no repeat)."
+scene.parallax_group,Bandas de parallax (Capa 1),Parallax bands (Layer 1)
+scene.parallax_hint,"Controla el scroll horizontal de la Capa 1 (base) por rango Y de escena (parallax_x). Sin banda activa para una fila: comportamiento de hoy (1.0, sin repetir).","Controls Layer 1's (base) horizontal scroll by scene Y-range (parallax_x). Rows with no active band behave as today (1.0, no repeat)."
 scene.parallax_enabled_label,Activar bandas de parallax,Enable parallax bands
 scene.parallax_add_band,Añadir banda,Add band
 scene.parallax_remove_band,Quitar banda,Remove band
@@ -214,3 +214,15 @@ mainwindow.tab_objects,Objetos,Objects
 mainwindow.tab_fonts,Fuentes,Fonts
 mainwindow.tab_palette,Paleta,Palette
 mainwindow.tab_export,Exportar,Export
+mainwindow.tab_play,Jugar,Play
+play.scene_label,Escena:,Scene:
+play.play_button,Reproducir,Play
+play.pause_button,Pausar,Pause
+play.stop_button,Detener,Stop
+play.keymap_legend,Flechas: mover · Z: A · X: B · C: C · V: D,Arrows: move · Z: A · X: B · C: C · V: D
+play.log_placeholder,Salida de print() y errores de Lua…,print() output and Lua errors…
+play.lupa_unavailable,"lupa (Lua 5.4) no disponible -- ver README.md seccion Play para compilarlo. ({error})","lupa (Lua 5.4) not available -- see README.md's Play section to build it. ({error})"
+play.read_error_title,Error leyendo el manifest,Error reading manifest
+play.read_error_msg,"No se pudo leer {manifest}: {e}","Could not read {manifest}: {e}"
+play.start_error_title,Error al iniciar Play,Error starting Play
+play.runtime_error_title,Error de ejecucion en Play,Play runtime error

@@ -60,7 +60,13 @@ static bool mountSd(uint32_t frequencyHz) {
 }
 
 static bool mountSdWithRetries() {
-  const uint32_t speeds[] = {400000, 1000000, 100000};
+  // Velocidades de operacion normal (no de identificacion SD): se intentan primero
+  // porque casi toda tarjeta SD-sobre-SPI las soporta una vez montada, y a 400kHz/1MHz
+  // (velocidades de identificacion del propio protocolo SD) cada lectura de cartucho/
+  // escena/script de actor via SD.open() paga un costo enorme innecesario.
+  // El fallback a las velocidades lentas de identificacion se mantiene al final para
+  // tarjetas viejas o de mala calidad que no toleren SPI rapido.
+  const uint32_t speeds[] = {20000000, 10000000, 4000000, 1000000, 400000, 100000};
   constexpr int kAttempts = 8;
   for (int attempt = 0; attempt < kAttempts; attempt++) {
     for (uint32_t hz : speeds) {

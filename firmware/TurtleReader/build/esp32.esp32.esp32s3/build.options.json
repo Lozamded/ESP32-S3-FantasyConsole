@@ -1,0 +1,9 @@
+{
+  "additionalFiles": "../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..,../..",
+  "compiler.optimization_flags": "-Os",
+  "customBuildProperties": "",
+  "fqbn": "esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,PartitionScheme=default",
+  "hardwareFolders": "/home/lozamded/.arduino15/packages/esp32/hardware/esp32/3.3.11,/home/lozamded/.arduino15/packages/esp32/hardware/esp32/3.3.11",
+  "otherLibrariesFolders": "/home/lozamded/Arduino/libraries",
+  "sketchLocation": "/home/lozamded/FantasyConsoles/FantasyConsole/firmware/TurtleReader"
+}

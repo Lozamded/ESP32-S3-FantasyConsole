@@ -18,6 +18,7 @@ from turtlestudio.i18n import tr
 
 class TabKind(str, Enum):
     SCENE_EDITOR = "scene_editor"
+    PLAY_MODE = "play_mode"
     SPRITE_EDITOR = "sprite_editor"
     TILESET_EDITOR = "tileset_editor"
     BACKGROUND_EDITOR = "background_editor"
@@ -39,6 +40,7 @@ class WorkspaceTabs(QWidget):
 
     _ORDER: tuple[tuple[TabKind, str], ...] = (
         (TabKind.SCENE_EDITOR, "mainwindow.tab_scene"),
+        (TabKind.PLAY_MODE, "mainwindow.tab_play"),
         (TabKind.SPRITE_EDITOR, "mainwindow.tab_sprites"),
         (TabKind.TILESET_EDITOR, "mainwindow.tab_tiles"),
         (TabKind.BACKGROUND_EDITOR, "mainwindow.tab_backgrounds"),

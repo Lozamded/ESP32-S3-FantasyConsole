@@ -84,6 +84,7 @@ from turtlestudio.scene_parallax import (
     MAX_PARALLAX_BANDS,
     SceneParallaxBand,
     clamp_parallax_band,
+    draw_scene_parallax_bands_on_rgba,
     parse_scene_parallax_bands_from_row,
     scene_parallax_band_to_json,
     scene_parallax_bands_to_json,
@@ -318,6 +319,7 @@ def render_scene_rgba(
     *,
     paint_layer_index: int | None = None,
     hover_cell: tuple[int, int] | None = None,
+    selected_parallax_band_index: int | None = None,
 ) -> tuple[list[float], int, int]:
     wsx = clamp_world_steps(row.get("world_steps_x", 1))
     wsy = clamp_world_steps(row.get("world_steps_y", 1))
@@ -365,6 +367,18 @@ def render_scene_rgba(
 
     if paint_layer_index is not None:
         draw_scene_tile_grid_on_rgba(rgba, fw, fh, tile_px, hover_cell=hover_cell, full_grid=True)
+
+    # Las bandas solo afectan la Capa 1 (ver comentario arriba); si esa capa esta
+    # desactivada no tienen efecto, asi que no se dibuja la superposicion (igual que el
+    # grupo "Bandas de parallax" del panel, que tambien se oculta con la capa apagada).
+    bg_layers_raw = row.get("background_layers") or []
+    layer0_enabled = bool(bg_layers_raw[0].get("enabled")) if bg_layers_raw and isinstance(bg_layers_raw[0], dict) else False
+    if layer0_enabled:
+        parallax_bands = parse_scene_parallax_bands_from_row(row, world_h=fh)
+        if parallax_bands:
+            draw_scene_parallax_bands_on_rgba(
+                rgba, fw, fh, parallax_bands, selected_index=selected_parallax_band_index
+            )
 
     if fw > SCENE_PIXEL_W or fh > SCENE_PIXEL_H:
         draw_scene_step_bounds_on_rgba(rgba, fw, fh)
@@ -663,7 +677,6 @@ class SceneEditorWidget(QWidget):
         left_layout.addWidget(self._build_tile_layers_group())
         left_layout.addWidget(self._build_objects_group())
         left_layout.addWidget(self._build_camera_group())
-        left_layout.addWidget(self._build_parallax_bands_group())
         left_layout.addStretch()
 
         left_scroll.setWidget(left_inner)
@@ -782,6 +795,17 @@ class SceneEditorWidget(QWidget):
                 for w in (spin_px, chk_fixed, chk_repeat):
                     w.setEnabled(False)
                     w.setToolTip(disabled_hint)
+
+                # Anidado bajo la Capa 1 (a la que aplica) y visible solo si esa capa esta
+                # activada, para que sea obvio a que capa afecta (antes vivia suelto al final
+                # del panel, separado de la fila que realmente controla).
+                nested_row = QHBoxLayout()
+                nested_row.addSpacing(20)
+                self.parallax_bands_box = self._build_parallax_bands_group()
+                self.parallax_bands_box.setVisible(chk.isChecked())
+                chk.toggled.connect(self.parallax_bands_box.setVisible)
+                nested_row.addWidget(self.parallax_bands_box, stretch=1)
+                layout.addLayout(nested_row)
 
             self.bg_layer_rows.append(
                 {
@@ -1032,6 +1056,8 @@ class SceneEditorWidget(QWidget):
             widgets["repeat_x"].setChecked(bool(d.get("repeat_x", False)))
             for w in widgets.values():
                 w.blockSignals(False)
+            if i == 0:
+                self.parallax_bands_box.setVisible(widgets["enabled"].isChecked())
 
     def _refresh_tileset_combos(self, palette_rel: str) -> None:
         stems = list_tileset_stems_for_palette(self.project_root, palette_rel)
@@ -1187,8 +1213,14 @@ class SceneEditorWidget(QWidget):
         if row is None:
             self.canvas.set_frame(QImage(), 0, 0)
             return
+        selected_band = self.list_parallax_bands.currentRow()
         rgba, fw, fh = render_scene_rgba(
-            self.project_root, row, self._tile_px, paint_layer_index=self._paint_layer, hover_cell=self._hover_cell
+            self.project_root,
+            row,
+            self._tile_px,
+            paint_layer_index=self._paint_layer,
+            hover_cell=self._hover_cell,
+            selected_parallax_band_index=selected_band if selected_band >= 0 else None,
         )
         img = _rgba_floats_to_qimage(rgba, fw, fh)
         self.canvas.set_frame(img, fw, fh)
@@ -1532,6 +1564,7 @@ class SceneEditorWidget(QWidget):
         bands = row.get("parallax_bands")
         d = bands[index] if isinstance(bands, list) and 0 <= index < len(bands) else None
         self._load_parallax_band_editor(d)
+        self._refresh_canvas()
 
     def _on_parallax_band_edited(self, *_args: Any) -> None:
         row = self._current_row()

@@ -8,6 +8,12 @@ dependencies = [
     "PyQt6>=6.6.0",
 ]
 
+[project.optional-dependencies]
+# lupa (Lua para Play mode) NO se instala con pip normal: el wheel de PyPI trae
+# Lua 5.5, hay que compilarlo contra firmware/libraries/lua54 (5.4.6) a mano.
+# Ver README.md, seccion "Play", para el comando exacto.
+play = ["lupa"]
+
 [project.scripts]
 turtlestudio = "turtlestudio.cli:main"
 

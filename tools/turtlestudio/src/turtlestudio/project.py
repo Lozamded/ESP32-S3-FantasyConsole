@@ -754,6 +754,8 @@ def _write_mirror_scene_json_files(
             payload["world_steps_x"] = int(row["world_steps_x"])
         if int(row.get("world_steps_y", 1)) != 1:
             payload["world_steps_y"] = int(row["world_steps_y"])
+        if isinstance(row.get("parallax_bands"), list):
+            payload["parallax_bands"] = list(row["parallax_bands"])
         from turtlestudio.scene_camera import parse_scene_camera_from_row, scene_camera_to_json
 
         cam_raw = row.get("camera")
@@ -1003,6 +1005,15 @@ def _normalize_scenes_for_save(
 
         cam_row = parse_scene_camera_from_row(item)
         row_out["camera"] = scene_camera_to_json(cam_row)
+        from turtlestudio.scene_parallax import (
+            parse_scene_parallax_bands_from_row,
+            scene_parallax_bands_to_json,
+        )
+
+        raw_parallax_bands = item.get("parallax_bands")
+        if isinstance(raw_parallax_bands, list):
+            bands_ok = parse_scene_parallax_bands_from_row(item, world_h=wh)
+            row_out["parallax_bands"] = scene_parallax_bands_to_json(bands_ok)
         row_out.update(
             {
                 "camera_mode": cam_row.mode,

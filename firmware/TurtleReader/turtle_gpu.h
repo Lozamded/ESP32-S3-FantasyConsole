@@ -95,7 +95,11 @@ void turtle_gpu_get_camera(int* cam_x, int* cam_y);
 /** Marca region sucia (coords escena: esquina inf-izq del blit, Y arriba). */
 void turtle_gpu_dirty_reset(void);
 void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h);
-/** Ensancha region sucia 1 px (redondeo fb->panel). Llamar tras marcar rects. */
+/**
+ * No-op: la holgura de 1px por redondeo fb->panel ahora se aplica dentro de cada
+ * turtle_gpu_dirty_mark_scene_rect(). Se mantiene por compatibilidad de API/orden de
+ * llamada (llamar tras marcar rects, como antes).
+ */
 void turtle_gpu_dirty_slack_for_scale(void);
 bool turtle_gpu_dirty_valid(void);
 /** Marca todo el framebuffer logico como sucio. */

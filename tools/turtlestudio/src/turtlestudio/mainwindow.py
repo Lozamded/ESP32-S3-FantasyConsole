@@ -28,6 +28,7 @@ from turtlestudio.build_dialog import BuildDialogWidget
 from turtlestudio.font_editor import FontEditorWidget
 from turtlestudio.i18n import tr
 from turtlestudio.object_editor import ObjectEditorWidget
+from turtlestudio.play_widget import PlayWidget
 from turtlestudio.scene_editor import SceneEditorWidget
 from turtlestudio.sprite_editor import SpriteEditorWidget
 from turtlestudio.tileset_editor import TilesetEditorWidget
@@ -155,6 +156,9 @@ class MainWindow(QMainWindow):
         self.scene_editor = SceneEditorWidget(Path("."))
         self.center_stack.addWidget(self.scene_editor)
 
+        self.play_widget = PlayWidget(Path("."))
+        self.center_stack.addWidget(self.play_widget)
+
         self.tileset_editor = TilesetEditorWidget(Path("."))
         self.center_stack.addWidget(self.tileset_editor)
 
@@ -172,6 +176,7 @@ class MainWindow(QMainWindow):
 
         self._tab_widgets: dict[TabKind, QWidget] = {
             TabKind.SCENE_EDITOR: self.scene_editor,
+            TabKind.PLAY_MODE: self.play_widget,
             TabKind.SPRITE_EDITOR: self.sprite_editor,
             TabKind.TILESET_EDITOR: self.tileset_editor,
             TabKind.BACKGROUND_EDITOR: self.background_editor,
@@ -198,6 +203,8 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.select(TabKind.EXPORT)
 
     def _on_workspace_tab_selected(self, ref: TabRef) -> None:
+        if ref.kind != TabKind.PLAY_MODE:
+            self.play_widget.stop_on_tab_away()
         widget = self._tab_widgets.get(ref.kind)
         if widget is not None:
             self.center_stack.setCurrentWidget(widget)
@@ -229,6 +236,7 @@ class MainWindow(QMainWindow):
         self.palette_editor.set_project_root(root)
         self.sprite_editor.set_project_root(root)
         self.scene_editor.set_project_root(root)
+        self.play_widget.set_project_root(root)
         self.tileset_editor.set_project_root(root)
         self.background_editor.set_project_root(root)
         self.object_editor.set_project_root(root)
