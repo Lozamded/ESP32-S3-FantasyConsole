@@ -9,8 +9,8 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -27,6 +27,7 @@ from turtlestudio.background_editor import BackgroundEditorWidget
 from turtlestudio.build_dialog import BuildDialogWidget
 from turtlestudio.font_editor import FontEditorWidget
 from turtlestudio.i18n import tr
+from turtlestudio.new_project_dialog import NewProjectDialog
 from turtlestudio.object_editor import ObjectEditorWidget
 from turtlestudio.play_widget import PlayWidget
 from turtlestudio.scene_editor import SceneEditorWidget
@@ -210,14 +211,16 @@ class MainWindow(QMainWindow):
             self.center_stack.setCurrentWidget(widget)
 
     def _action_new_project(self) -> None:
-        path = QFileDialog.getExistingDirectory(self, tr("mainwindow.new_project_folder_title"))
-        if not path:
+        dialog = NewProjectDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, ok = QInputDialog.getText(self, tr("mainwindow.new_project_title"), tr("mainwindow.new_project_name_label"))
-        if not ok:
-            return
+        path = dialog.folder_path()
         try:
-            create_project(Path(path), display_name=name or None)
+            create_project(
+                Path(path),
+                display_name=dialog.project_name() or None,
+                board=dialog.selected_board(),
+            )
         except (ValueError, OSError) as e:
             QMessageBox.critical(self, tr("common.error"), str(e))
             return
@@ -233,6 +236,7 @@ class MainWindow(QMainWindow):
         self.project = info
         self.project_root = root
         self.setWindowTitle(f"TurtleStudio — {info.name}")
+        self.workspace_tabs.set_target_board(info.target_board)
         self.palette_editor.set_project_root(root)
         self.sprite_editor.set_project_root(root)
         self.scene_editor.set_project_root(root)

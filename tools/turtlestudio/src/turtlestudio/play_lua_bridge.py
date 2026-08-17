@@ -30,7 +30,6 @@ else:
 
 from turtlestudio.palette_policy import PALETTE_SIZE
 from turtlestudio.play_runtime import ActorRuntimeState, PlaySession, move_actor
-from turtlestudio.scene_camera import VIEWPORT_PIXEL_H, VIEWPORT_PIXEL_W
 
 
 def lupa_available() -> bool:
@@ -210,8 +209,8 @@ class EntryLuaBridge:
         g.pix = lambda *a: None
         g.spix = lambda *a: None
         g.flip = lambda: None
-        g.W = VIEWPORT_PIXEL_W
-        g.H = VIEWPORT_PIXEL_H
+        g.W = self.session.viewport_w
+        g.H = self.session.viewport_h
         g.COLORS = PALETTE_SIZE
         g.btn = lambda i: self.session.input.held(int(i))
         g.btnp = lambda i: False  # sin poll() antes de ENTRY en hardware real -- fuera de alcance v0

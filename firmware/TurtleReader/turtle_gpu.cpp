@@ -14,8 +14,8 @@ extern "C" {
 #include <lauxlib.h>
 }
 
-static constexpr int kW = 264;
-static constexpr int kH = 198;
+static constexpr int kW = 164;
+static constexpr int kH = 124;
 static constexpr int kNColors = 32;
 
 static uint8_t s_fb[kW * kH];
@@ -30,8 +30,8 @@ static int s_cam_y = 0;
 
 // Grilla de celdas sucias (en vez de un unico rect englobante): dos sprites en extremos
 // opuestos de la pantalla ya no inflan la region sucia a casi toda la pantalla, cada uno
-// solo ensucia sus propias celdas. 16px/celda: 17x13 celdas, barrerla entera cada frame
-// es trivial (<=221 iteraciones) frente al costo de SPI/paleta que evita.
+// solo ensucia sus propias celdas. 16px/celda: 11x8 celdas, barrerla entera cada frame
+// es trivial (<=88 iteraciones) frente al costo de SPI/paleta que evita.
 static constexpr int kTileSize = 16;
 static constexpr int kGridCols = (kW + kTileSize - 1) / kTileSize;
 static constexpr int kGridRows = (kH + kTileSize - 1) / kTileSize;
@@ -293,7 +293,7 @@ static bool ensure_panel_rgb_buffer(size_t need_pixels) {
   return true;
 }
 
-// LUT del reescalado nearest-neighbor fb(264x198) -> panel (fijo por sesion: mismo panel/
+// LUT del reescalado nearest-neighbor fb(164x124) -> panel (fijo por sesion: mismo panel/
 // rotacion siempre). Evita repetir (px*kW)/panelW y (py*kH)/panelH -division entera- por
 // cada pixel de cada fila de cada flip; se calcula una vez y se cachea.
 static int16_t s_lut_lx[480];
@@ -324,7 +324,7 @@ static void turtle_fb_flush_full_to_display(void) {
     return;
   }
 
-  // Resolucion logica 264x198, panel visible 320x240 (rotado).
+  // Resolucion logica 164x124, panel visible 320x240 (rotado).
   const int panelW = s_display.width();
   const int panelH = s_display.height();
   if (panelW <= 0 || panelH <= 0) {
@@ -665,7 +665,7 @@ void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h) {
   if (w <= 0 || h <= 0) {
     return;
   }
-  /* Margen extra: borrado prev_blit + holgura por mapeo fb 264 -> panel ~320. */
+  /* Margen extra: borrado prev_blit + holgura por mapeo fb 164 -> panel ~320. */
   const int sx0 = x0 - 4;
   const int sx1 = x0 + w + 3;
   const int sy0 = y0 - 4;

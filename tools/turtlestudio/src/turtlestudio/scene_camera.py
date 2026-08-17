@@ -1,4 +1,4 @@
-"""Camara de escena (viewport 264×198): posicion, objetivo y margenes de scroll."""
+"""Camara de escena (viewport 164×124, default S3): posicion, objetivo y margenes de scroll."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ from typing import Any
 from turtlestudio.scene_tiles import _blend_rgba_pixel_inplace, scene_y_to_framebuffer_y
 
 # Alineado con project.VIEWPORT_PIXEL_* (evita import circular project ↔ scene_camera).
-VIEWPORT_PIXEL_W = 264
-VIEWPORT_PIXEL_H = 198
+VIEWPORT_PIXEL_W = 164
+VIEWPORT_PIXEL_H = 124
 
 CAMERA_MODE_FOLLOW = "follow"
 CAMERA_MODE_FIXED = "fixed"
@@ -224,12 +224,15 @@ def resolve_scene_camera_viewport(
     world_w: int,
     world_h: int,
     objects: list[dict[str, Any]],
+    viewport_w: int = VIEWPORT_PIXEL_W,
+    viewport_h: int = VIEWPORT_PIXEL_H,
 ) -> tuple[int, int]:
     ww, wh = max(1, int(world_w)), max(1, int(world_h))
-    if ww <= VIEWPORT_PIXEL_W and wh <= VIEWPORT_PIXEL_H:
+    vw, vh = max(1, int(viewport_w)), max(1, int(viewport_h))
+    if ww <= vw and wh <= vh:
         return 0, 0
     cx, cy = clamp_camera_position(
-        cam.x, cam.y, world_w=ww, world_h=wh
+        cam.x, cam.y, world_w=ww, world_h=wh, viewport_w=vw, viewport_h=vh
     )
     if cam.mode == CAMERA_MODE_FIXED:
         return cx, cy
@@ -243,6 +246,8 @@ def resolve_scene_camera_viewport(
         cy,
         world_w=ww,
         world_h=wh,
+        viewport_w=vw,
+        viewport_h=vh,
         margin_x=cam.margin_x,
         margin_y=cam.margin_y,
     )

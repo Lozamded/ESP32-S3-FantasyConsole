@@ -36,7 +36,7 @@ PYTHONPATH=src python3 -m turtlestudio gui
 
 ## Convenciones
 
-- Espacio de escena y coordenadas: ver `spec/scene-v0.md` (264×198, origen abajo-izquierda, Y hacia arriba).
+- Espacio de escena y coordenadas: ver `spec/scene-v0.md` (164×124, origen abajo-izquierda, Y hacia arriba).
 - Formato cartucho: `spec/turtlecart-v0.md`.
 - Sprites y celdas (`cell_px` default **4**): `spec/sprite-v0.md`. Indice de paleta **31** = transparente (no seleccionable como pincel/fondo).
 - Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` (`entry` en `turtlestudio.json`) y forma el **ENTRY** embebido en **`main.turtlecart`**. Al exportar el paquete SD tambien se copia a **`scripts/`** junto con los Lua de escenas y de objetos con `"script"`. El cart embebe un **bundle delgado** (`studio/project_bundle.json`). Assets graficos: **`backgrounds/*.tbg`**, **`sprites/*.tsp`**, etc. (ver `spec/asset-bin-v0.md`). Copia **`build/`** entera a la SD.

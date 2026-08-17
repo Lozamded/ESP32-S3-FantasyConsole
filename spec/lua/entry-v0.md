@@ -31,8 +31,8 @@ Libreria estandar Lua (`luaL_openlibs`) esta disponible, pero el contrato soport
 
 | Nombre | Valor | Significado |
 |--------|-------|-------------|
-| `W` | `264` | Ancho del framebuffer logico |
-| `H` | `198` | Alto del framebuffer logico |
+| `W` | `164` | Ancho del framebuffer logico |
+| `H` | `124` | Alto del framebuffer logico |
 | `COLORS` | `32` | Indices de color validos `0..31` |
 
 ## API grafica
@@ -60,7 +60,7 @@ Dibuja un pixel en **espacio escena** (misma convencion que posiciones de objeto
 
 - `(0, 0)` = esquina **inferior izquierda**
 - **Y aumenta hacia arriba**
-- `sx` ∈ `0 .. 263`, `sy` ∈ `0 .. 197`
+- `sx` ∈ `0 .. 163`, `sy` ∈ `0 .. 123`
 
 Conversion interna: `yfb = (H - 1) - sy`, `xfb = sx`.
 

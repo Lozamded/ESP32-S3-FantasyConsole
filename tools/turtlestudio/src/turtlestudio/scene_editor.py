@@ -67,6 +67,7 @@ from turtlestudio.project import (
     manifest_path,
     parse_background_layers,
     parse_scene_objects_raw,
+    parse_viewport_from_manifest,
     save_project,
     scene_world_pixel_size,
 )
@@ -317,13 +318,15 @@ def render_scene_rgba(
     row: dict[str, Any],
     tile_px: int,
     *,
+    viewport_w: int = SCENE_PIXEL_W,
+    viewport_h: int = SCENE_PIXEL_H,
     paint_layer_index: int | None = None,
     hover_cell: tuple[int, int] | None = None,
     selected_parallax_band_index: int | None = None,
 ) -> tuple[list[float], int, int]:
     wsx = clamp_world_steps(row.get("world_steps_x", 1))
     wsy = clamp_world_steps(row.get("world_steps_y", 1))
-    fw, fh = scene_world_pixel_size(wsx, wsy)
+    fw, fh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
     rgba = [0.0] * (fw * fh * 4)
     for i in range(3, len(rgba), 4):
         rgba[i] = 1.0
@@ -380,11 +383,13 @@ def render_scene_rgba(
                 rgba, fw, fh, parallax_bands, selected_index=selected_parallax_band_index
             )
 
-    if fw > SCENE_PIXEL_W or fh > SCENE_PIXEL_H:
-        draw_scene_step_bounds_on_rgba(rgba, fw, fh)
+    if fw > viewport_w or fh > viewport_h:
+        draw_scene_step_bounds_on_rgba(rgba, fw, fh, step_w=viewport_w, step_h=viewport_h)
         cam = parse_scene_camera_from_row(row)
-        cam_x, cam_y = resolve_scene_camera_viewport(cam, world_w=fw, world_h=fh, objects=list(placements))
-        draw_scene_camera_viewport_on_rgba(rgba, fw, fh, cam_x, cam_y)
+        cam_x, cam_y = resolve_scene_camera_viewport(
+            cam, world_w=fw, world_h=fh, objects=list(placements), viewport_w=viewport_w, viewport_h=viewport_h
+        )
+        draw_scene_camera_viewport_on_rgba(rgba, fw, fh, cam_x, cam_y, viewport_w=viewport_w, viewport_h=viewport_h)
 
     return rgba, fw, fh
 
@@ -550,12 +555,18 @@ def _new_scene_row(sid: str, palette_rel: str, tile_px: int) -> dict[str, Any]:
     }
 
 
-def _normalize_row(row: dict[str, Any], tile_px: int) -> dict[str, Any]:
+def _normalize_row(
+    row: dict[str, Any],
+    tile_px: int,
+    *,
+    viewport_w: int = SCENE_PIXEL_W,
+    viewport_h: int = SCENE_PIXEL_H,
+) -> dict[str, Any]:
     """Round-trip a raw manifest scene row through the parse/serialize helpers."""
     r = dict(row)
     wsx = clamp_world_steps(r.get("world_steps_x", 1))
     wsy = clamp_world_steps(r.get("world_steps_y", 1))
-    ww, wh = scene_world_pixel_size(wsx, wsy)
+    ww, wh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
     r["world_steps_x"] = wsx
     r["world_steps_y"] = wsy
     layers = parse_background_layers(
@@ -590,6 +601,8 @@ class SceneEditorWidget(QWidget):
         self._active_id = ""
         self._current_index = -1
         self._tile_px = 16
+        self._viewport_w = SCENE_PIXEL_W
+        self._viewport_h = SCENE_PIXEL_H
         self._dirty = False
         self._paint_layer: int | None = None
         self._paint_tile_index = 0
@@ -612,8 +625,13 @@ class SceneEditorWidget(QWidget):
             QMessageBox.warning(self, tr("scene.read_error_title"), tr("scene.read_error_msg", manifest=MANIFEST_NAME, e=e))
             return
         self._tile_px = parse_tile_px_from_manifest(data)
+        self._viewport_w, self._viewport_h = parse_viewport_from_manifest(data)
         raw_scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
-        self._scenes = [_normalize_row(s, self._tile_px) for s in raw_scenes if isinstance(s, dict) and s.get("id")]
+        self._scenes = [
+            _normalize_row(s, self._tile_px, viewport_w=self._viewport_w, viewport_h=self._viewport_h)
+            for s in raw_scenes
+            if isinstance(s, dict) and s.get("id")
+        ]
         self._active_id = str(data.get("active_scene", "")).strip()
         if not self._scenes:
             self._current_index = -1
@@ -788,6 +806,16 @@ class SceneEditorWidget(QWidget):
             img_row.addWidget(chk_repeat)
             layout.addLayout(img_row)
 
+            row_widgets: dict[str, Any] = {
+                "enabled": chk,
+                "color": spin_color,
+                "opacity": spin_op,
+                "background": combo_bg,
+                "parallax_x": spin_px,
+                "fixed": chk_fixed,
+                "repeat_x": chk_repeat,
+            }
+
             if i == 0:
                 # Capa base: se hornea en el mundo estatico del firmware y usa el grupo de
                 # escena "Bandas de parallax" en vez de un Parallax X por capa (spec/scene-v0.md).
@@ -806,19 +834,91 @@ class SceneEditorWidget(QWidget):
                 chk.toggled.connect(self.parallax_bands_box.setVisible)
                 nested_row.addWidget(self.parallax_bands_box, stretch=1)
                 layout.addLayout(nested_row)
+            else:
+                # spec/scene-v1.md "Bandas propias por capas 2-4": misma idea que el grupo de
+                # Capa 1 de arriba, pero anidada en esta entrada de background_layers y con su
+                # propio "parallax_bands" (anula Parallax X/Fija/Repetir X de esta capa).
+                nested_row = QHBoxLayout()
+                nested_row.addSpacing(20)
+                bands_box, bands_widgets = self._build_layer_parallax_bands_group(i)
+                bands_box.setVisible(chk.isChecked())
+                chk.toggled.connect(bands_box.setVisible)
+                nested_row.addWidget(bands_box, stretch=1)
+                layout.addLayout(nested_row)
+                row_widgets["bands"] = bands_widgets
 
-            self.bg_layer_rows.append(
-                {
-                    "enabled": chk,
-                    "color": spin_color,
-                    "opacity": spin_op,
-                    "background": combo_bg,
-                    "parallax_x": spin_px,
-                    "fixed": chk_fixed,
-                    "repeat_x": chk_repeat,
-                }
-            )
+            self.bg_layer_rows.append(row_widgets)
         return box
+
+    def _build_layer_parallax_bands_group(self, layer_idx: int) -> tuple[QGroupBox, dict[str, Any]]:
+        """Grupo de bandas anidado bajo background_layers[layer_idx] (capas 2-4). Misma
+        estructura que _build_parallax_bands_group (Capa 1), parametrizada por indice de
+        capa; los widgets viven en `self.bg_layer_rows[layer_idx]["bands"]`, no como
+        atributos sueltos, para no repetir `self.list_parallax_bands` etc. tres veces."""
+        box = QGroupBox(tr("scene.parallax_group_layer_n", n=layer_idx + 1))
+        layout = QVBoxLayout(box)
+        hint = QLabel(tr("scene.parallax_hint_layer"))
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        chk_enabled = QCheckBox(tr("scene.parallax_enabled_label"))
+        chk_enabled.toggled.connect(lambda v, idx=layer_idx: self._on_layer_bands_enabled_toggled(idx, v))
+        layout.addWidget(chk_enabled)
+
+        list_bands = QListWidget()
+        list_bands.currentRowChanged.connect(lambda v, idx=layer_idx: self._on_layer_band_selected(idx, v))
+        layout.addWidget(list_bands)
+
+        band_btn_row = QHBoxLayout()
+        btn_add = QPushButton(tr("scene.parallax_add_band"))
+        btn_add.clicked.connect(lambda _v, idx=layer_idx: self._action_add_layer_band(idx))
+        band_btn_row.addWidget(btn_add)
+        btn_remove = QPushButton(tr("scene.parallax_remove_band"))
+        btn_remove.clicked.connect(lambda _v, idx=layer_idx: self._action_remove_layer_band(idx))
+        band_btn_row.addWidget(btn_remove)
+        layout.addLayout(band_btn_row)
+
+        edit_form = QFormLayout()
+        max_y = SCENE_PIXEL_H * 2 - 1
+        spin_y0 = QSpinBox()
+        spin_y0.setRange(0, max_y)
+        spin_y0.valueChanged.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
+        edit_form.addRow(tr("scene.parallax_y0_label"), spin_y0)
+        spin_y1 = QSpinBox()
+        spin_y1.setRange(0, max_y)
+        spin_y1.valueChanged.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
+        edit_form.addRow(tr("scene.parallax_y1_label"), spin_y1)
+        spin_x = QDoubleSpinBox()
+        spin_x.setRange(0.0, 2.0)
+        spin_x.setSingleStep(0.05)
+        spin_x.setDecimals(2)
+        spin_x.valueChanged.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
+        edit_form.addRow(tr("scene.parallax_x_label"), spin_x)
+        layout.addLayout(edit_form)
+        flags_row = QHBoxLayout()
+        chk_fixed = QCheckBox(tr("scene.parallax_fixed_label"))
+        chk_fixed.toggled.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
+        flags_row.addWidget(chk_fixed)
+        chk_repeat_x = QCheckBox(tr("scene.parallax_repeat_x_label"))
+        chk_repeat_x.toggled.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
+        flags_row.addWidget(chk_repeat_x)
+        layout.addLayout(flags_row)
+
+        widgets: dict[str, Any] = {
+            "box": box,
+            "enabled": chk_enabled,
+            "list": list_bands,
+            "add": btn_add,
+            "remove": btn_remove,
+            "y0": spin_y0,
+            "y1": spin_y1,
+            "x": spin_x,
+            "fixed": chk_fixed,
+            "repeat_x": chk_repeat_x,
+        }
+        widgets["editor_widgets"] = [list_bands, btn_add, btn_remove, spin_y0, spin_y1, spin_x, chk_fixed, chk_repeat_x]
+        return box, widgets
 
     def _build_tile_layers_group(self) -> QGroupBox:
         box = QGroupBox(tr("scene.tile_layers_group"))
@@ -1044,7 +1144,8 @@ class SceneEditorWidget(QWidget):
         layers = row.get("background_layers") or []
         for i, widgets in enumerate(self.bg_layer_rows):
             d = layers[i] if i < len(layers) and isinstance(layers[i], dict) else {}
-            for w in widgets.values():
+            uniform_widgets = [w for k, w in widgets.items() if k != "bands"]
+            for w in uniform_widgets:
                 w.blockSignals(True)
             widgets["enabled"].setChecked(bool(d.get("enabled")))
             widgets["color"].setValue(int(d.get("color_index", 1)))
@@ -1054,10 +1155,13 @@ class SceneEditorWidget(QWidget):
             widgets["parallax_x"].setValue(float(d.get("parallax_x", 1.0)))
             widgets["fixed"].setChecked(bool(d.get("fixed", False)))
             widgets["repeat_x"].setChecked(bool(d.get("repeat_x", False)))
-            for w in widgets.values():
+            for w in uniform_widgets:
                 w.blockSignals(False)
             if i == 0:
                 self.parallax_bands_box.setVisible(widgets["enabled"].isChecked())
+            else:
+                self._load_layer_bands(i, d)
+                widgets["bands"]["box"].setVisible(widgets["enabled"].isChecked())
 
     def _refresh_tileset_combos(self, palette_rel: str) -> None:
         stems = list_tileset_stems_for_palette(self.project_root, palette_rel)
@@ -1218,6 +1322,8 @@ class SceneEditorWidget(QWidget):
             self.project_root,
             row,
             self._tile_px,
+            viewport_w=self._viewport_w,
+            viewport_h=self._viewport_h,
             paint_layer_index=self._paint_layer,
             hover_cell=self._hover_cell,
             selected_parallax_band_index=selected_band if selected_band >= 0 else None,
@@ -1326,7 +1432,9 @@ class SceneEditorWidget(QWidget):
             return
         row["world_steps_x"] = self.spin_world_x.value()
         row["world_steps_y"] = self.spin_world_y.value()
-        ww, wh = scene_world_pixel_size(row["world_steps_x"], row["world_steps_y"])
+        ww, wh = scene_world_pixel_size(
+            row["world_steps_x"], row["world_steps_y"], base_w=self._viewport_w, base_h=self._viewport_h
+        )
         layers = parse_tile_layers(row.get("tile_layers"), tile_px=self._tile_px, world_w=ww, world_h=wh)
         row["tile_layers"] = tile_layers_to_json_list(layers)
         if isinstance(row.get("parallax_bands"), list):
@@ -1349,20 +1457,194 @@ class SceneEditorWidget(QWidget):
         row = self._current_row()
         if row is None:
             return
+        # Este handler reconstruye las 4 entradas enteras a partir de los widgets uniformes
+        # cada vez que cualquiera de ellos cambia -- "parallax_bands" (capas 2-4) no tiene
+        # widget uniforme propio, asi que hay que preservarlo de la entrada existente o se
+        # perderia con la primera edicion de color/opacidad/etc. de esa capa.
+        existing = row.get("background_layers") or []
         layers = []
-        for widgets in self.bg_layer_rows:
-            layers.append(
-                {
-                    "enabled": widgets["enabled"].isChecked(),
-                    "color_index": widgets["color"].value(),
-                    "opacity": widgets["opacity"].value(),
-                    "background": widgets["background"].currentData() or "",
-                    "parallax_x": widgets["parallax_x"].value(),
-                    "fixed": widgets["fixed"].isChecked(),
-                    "repeat_x": widgets["repeat_x"].isChecked(),
-                }
-            )
+        for i, widgets in enumerate(self.bg_layer_rows):
+            d: dict[str, Any] = {
+                "enabled": widgets["enabled"].isChecked(),
+                "color_index": widgets["color"].value(),
+                "opacity": widgets["opacity"].value(),
+                "background": widgets["background"].currentData() or "",
+                "parallax_x": widgets["parallax_x"].value(),
+                "fixed": widgets["fixed"].isChecked(),
+                "repeat_x": widgets["repeat_x"].isChecked(),
+            }
+            if i < len(existing) and isinstance(existing[i], dict):
+                prev_bands = existing[i].get("parallax_bands")
+                if isinstance(prev_bands, list):
+                    d["parallax_bands"] = prev_bands
+            layers.append(d)
         row["background_layers"] = layers
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _layer_band_widgets(self, layer_idx: int) -> dict[str, Any]:
+        return self.bg_layer_rows[layer_idx]["bands"]
+
+    def _load_layer_bands(self, layer_idx: int, d: dict[str, Any]) -> None:
+        w = self._layer_band_widgets(layer_idx)
+        bands = d.get("parallax_bands")
+        has_bands = isinstance(bands, list)
+        w["enabled"].blockSignals(True)
+        w["enabled"].setChecked(has_bands)
+        w["enabled"].blockSignals(False)
+        w["list"].blockSignals(True)
+        w["list"].clear()
+        if has_bands:
+            for b in bands:
+                if isinstance(b, dict):
+                    w["list"].addItem(self._parallax_band_summary(b))
+        w["list"].blockSignals(False)
+        self._set_layer_band_controls_enabled(layer_idx, has_bands)
+        self._load_layer_band_editor(layer_idx, None)
+
+    def _set_layer_band_controls_enabled(self, layer_idx: int, enabled: bool) -> None:
+        w = self._layer_band_widgets(layer_idx)
+        for widget in w["editor_widgets"]:
+            widget.setEnabled(enabled)
+        if not enabled:
+            self._load_layer_band_editor(layer_idx, None)
+
+    def _load_layer_band_editor(self, layer_idx: int, d: dict[str, Any] | None) -> None:
+        w = self._layer_band_widgets(layer_idx)
+        fields = (w["y0"], w["y1"], w["x"], w["fixed"], w["repeat_x"])
+        for widget in fields:
+            widget.blockSignals(True)
+        vals = d or {}
+        w["y0"].setValue(int(vals.get("y0", 0)))
+        w["y1"].setValue(int(vals.get("y1", 0)))
+        w["x"].setValue(float(vals.get("parallax_x", 1.0)))
+        w["fixed"].setChecked(bool(vals.get("fixed", False)))
+        w["repeat_x"].setChecked(bool(vals.get("repeat_x", False)))
+        for widget in fields:
+            widget.blockSignals(False)
+            widget.setEnabled(d is not None and w["enabled"].isChecked())
+
+    def _bands_enabled_layer_count(self, row: dict[str, Any]) -> int:
+        """Capas (0-4) con bandas de parallax activas -- capa 1 via row["parallax_bands"],
+        capas 2-4 via su propio background_layers[i]["parallax_bands"] (spec/scene-v1.md)."""
+        count = 1 if isinstance(row.get("parallax_bands"), list) else 0
+        layers = row.get("background_layers")
+        if isinstance(layers, list):
+            for i, ly in enumerate(layers):
+                if i == 0 or not isinstance(ly, dict):
+                    continue
+                if isinstance(ly.get("parallax_bands"), list):
+                    count += 1
+        return count
+
+    def _warn_if_multiple_bands_layers(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        if self._bands_enabled_layer_count(row) > 1:
+            QMessageBox.warning(
+                self, tr("scene.parallax_group"), tr("scene.parallax_multi_layer_perf_warning")
+            )
+
+    def _on_layer_bands_enabled_toggled(self, layer_idx: int, checked: bool) -> None:
+        if self._suspend:
+            return
+        row = self._current_row()
+        if row is None:
+            return
+        layers = row.get("background_layers")
+        if not isinstance(layers, list) or layer_idx >= len(layers):
+            return
+        d = layers[layer_idx]
+        if not isinstance(d, dict):
+            return
+        if checked:
+            if not isinstance(d.get("parallax_bands"), list):
+                d["parallax_bands"] = []
+        else:
+            d.pop("parallax_bands", None)
+        self._mark_dirty()
+        self._load_layer_bands(layer_idx, d)
+        self._refresh_canvas()
+        if checked:
+            self._warn_if_multiple_bands_layers()
+
+    def _action_add_layer_band(self, layer_idx: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        layers = row.get("background_layers")
+        if not isinstance(layers, list) or layer_idx >= len(layers):
+            return
+        d = layers[layer_idx]
+        bands = d.get("parallax_bands") if isinstance(d, dict) else None
+        if not isinstance(bands, list):
+            return
+        if len(bands) >= MAX_PARALLAX_BANDS:
+            QMessageBox.warning(
+                self, tr("scene.parallax_group"), tr("scene.parallax_max_bands", n=MAX_PARALLAX_BANDS)
+            )
+            return
+        wh = self._parallax_world_h(row)
+        bands.append(scene_parallax_band_to_json(clamp_parallax_band(SceneParallaxBand(), world_h=wh)))
+        self._mark_dirty()
+        self._load_layer_bands(layer_idx, d)
+        self._layer_band_widgets(layer_idx)["list"].setCurrentRow(len(bands) - 1)
+        self._refresh_canvas()
+
+    def _action_remove_layer_band(self, layer_idx: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        layers = row.get("background_layers")
+        if not isinstance(layers, list) or layer_idx >= len(layers):
+            return
+        d = layers[layer_idx]
+        bands = d.get("parallax_bands") if isinstance(d, dict) else None
+        if not isinstance(bands, list):
+            return
+        idx = self._layer_band_widgets(layer_idx)["list"].currentRow()
+        if 0 <= idx < len(bands):
+            del bands[idx]
+            self._mark_dirty()
+            self._load_layer_bands(layer_idx, d)
+            self._refresh_canvas()
+
+    def _on_layer_band_selected(self, layer_idx: int, index: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        layers = row.get("background_layers")
+        d = layers[layer_idx] if isinstance(layers, list) and layer_idx < len(layers) else None
+        bands = d.get("parallax_bands") if isinstance(d, dict) else None
+        band = bands[index] if isinstance(bands, list) and 0 <= index < len(bands) else None
+        self._load_layer_band_editor(layer_idx, band)
+
+    def _on_layer_band_edited(self, layer_idx: int, *_args: Any) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        layers = row.get("background_layers")
+        if not isinstance(layers, list) or layer_idx >= len(layers):
+            return
+        d = layers[layer_idx]
+        bands = d.get("parallax_bands") if isinstance(d, dict) else None
+        w = self._layer_band_widgets(layer_idx)
+        idx = w["list"].currentRow()
+        if not isinstance(bands, list) or not (0 <= idx < len(bands)):
+            return
+        wh = self._parallax_world_h(row)
+        raw = SceneParallaxBand(
+            y0=w["y0"].value(),
+            y1=w["y1"].value(),
+            parallax_x=w["x"].value(),
+            fixed=w["fixed"].isChecked(),
+            repeat_x=w["repeat_x"].isChecked(),
+        )
+        bands[idx] = scene_parallax_band_to_json(clamp_parallax_band(raw, world_h=wh))
+        w["list"].blockSignals(True)
+        w["list"].item(idx).setText(self._parallax_band_summary(bands[idx]))
+        w["list"].blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
 
@@ -1406,7 +1688,7 @@ class SceneEditorWidget(QWidget):
         layer = layers[self._paint_layer]
         ws_x = int(row.get("world_steps_x", 1))
         ws_y = int(row.get("world_steps_y", 1))
-        ww, wh = scene_world_pixel_size(ws_x, ws_y)
+        ww, wh = scene_world_pixel_size(ws_x, ws_y, base_w=self._viewport_w, base_h=self._viewport_h)
         cell = scene_coords_to_cell(sx, sy, tile_px=self._tile_px, world_w=ww, world_h=wh)
         if cell is None:
             return
@@ -1434,7 +1716,7 @@ class SceneEditorWidget(QWidget):
         if not isinstance(objs, list):
             objs = []
             row["objects"] = objs
-        objs.append({"id": oid, "x": SCENE_PIXEL_W // 2, "y": SCENE_PIXEL_H // 2})
+        objs.append({"id": oid, "x": self._viewport_w // 2, "y": self._viewport_h // 2})
         self._mark_dirty()
         self._load_objects(row)
         self._refresh_canvas()
@@ -1506,7 +1788,7 @@ class SceneEditorWidget(QWidget):
     def _parallax_world_h(self, row: dict[str, Any]) -> int:
         ws_x = int(row.get("world_steps_x", 1))
         ws_y = int(row.get("world_steps_y", 1))
-        _ww, wh = scene_world_pixel_size(ws_x, ws_y)
+        _ww, wh = scene_world_pixel_size(ws_x, ws_y, base_w=self._viewport_w, base_h=self._viewport_h)
         return wh
 
     def _on_parallax_enabled_toggled(self, checked: bool) -> None:
@@ -1523,6 +1805,8 @@ class SceneEditorWidget(QWidget):
         self._mark_dirty()
         self._load_parallax_bands(row)
         self._refresh_canvas()
+        if checked:
+            self._warn_if_multiple_bands_layers()
 
     def _action_add_parallax_band(self) -> None:
         row = self._current_row()

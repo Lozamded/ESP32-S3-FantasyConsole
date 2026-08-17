@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -18,6 +20,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from turtlestudio.background_import_dialog import BackgroundImportDialog
 from turtlestudio.backgrounds import (
     MAX_BACKGROUND_PIXEL_H,
     MAX_BACKGROUND_PIXEL_W,
@@ -36,7 +39,13 @@ from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
 from turtlestudio.i18n import tr
 from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import PALETTE_SIZE, TRANSPARENT_PALETTE_INDEX
-from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL, SCENE_PIXEL_H, SCENE_PIXEL_W
+from turtlestudio.project import (
+    DEFAULT_EXAMPLE_PALETTE_REL,
+    SCENE_PIXEL_H,
+    SCENE_PIXEL_W,
+    manifest_path,
+    parse_viewport_from_manifest,
+)
 from turtlestudio.sprite_editor import SpriteCanvas, Tool
 from turtlestudio.sprites import normalize_palette_rows, solid_fill_indices
 
@@ -64,6 +73,17 @@ class BackgroundEditorWidget(QWidget):
 
     def set_project_root(self, root: Path) -> None:
         self.project_root = root
+        try:
+            data = json.loads(manifest_path(root).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            data = {}
+        self.pixel_w, self.pixel_h = parse_viewport_from_manifest(data)
+        self.spin_pw.blockSignals(True)
+        self.spin_pw.setValue(self.pixel_w)
+        self.spin_pw.blockSignals(False)
+        self.spin_ph.blockSignals(True)
+        self.spin_ph.setValue(self.pixel_h)
+        self.spin_ph.blockSignals(False)
         self.refresh_background_list()
 
     def refresh_background_list(self) -> None:
@@ -141,6 +161,10 @@ class BackgroundEditorWidget(QWidget):
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
+        self.btn_bucket = QPushButton(tr("common.bucket"))
+        self.btn_bucket.setCheckable(True)
+        self.btn_bucket.clicked.connect(lambda: self._set_tool(Tool.BUCKET))
+        tools.addWidget(self.btn_bucket)
         tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(1, 16)
@@ -170,6 +194,9 @@ class BackgroundEditorWidget(QWidget):
         self.btn_resize = QPushButton(tr("common.resize"))
         self.btn_resize.clicked.connect(self._action_resize)
         form.addRow(self.btn_resize)
+        self.btn_import = QPushButton(tr("background.import_button"))
+        self.btn_import.clicked.connect(self._action_import_image)
+        form.addRow(self.btn_import)
         self.lbl_solid_preview = QLabel("")
         self.lbl_solid_preview.setFixedSize(60, 24)
         self.lbl_solid_preview.setStyleSheet("border: 1px solid #555;")
@@ -253,6 +280,7 @@ class BackgroundEditorWidget(QWidget):
         self.btn_pencil.setChecked(tool == Tool.PENCIL)
         self.btn_eraser.setChecked(tool == Tool.ERASER)
         self.btn_dropper.setChecked(tool == Tool.EYEDROPPER)
+        self.btn_bucket.setChecked(tool == Tool.BUCKET)
 
     # ------------------------------------------------------------------
     # Slots
@@ -293,6 +321,25 @@ class BackgroundEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_canvas()
 
+    def _action_import_image(self) -> None:
+        if not self.background_id:
+            QMessageBox.warning(self, tr("background.import_button"), tr("background.import_no_background_open"))
+            return
+        rgbs01 = [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in self.grid.colors()]
+        dlg = BackgroundImportDialog(self.project_root, self.pixel_w, self.pixel_h, rgbs01, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        rows = dlg.result_rows()
+        if rows is None:
+            return
+        self.mode = MODE_INDEXED
+        self.rows = rows
+        self.combo_mode.blockSignals(True)
+        self.combo_mode.setCurrentIndex(self.combo_mode.findData(self.mode))
+        self.combo_mode.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_canvas()
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -315,8 +362,8 @@ class BackgroundEditorWidget(QWidget):
                 bid,
                 palette_rel=pal,
                 palette_index=0,
-                pixel_w=SCENE_PIXEL_W,
-                pixel_h=SCENE_PIXEL_H,
+                pixel_w=self.pixel_w,
+                pixel_h=self.pixel_h,
             )
         except ValueError as e:
             QMessageBox.warning(self, tr("background.new_title"), str(e))

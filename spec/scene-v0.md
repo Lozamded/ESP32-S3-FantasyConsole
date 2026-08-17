@@ -4,8 +4,8 @@ Documento **pre-paso 1**: define el espacio logico en el que un cartucho `.turtl
 
 ## Escena basica (canonica)
 
-- **Vista (viewport)** en consola: **264 × 198** píxeles logicos (lo que muestra el panel).
-- **Mundo** opcionalmente mas grande: en el manifest de escena, `world_steps_x` y `world_steps_y` (enteros **1..2**) multiplican la vista. Ejemplo: `world_steps_x: 2` → ancho **528** (dos “pantallas” horizontales). Por defecto ambos son **1** (mundo = vista).
+- **Vista (viewport)** en consola: **164 × 124** píxeles logicos (lo que muestra el panel).
+- **Mundo** opcionalmente mas grande: en el manifest de escena, `world_steps_x` y `world_steps_y` (enteros **1..2**) multiplican la vista. Ejemplo: `world_steps_x: 2` → ancho **328** (dos “pantallas” horizontales). Por defecto ambos son **1** (mundo = vista).
 - El **firmware** recorta al viewport con camara configurable (`camera` en manifest / `scenes/<id>.json`):
   - **`mode`**: `follow` (por defecto) o `fixed`.
   - **`target`**: id de objeto a seguir (vacio = `character`, luego `player`, luego el primero de `objects`).
@@ -20,9 +20,9 @@ Array opcional en el bloque de la escena, junto a `camera`/`world_steps_x`/`worl
 
 ```json
 "parallax_bands": [
-  { "y0": 140, "y1": 197, "parallax_x": 1.0 },
-  { "y0": 70,  "y1": 139, "parallax_x": 0.5, "repeat_x": true },
-  { "y0": 0,   "y1": 69,  "parallax_x": 0.15, "repeat_x": true }
+  { "y0": 88, "y1": 123, "parallax_x": 1.0 },
+  { "y0": 44, "y1": 87,  "parallax_x": 0.5, "repeat_x": true },
+  { "y0": 0,  "y1": 43,  "parallax_x": 0.15, "repeat_x": true }
 ]
 ```
 
@@ -68,7 +68,8 @@ la capa base.
 - **`parallax_x`** / **`fixed`** / **`repeat_x`** (solo capas 2-4; sin efecto en capa 1, que usa `parallax_bands` en su lugar): mismo significado y limites que en `parallax_bands` (0.0..2.0, offset 0 si `fixed`, `modulo` el ancho propio de la imagen si `repeat_x`). Matematicamente equivale a una sola banda de `parallax_bands` que cubre toda la altura de la capa.
 - **`color_index`/`opacity`** no cambian de significado: siguen siendo solo para el `cls()` de respaldo (`firmware_background_index_from_layers` en TurtleStudio); no se usan para mezclar con la imagen de la capa (sin alpha blending, ver mas abajo).
 - **Anclaje**: cada capa se ancla en la esquina inferior del mundo (`scene_y` 0); filas de escena por encima de la altura propia de la imagen (`pixel_h` de ese asset) simplemente no se pintan por esa capa — no hay offset vertical configurable en v0.
-- **Costo real, no gratis (capas 2-4)**: cada una reserva **su propio buffer** en RAM (PSRAM si hay, DRAM si no) del tamano de esa imagen (`pixel_w × pixel_h` bytes, 1 byte/pixel indexado) — **ademas** del buffer de mundo (`s_world_bg`, hasta 528×396 = 209 088 bytes, que ya incluye la imagen de capa 1 horneada). Capas 2-4 no se hornean (cada una debe poder desplazarse a su propio ritmo), asi que se repintan por separado cada fotograma con scroll — una pasada extra por capa habilitada. No hay un tope de PSRAM documentado en este repo para verificar contra el, asi que probar en hardware real es la unica forma de confirmar que un proyecto concreto cabe. Recomendado: imagenes pequenas (p. ej. el ancho de una pantalla) con `repeat_x: true` para las capas lejanas, en vez de imagenes del tamano del mundo completo.
+- **Costo real, no gratis (capas 2-4)**: cada una reserva **su propio buffer** en RAM (PSRAM si hay, DRAM si no) del tamano de esa imagen (`pixel_w × pixel_h` bytes, 1 byte/pixel indexado) — **ademas** del buffer de mundo (`s_world_bg`, hasta 328×248 = 81 344 bytes, que ya incluye la imagen de capa 1 horneada). Capas 2-4 no se hornean (cada una debe poder desplazarse a su propio ritmo), asi que se repintan por separado cada fotograma con scroll — una pasada extra por capa habilitada. No hay un tope de PSRAM documentado en este repo para verificar contra el, asi que probar en hardware real es la unica forma de confirmar que un proyecto concreto cabe. Recomendado: imagenes pequenas (p. ej. el ancho de una pantalla) con `repeat_x: true` para las capas lejanas, en vez de imagenes del tamano del mundo completo.
+- **Orden de pintado vs. tiles**: capas 2-4 van **por debajo de los tiles** (encima solo de capa 1). Como capa 1 + tiles normalmente se hornean juntos en `s_world_bg` (una sola pasada, sin costo por fotograma), lograr ese orden con capas 2-4 en medio exige un costo extra: en cuanto una escena tiene alguna capa 2-4 habilitada, el firmware **no hornea los tiles** (`prepare_world_static_composite` en `turtle_scene.cpp` se salta `bake_tile_layers_into_world`) y en su lugar los vuelve a dibujar en vivo cada fotograma, despues de pintar las capas 2-4, con el mismo camino que ya existia para el caso sin buffer de mundo (`draw_tile_layers_for_scene`). Es decir: usar cualquier capa 2-4 le agrega a la escena el costo de redibujar tiles cada fotograma, no solo el de la capa en si. Escenas sin capas 2-4 habilitadas no pagan esto — siguen horneando tiles una sola vez, como siempre.
 - **Migracion desde el campo `background` suelto**: TurtleStudio mueve automaticamente ese valor a `background_layers[0].background` la primera vez que abre o guarda un proyecto viejo (`project.py`, `_normalize_scenes_for_save`/`_parse_scenes_from_manifest`). El firmware, por su parte, sigue aceptando el campo suelto como respaldo si `background_layers[0].background` esta vacio (`resolve_scene_base_background_id` en `turtle_scene.cpp`) — para no romper carts ya exportados sin tener que reexportarlos.
 
 ### Fuera de alcance v0 (capas con imagen)
@@ -86,17 +87,17 @@ la capa base.
 
 ### Rango y malla de píxeles
 
-- Las coordenadas son **enteras** para direccionar celdas de una cuadricula de **264 columnas × 198 filas**.
+- Las coordenadas son **enteras** para direccionar celdas de una cuadricula de **164 columnas × 124 filas**.
 - **Rango valido** para dibujar un píxel en la escena:
-  - `x` ∈ **{ 0, 1, …, 263 }**
-  - `y` ∈ **{ 0, 1, …, 197 }**
+  - `x` ∈ **{ 0, 1, …, 163 }**
+  - `y` ∈ **{ 0, 1, …, 123 }**
 - El píxel en `(x, y)` es la celda cuya esquina inferior izquierda coincide con el punto `(x, y)` en este sistema.
 
 ## Relacion con el framebuffer del runtime (hoy)
 
 El buffer que usa el firmware para `pix()` y el panel sigue la convencion habitual de **raster**: la fila **0** es la **superior** de la imagen y **Y aumenta hacia abajo**.
 
-Para pasar de **coordenadas de escena** `(sx, sy)` a **coordenadas de framebuffer** `(xfb, yfb)` con `H = 198`:
+Para pasar de **coordenadas de escena** `(sx, sy)` a **coordenadas de framebuffer** `(xfb, yfb)` con `H = 124`:
 
 ```text
 xfb = sx
@@ -109,7 +110,7 @@ Las **herramientas** y la **documentacion de cartuchos** deben hablar en **espac
 
 ## Que es una “escena” en el cartucho (v0)
 
-En **v0** no hace falta un bloque obligatorio en el `.turtlecart`: si no se declara nada, se asume la **escena canonica** (264×198, sistema de coordenadas anterior).
+En **v0** no hace falta un bloque obligatorio en el `.turtlecart`: si no se declara nada, se asume la **escena canonica** (164×124, sistema de coordenadas anterior).
 
 Mas adelante se puede anadir, por ejemplo:
 
@@ -139,7 +140,7 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 ## Vista previa TurtleStudio (canvas)
 
 - Las **cuatro capas de fondo** admiten opacidad `0..255` en el manifest; el estudio las mezcla en la vista previa en el mismo orden que el firmware las pinta (capa 1 primero, luego 2-4) — incluida la imagen de cada capa si tiene `background`, no solo el color plano de respaldo.
-- Hasta **cuatro capas de tiles** por escena (`tile_layers` en el manifest y en `scenes/<id>.json`): cada capa tiene `enabled`, `tileset` (stem de `tiles/<tileset>.json`) y `cells` (matriz de indices de tile en la rejilla de la escena). Solo se listan tilesets cuya `palette` coincide con la de la escena. La rejilla usa `tiles.tile_px` del proyecto (multiplo de 4). Celda vacia = indice **31** (transparente). El editor pinta con clic / arrastrar en el canvas de escena (capa activa + tile elegido). En el panel de escena, el **pincel** es una fila de miniaturas (T0, T1, …) del tileset activo; clic en una para seleccionarla (borde amarillo). En el canvas, **Rejilla tiles** dibuja lineas cada `tile_px` px; con capa tile activa, la celda bajo el cursor se resalta en amarillo.
+- Hasta **cuatro capas de tiles** por escena (`tile_layers` en el manifest y en `scenes/<id>.json`): cada capa tiene `enabled`, `tileset` (stem de `tiles/<tileset>.json`) y `cells` (matriz de indices de tile en la rejilla de la escena). Solo se listan tilesets cuya `palette` coincide con la de la escena. La rejilla usa `tiles.tile_px` del proyecto (multiplo de 8, default 8 — estandar tipo GB/GG). Celda vacia = indice **31** (transparente). El editor pinta con clic / arrastrar en el canvas de escena (capa activa + tile elegido). En el panel de escena, el **pincel** es una fila de miniaturas (T0, T1, …) del tileset activo; clic en una para seleccionarla (borde amarillo). En el canvas, **Rejilla tiles** dibuja lineas cada `tile_px` px; con capa tile activa, la celda bajo el cursor se resalta en amarillo.
 - **Collision por tile** (TurtleStudio, pestaña Tiles): en `tiles/<id>.json`, cada entrada de `tiles[]` puede llevar `collision`: omitido o `"solid"` = celda entera solida (defecto); `"none"` = decoracion (sin bloqueo); objeto con `mode` `aabb` (y en JSON tambien `triangle` / `hexagon` como en objetos) = forma en espacio local del tile, origen **(0,0)** esquina inferior izquierda, **Y hacia arriba**. Opcional **`oneway`** + **`oneway_direction`** (`up` | `down` | `left` | `right`): collision unidireccional (en el estudio: casilla + combo de direccion); con forma custom van dentro del objeto `collision`, con solido van al mismo nivel que `image`. **TurtleReader** carga metadatos desde `tiles/<id>.json` en la SD (o `tiles[]` inline en el bundle) al resolver el `.tts`; `triangle`/`hexagon` se aproximan por caja (AABB de los puntos).
 - La **capa de sprites** (objetos colocados en la escena) tiene en el editor **Mostrar sprites** y **Opacidad sprites (vista previa)** `0..255`; no se guarda en el proyecto. Las cruces de ancla siguen visibles para colocar objetos.
 
@@ -150,7 +151,7 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 
 ## Resumen para compiladores / generadores
 
-1. Tratar **264×198** como tamano de **vista**; mundo = pasos × vista (v0: pasos 1 o 2 por eje).
+1. Tratar **164×124** como tamano de **vista**; mundo = pasos × vista (v0: pasos 1 o 2 por eje).
 2. Emitir posiciones y disenos pensando **Y hacia arriba** y **(0,0) abajo-izquierda**.
-3. Si el generador emite Lua que llama al `pix()` actual del firmware, aplicar la conversion `yfb = 197 - sy` (o `H-1` con `H=198`) al generar coordenadas.
+3. Si el generador emite Lua que llama al `pix()` actual del firmware, aplicar la conversion `yfb = 123 - sy` (o `H-1` con `H=124`) al generar coordenadas.
 4. Los scripts de objeto usan **`move(dx, dy)`** y **`posx()` / `posy()`** directamente en espacio escena; ver **`spec/lua/object-script-v0.md`**.

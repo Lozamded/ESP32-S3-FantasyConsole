@@ -34,8 +34,8 @@ def scene_tile_grid_dimensions(
 ) -> tuple[int, int]:
     """(columnas, filas); fila 0 = arriba de la escena."""
     px = normalize_tile_px(tile_px)
-    ww = max(SCENE_PIXEL_W, int(world_w))
-    wh = max(SCENE_PIXEL_H, int(world_h))
+    ww = max(1, int(world_w))
+    wh = max(1, int(world_h))
     return (max(1, ww // px), max(1, wh // px))
 
 
@@ -328,8 +328,8 @@ def scene_coords_to_cell(
         tile_px, world_w=world_w, world_h=world_h
     )
     px = normalize_tile_px(tile_px)
-    ww = max(SCENE_PIXEL_W, int(world_w))
-    wh = max(SCENE_PIXEL_H, int(world_h))
+    ww = max(1, int(world_w))
+    wh = max(1, int(world_h))
     if sx < 0 or sy < 0 or sx >= ww or sy >= wh:
         return None
     gx = sx // px

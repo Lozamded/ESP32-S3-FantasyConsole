@@ -7,6 +7,7 @@ common.zoom,Zoom:,Zoom:
 common.pencil,Lapiz,Pencil
 common.eraser,Borrador,Eraser
 common.eyedropper,Cuentagotas,Eyedropper
+common.bucket,Cubo,Bucket
 common.resize,Redimensionar,Resize
 common.no_palettes,El proyecto no tiene paletas.,The project has no palettes.
 common.error,Error,Error
@@ -54,6 +55,15 @@ sprite.open_error_title,Abrir sprite,Open sprite
 sprite.new_title,Nuevo sprite,New sprite
 sprite.new_id_label,Id del sprite:,Sprite id:
 sprite.save_error_title,Guardar sprite,Save sprite
+sprite.import_button,Importar imagen…,Import image…
+sprite.import_dialog_title,Importar imagen,Import image
+sprite.import_file_label,Archivo:,File:
+sprite.import_browse_button,Examinar…,Browse…
+sprite.import_file_filter,Imagenes (*.png *.jpg *.jpeg *.webp *.bmp),Images (*.png *.jpg *.jpeg *.webp *.bmp)
+sprite.import_alpha_cutoff_label,Umbral alfa (%):,Alpha cutoff (%):
+sprite.import_no_sprite_open,Abre o crea un sprite primero.,Open or create a sprite first.
+sprite.import_load_error,No se pudo cargar la imagen: {e},Could not load the image: {e}
+sprite.import_frame_note,Se reemplaza el fotograma actual ({n}).,Replaces the current frame ({n}).
 scene.label,Escena:,Scene:
 scene.new_scene_button,Nueva…,New…
 scene.delete_button,Eliminar,Delete
@@ -98,6 +108,9 @@ scene.parallax_y1_label,Y1:,Y1:
 scene.parallax_x_label,Parallax X:,Parallax X:
 scene.parallax_fixed_label,Fija,Fixed
 scene.parallax_repeat_x_label,Repetir X,Repeat X
+scene.parallax_group_layer_n,Bandas de parallax (Capa {n}),Parallax bands (Layer {n})
+scene.parallax_hint_layer,"Bandas propias de esta capa: si hay al menos una, anulan Parallax X/Fija/Repetir X de arriba para esta capa (spec/scene-v1.md).","This layer's own bands: if there's at least one, they override this layer's Parallax X/Fixed/Repeat X above (spec/scene-v1.md)."
+scene.parallax_multi_layer_perf_warning,"Mas de una capa tiene bandas de parallax activas. Esto puede afectar el rendimiento de forma notable, sobre todo en ESP32-S3 -- usalo con moderacion (p. ej. una sola banda en una pantalla de titulo estatica).","More than one layer has parallax bands active. This can noticeably affect performance, especially on ESP32-S3 -- use it sparingly (e.g. a single band on a static title screen)."
 scene.active_suffix,  (activa),  (active)
 scene.no_background,(ninguno),(none)
 scene.read_error_title,Escenas,Scenes
@@ -125,6 +138,15 @@ tileset.open_error_title,Abrir tileset,Open tileset
 tileset.new_title,Nuevo tileset,New tileset
 tileset.new_id_label,Id del tileset:,Tileset id:
 tileset.save_error_title,Guardar tileset,Save tileset
+tileset.import_button,Importar imagen…,Import image…
+tileset.import_dialog_title,Importar imagen,Import image
+tileset.import_file_label,Archivo:,File:
+tileset.import_browse_button,Examinar…,Browse…
+tileset.import_file_filter,Imagenes (*.png *.jpg *.jpeg *.webp *.bmp),Images (*.png *.jpg *.jpeg *.webp *.bmp)
+tileset.import_alpha_cutoff_label,Umbral alfa (%):,Alpha cutoff (%):
+tileset.import_no_tileset_open,Abre o crea un tileset primero.,Open or create a tileset first.
+tileset.import_load_error,No se pudo cargar la imagen: {e},Could not load the image: {e}
+tileset.import_tile_note,Se reemplaza el tile actual ({n}).,Replaces the current tile ({n}).
 background.label,Fondo:,Background:
 background.mode_label,Modo:,Mode:
 background.mode_solid,Solido,Solid
@@ -138,6 +160,14 @@ background.new_title,Nuevo fondo,New background
 background.new_id_label,Id del fondo:,Background id:
 background.new_palette_label,Paleta:,Palette:
 background.save_error_title,Guardar fondo,Save background
+background.import_button,Importar imagen…,Import image…
+background.import_dialog_title,Importar imagen,Import image
+background.import_file_label,Archivo:,File:
+background.import_browse_button,Examinar…,Browse…
+background.import_file_filter,Imagenes (*.png *.jpg *.jpeg *.webp *.bmp),Images (*.png *.jpg *.jpeg *.webp *.bmp)
+background.import_alpha_cutoff_label,Umbral alfa (%):,Alpha cutoff (%):
+background.import_no_background_open,Abre o crea un fondo primero.,Open or create a background first.
+background.import_load_error,No se pudo cargar la imagen: {e},Could not load the image: {e}
 mainwindow.section_sprites,Sprites,Sprites
 mainwindow.section_objects,Objetos,Objects
 mainwindow.section_fonts,Fuentes,Fonts
@@ -154,6 +184,8 @@ mainwindow.open_project_title,Abrir proyecto TurtleStudio,Open TurtleStudio proj
 mainwindow.new_project_folder_title,Carpeta para el nuevo proyecto,Folder for the new project
 mainwindow.new_project_title,Nuevo proyecto,New project
 mainwindow.new_project_name_label,Nombre del proyecto:,Project name:
+mainwindow.new_project_folder_label,Carpeta:,Folder:
+mainwindow.new_project_browse_button,Examinar…,Browse…
 mainwindow.open_project_error_title,Error al abrir proyecto,Error opening project
 mainwindow.placeholder_not_ported,"Editor pendiente de portar para:
 {rel}","Editor not yet ported for:
@@ -215,6 +247,9 @@ mainwindow.tab_fonts,Fuentes,Fonts
 mainwindow.tab_palette,Paleta,Palette
 mainwindow.tab_export,Exportar,Export
 mainwindow.tab_play,Jugar,Play
+mainwindow.target_board_label,Placa:,Board:
+mainwindow.target_board_s3,ESP32-S3 (N16R8),ESP32-S3 (N16R8)
+mainwindow.target_board_p4,ESP32-P4,ESP32-P4
 play.scene_label,Escena:,Scene:
 play.play_button,Reproducir,Play
 play.pause_button,Pausar,Pause

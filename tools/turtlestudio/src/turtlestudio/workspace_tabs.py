@@ -11,9 +11,10 @@ from dataclasses import dataclass
 from enum import Enum
 
 from PyQt6.QtCore import pyqtSignal
-from PyQt6.QtWidgets import QHBoxLayout, QTabBar, QWidget
+from PyQt6.QtWidgets import QHBoxLayout, QLabel, QTabBar, QWidget
 
 from turtlestudio.i18n import tr
+from turtlestudio.project import TargetBoard
 
 
 class TabKind(str, Enum):
@@ -26,6 +27,13 @@ class TabKind(str, Enum):
     FONT_EDITOR = "font_editor"
     PALETTE_EDITOR = "palette_editor"
     EXPORT = "export"
+
+
+# Board -> i18n label key, shared with new_project_dialog.py's board combo.
+BOARD_ORDER: tuple[tuple[TargetBoard, str], ...] = (
+    (TargetBoard.ESP32_S3_N16R8, "mainwindow.target_board_s3"),
+    (TargetBoard.ESP32_P4, "mainwindow.target_board_p4"),
+)
 
 
 @dataclass
@@ -60,13 +68,26 @@ class WorkspaceTabs(QWidget):
         self.tab_bar.setExpanding(False)
         self.tab_bar.currentChanged.connect(self._on_current_changed)
 
+        self._board_label_prefix = QLabel(tr("mainwindow.target_board_label"))
+        self.board_label = QLabel()
+
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 4, 8, 0)
         layout.addWidget(self.tab_bar)
+        layout.addStretch(1)
+        layout.addWidget(self._board_label_prefix)
+        layout.addWidget(self.board_label)
 
         for kind, label_key in self._ORDER:
             self.tab_bar.addTab(tr(label_key))
             self._refs.append(TabRef(kind=kind))
+
+    def set_target_board(self, board: TargetBoard | None) -> None:
+        if board is None:
+            self.board_label.clear()
+            return
+        label_key = dict(BOARD_ORDER)[board]
+        self.board_label.setText(tr(label_key))
 
     def _index_of(self, kind: TabKind) -> int:
         for i, (k, _label_key) in enumerate(self._ORDER):

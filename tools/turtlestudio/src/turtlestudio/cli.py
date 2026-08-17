@@ -8,7 +8,7 @@ from pathlib import Path
 
 from turtlestudio import __version__
 from turtlestudio.build import write_turtlecart
-from turtlestudio.project import MANIFEST_NAME, create_project
+from turtlestudio.project import MANIFEST_NAME, TargetBoard, create_project
 
 
 def _cmd_project_init(args: argparse.Namespace) -> int:
@@ -18,6 +18,7 @@ def _cmd_project_init(args: argparse.Namespace) -> int:
             path,
             display_name=args.name,
             force=args.force,
+            board=TargetBoard(args.board),
         )
     except ValueError as e:
         print(f"Error: {e}", file=sys.stderr)
@@ -140,6 +141,13 @@ def main() -> None:
         "--force",
         action="store_true",
         help="Si ya existe el manifest, reescribirlo y asegurar carpetas (no borra archivos)",
+    )
+    p_init.add_argument(
+        "--board",
+        type=str,
+        default=TargetBoard.ESP32_S3_N16R8.value,
+        choices=[b.value for b in TargetBoard],
+        help="Placa objetivo (por defecto: esp32s3_n16r8)",
     )
     p_init.set_defaults(func=_cmd_project_init)
 

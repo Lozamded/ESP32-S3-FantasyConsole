@@ -15,8 +15,8 @@ from turtlestudio.scene_tiles import SceneTileLayer, scene_tile_grid_dimensions
 from turtlestudio.tiles import TILESET_JSON_KIND
 
 TILE_PX = 16
-WORLD_W = 264
-WORLD_H = 198
+WORLD_W = 164
+WORLD_H = 124
 
 
 def _actor(x: int, y: int, *, col: tuple[int, int, int, int] = (0, 0, 7, 7)) -> pr.ActorRuntimeState:

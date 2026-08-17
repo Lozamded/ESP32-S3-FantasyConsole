@@ -1,0 +1,2 @@
+-- Script de la primera escena (scripts/intro.lua)
+-- Titulo, logo, menu, etc. El ENTRY del cartucho es scripts/global.lua (solo en proyecto TurtleStudio).

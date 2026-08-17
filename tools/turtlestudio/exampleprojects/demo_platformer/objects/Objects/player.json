@@ -1,0 +1,7 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "player",
+  "name": "player",
+  "sprite_id": "character_idle"
+}

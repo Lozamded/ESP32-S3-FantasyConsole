@@ -58,7 +58,7 @@ The recommended distribution unit is a whole exported `build/` folder copied to 
 
 ### Scene / coordinate system (spec: `spec/scene-v0.md`)
 
-Canonical viewport is **264×198**. Scene space has origin **(0,0) at bottom-left**, **Y up** (math convention). The runtime framebuffer is raster (row 0 = top, Y down), so scene→framebuffer conversion is `xfb = sx`, `yfb = (H-1) - sy` (`H=198`). New game code should use `spix(sx, sy, c)` (applies the conversion); `pix(xfb, yfb, c)` is the raw framebuffer primitive kept for legacy/internal use. Palette index **31 is always transparent** for indexed sprites/backgrounds, project-wide, regardless of how many colors a given palette file defines.
+Canonical viewport is **164×124**. Scene space has origin **(0,0) at bottom-left**, **Y up** (math convention). The runtime framebuffer is raster (row 0 = top, Y down), so scene→framebuffer conversion is `xfb = sx`, `yfb = (H-1) - sy` (`H=124`). New game code should use `spix(sx, sy, c)` (applies the conversion); `pix(xfb, yfb, c)` is the raw framebuffer primitive kept for legacy/internal use. Palette index **31 is always transparent** for indexed sprites/backgrounds, project-wide, regardless of how many colors a given palette file defines.
 
 A "world" can be up to 2x the viewport per axis (`world_steps_x/y` in the scene manifest), clipped through a `camera` (`follow`/`fixed`) config.
 
@@ -71,7 +71,7 @@ They do **not** share a `lua_state`:
 
 Boot order: mount SD → load `main.turtlecart` + bundle into RAM → apply palette → run ENTRY Lua → `turtle_scene_begin_runtime` (C++ draws background/tiles, creates actors, `turtle_actor_lua_init` loads/binds actor scripts) → `flip()`.
 
-Per-frame loop: `turtle_input_poll()` → `turtle_scene_runtime_tick(dt_ms)` (1. actor `_update(dt)` calls, 2. C++ sprite animation tick, 3. C++ redraw of actors + text overlays over the static background/tile layer) → `turtle_gpu_flip()`. The background/tile layer is drawn once and not repainted; only sprites (and any actor text) redraw per frame.
+Per-frame loop: `turtle_input_poll()` → `turtle_scene_runtime_tick(dt_ms)` (1. actor `_update(dt)` calls, 2. C++ sprite animation tick, 3. C++ redraw of actors + text overlays over the static background/tile layer) → `turtle_gpu_flip()`. The background/tile layer is drawn once and not repainted; only sprites (and any actor text) redraw per frame — **except** when a scene has any `background_layers[1..3]` entry enabled (`spec/scene-v0.md` "Capas de fondo con imagen"): those layers must scroll independently and paint above the base layer but below tiles, which is incompatible with tiles being baked into the same static buffer as the base layer, so `turtle_scene.cpp` falls back to redrawing tiles live every frame in that case (see "Orden de pintado vs. tiles" in `spec/scene-v0.md`).
 
 `move(dx, dy)` resolves per-axis collision against solid tiles (and one-way platforms) and scene bounds, updates `grounded`, and returns actual pixels moved; see `spec/lua/physics-v0.md` and `turtle_tile_collision.cpp`/`.h` for the tile collision shapes (`solid`, `none`, `aabb`/`triangle`/`hexagon` approximated as AABB, optional one-way direction).
 

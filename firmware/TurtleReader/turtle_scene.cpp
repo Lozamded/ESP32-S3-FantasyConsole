@@ -25,13 +25,13 @@ namespace {
 
 constexpr int kMaxPlacements = 96;
 /** Mismo default que TurtleStudio (sprites.DEFAULT_CELL_PX). */
-constexpr int kDefaultCellPx = 4;
+constexpr int kDefaultCellPx = 8;
 constexpr int kDefaultTransparentIndex = 31;
 constexpr int kMaxSpriteW = 128;
 constexpr int kMaxSpriteH = 128;
 /** Escena canonica (spec/scene-v0.md); viewport = kSceneW x kSceneH. */
-constexpr int kSceneW = 264;
-constexpr int kSceneH = 198;
+constexpr int kSceneW = 164;
+constexpr int kSceneH = 124;
 constexpr int kMaxWorldSteps = 2;
 constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;
 constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;
@@ -73,9 +73,11 @@ constexpr int kMaxBgImageLayers = 4;
 
 /** spec/scene-v0.md "Capas de fondo con imagen": capa extra de background_layers[i] con
  *  su propia imagen (ademas del `background` principal, que sigue siendo el unico elegible
- *  para parallax_bands). Un solo factor de scroll uniforme (sin bandas por fila): mas barato
- *  de renderizar, y evita tener que elegir "que capa tiene bandas" en mas de un lugar. Cada
- *  capa habilitada reserva su propio buffer (alloc_scene_pixel_buffer), ademas de s_world_bg. */
+ *  para parallax_bands). Por defecto un solo factor de scroll uniforme (sin bandas por fila):
+ *  mas barato de renderizar. spec/scene-v1.md "Bandas propias por capas 2-4" permite que la
+ *  entrada declare su propio array `parallax_bands` (bands/band_count) que, si no esta vacio,
+ *  anula parallax_x/fixed/repeat_x y pinta banda por banda igual que capa 1. Cada capa
+ *  habilitada reserva su propio buffer (alloc_scene_pixel_buffer), ademas de s_world_bg. */
 struct BgImageLayer {
   bool enabled;
   char background_id[48];
@@ -86,6 +88,8 @@ struct BgImageLayer {
   int pw;
   int ph;
   bool loaded;
+  ParallaxBand bands[kMaxParallaxBands];
+  int band_count;
 };
 
 struct SceneActor {
@@ -139,6 +143,10 @@ static uint8_t* s_world_bg = nullptr;
 static int s_world_bg_w = 0;
 static int s_world_bg_h = 0;
 static bool s_world_static_ready = false;
+/** true si bake_tile_layers_into_world() horneo los tiles dentro de s_world_bg (junto a la
+ *  capa base). Cuando hay capas 2-4 (background_layers) habilitadas se deja en false a
+ *  proposito -- ver comentario en prepare_world_static_composite(). */
+static bool s_tiles_baked_into_world = false;
 /** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
 TURTLE_BSS_PSRAM static Placement s_placements[kMaxPlacements];
 TURTLE_BSS_PSRAM static TileLayer s_tile_layers[kMaxTileLayers];
@@ -174,6 +182,7 @@ static int s_bg_image_layer_count = 0;
 static void coll_tileset_cache_clear(void);
 static void font_cache_clear_all(void);
 static const ParallaxBand* find_parallax_band(int scene_y);
+static const ParallaxBand* find_band_in(const ParallaxBand* arr, int count, int scene_y);
 static const TurtleFont* font_cache_get(const char* json, const char* json_end,
                                         const char* font_id);
 static char s_seen_asset_paths[24][112];
@@ -251,6 +260,7 @@ static void bg_image_layers_release(void) {
 
 static void scene_asset_buffers_release(void) {
   s_world_static_ready = false;
+  s_tiles_baked_into_world = false;
   world_bg_release();
   bg_image_layers_release();
 }
@@ -435,6 +445,46 @@ static const char* json_object_end(const char* p) {
     if (*p == '{') {
       ++depth;
     } else if (*p == '}') {
+      --depth;
+    }
+    if (depth > 0) {
+      ++p;
+    }
+  }
+  if (depth == 0) {
+    return p + 1;
+  }
+  return nullptr;
+}
+
+/** Analogo a json_object_end pero para `[...]`: usado para acotar el array
+ *  `background_layers` y excluirlo de la busqueda del `parallax_bands` de escena
+ *  (capa 1) una vez que las capas 2-4 pueden declarar su propio `parallax_bands`
+ *  anidado (spec/scene-v1.md "Bandas propias por capas 2-4"). */
+static const char* json_array_end(const char* p) {
+  if (!p || *p != '[') {
+    return nullptr;
+  }
+  int depth = 1;
+  ++p;
+  while (*p && depth > 0) {
+    if (*p == '"') {
+      ++p;
+      while (*p && *p != '"') {
+        if (*p == '\\' && p[1]) {
+          p += 2;
+        } else {
+          ++p;
+        }
+      }
+      if (*p == '"') {
+        ++p;
+      }
+      continue;
+    }
+    if (*p == '[') {
+      ++depth;
+    } else if (*p == ']') {
       --depth;
     }
     if (depth > 0) {
@@ -1343,15 +1393,28 @@ static void paint_bg_image_layers(uint8_t transparent_index) {
     if (!ly->loaded || !ly->pixels || ly->pw <= 0 || ly->ph <= 0) {
       continue;
     }
-    const int x_offset = ly->fixed ? 0 : static_cast<int>(cam_x * ly->parallax_x);
+    // spec/scene-v1.md "Bandas propias por capas 2-4": band_count > 0 anula el factor
+    // uniforme parallax_x/fixed/repeat_x -- misma resolucion por fila que capa 1
+    // (paint_world_background_banded), solo que sobre el buffer propio de esta capa.
+    const bool banded = ly->band_count > 0;
+    const int uniform_x_offset = ly->fixed ? 0 : static_cast<int>(cam_x * ly->parallax_x);
     for (int scene_y = vis_y0; scene_y <= vis_y1; ++scene_y) {
       if (scene_y >= ly->ph) {
         // Capa mas baja que el mundo: ancla abajo, no cubre filas por encima de su altura.
         continue;
       }
+      int x_offset = uniform_x_offset;
+      bool repeat_x = ly->repeat_x;
+      if (banded) {
+        const ParallaxBand* band = find_band_in(ly->bands, ly->band_count, scene_y);
+        const float parallax_x = band ? band->parallax_x : 1.0f;
+        const bool fixed = band ? band->fixed : false;
+        repeat_x = band ? band->repeat_x : false;
+        x_offset = fixed ? 0 : static_cast<int>(cam_x * parallax_x);
+      }
       const int row_top = (ly->ph - 1) - scene_y;
       const uint8_t* row = ly->pixels + static_cast<size_t>(row_top) * static_cast<size_t>(ly->pw);
-      turtle_gpu_blit_indexed_row_banded(scene_y, row, ly->pw, x_offset, ly->repeat_x,
+      turtle_gpu_blit_indexed_row_banded(scene_y, row, ly->pw, x_offset, repeat_x,
                                          transparent_index);
     }
   }
@@ -1874,31 +1937,31 @@ static void parse_scene_camera(const char* sc_start, const char* sc_end) {
   clamp_camera_to_world(&s_cam_x, &s_cam_y);
 }
 
-/** spec/scene-v0.md "Bandas de parallax horizontal": array opcional
- *  `"parallax_bands"` en el bloque de la escena. Llamar despues de
- *  parse_scene_world() (usa s_world_h para acotar y0/y1). Sin el campo (o
- *  array vacio), s_parallax_band_count queda en 0 y paint_cached_world_background
- *  usa el blit unico de siempre (comportamiento identico a hoy). */
-static void parse_scene_parallax_bands(const char* sc_start, const char* sc_end) {
-  s_parallax_band_count = 0;
-  const char* pk = strstr_bounded(sc_start, sc_end, "\"parallax_bands\"");
+/** spec/scene-v0.md "Bandas de parallax horizontal" / spec/scene-v1.md "Bandas propias por
+ *  capas 2-4": parsea el array `"parallax_bands"` que empieza en el primer `[` encontrado
+ *  dentro de [start, end) hacia `out` (hasta kMaxParallaxBands). Compartida por el
+ *  `parallax_bands` de escena (capa 1) y el `parallax_bands` propio de cada entrada de
+ *  background_layers 2-4 -- misma forma, distinto rango de busqueda. */
+static int parse_parallax_bands_array(const char* start, const char* end, int max_y,
+                                      ParallaxBand* out) {
+  int count = 0;
+  const char* pk = strstr_bounded(start, end, "\"parallax_bands\"");
   if (!pk) {
-    return;
+    return 0;
   }
   const char* p = pk + strlen("\"parallax_bands\"");
-  while (p < sc_end && *p != '[') {
+  while (p < end && *p != '[') {
     ++p;
   }
-  if (p >= sc_end) {
-    return;
+  if (p >= end) {
+    return 0;
   }
   ++p;
-  const int max_y = (s_world_h > 0 ? s_world_h : kSceneH) - 1;
-  while (p < sc_end && *p != ']' && s_parallax_band_count < kMaxParallaxBands) {
-    while (p < sc_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+  while (p < end && *p != ']' && count < kMaxParallaxBands) {
+    while (p < end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
       ++p;
     }
-    if (p >= sc_end || *p == ']') {
+    if (p >= end || *p == ']') {
       break;
     }
     if (*p != '{') {
@@ -1944,7 +2007,7 @@ static void parse_scene_parallax_bands(const char* sc_start, const char* sc_end)
       px = 2.0f;
     }
 
-    ParallaxBand* band = &s_parallax_bands[s_parallax_band_count++];
+    ParallaxBand* band = &out[count++];
     band->y0 = static_cast<int16_t>(y0);
     band->y1 = static_cast<int16_t>(y1);
     band->parallax_x = px;
@@ -1953,16 +2016,54 @@ static void parse_scene_parallax_bands(const char* sc_start, const char* sc_end)
 
     p = oe;
   }
+  return count;
 }
 
-static const ParallaxBand* find_parallax_band(int scene_y) {
-  for (int i = 0; i < s_parallax_band_count; ++i) {
-    const ParallaxBand* b = &s_parallax_bands[i];
+/** Bandas de escena (capa 1). Llamar despues de parse_scene_world() (usa s_world_h para
+ *  acotar y0/y1). Sin el campo (o array vacio), s_parallax_band_count queda en 0 y
+ *  paint_cached_world_background usa el blit unico de siempre (comportamiento identico a
+ *  hoy). Busca "parallax_bands" excluyendo el array "background_layers" (si existe): capas
+ *  2-4 pueden traer su propio "parallax_bands" anidado (spec/scene-v1.md) que un strstr
+ *  ingenuo sobre todo el bloque de escena podria confundir con el de capa 1 si aparece
+ *  primero en el texto. */
+static void parse_scene_parallax_bands(const char* sc_start, const char* sc_end) {
+  s_parallax_band_count = 0;
+  const char* excl_start = sc_end;
+  const char* excl_end = sc_end;
+  const char* bl_key = strstr_bounded(sc_start, sc_end, "\"background_layers\"");
+  if (bl_key) {
+    const char* bp = bl_key + strlen("\"background_layers\"");
+    while (bp < sc_end && *bp != '[') {
+      ++bp;
+    }
+    if (bp < sc_end) {
+      const char* be = json_array_end(bp);
+      if (be) {
+        excl_start = bp;
+        excl_end = be;
+      }
+    }
+  }
+  const int max_y = (s_world_h > 0 ? s_world_h : kSceneH) - 1;
+  int count = parse_parallax_bands_array(sc_start, excl_start, max_y, s_parallax_bands);
+  if (count == 0 && excl_end < sc_end) {
+    count = parse_parallax_bands_array(excl_end, sc_end, max_y, s_parallax_bands);
+  }
+  s_parallax_band_count = count;
+}
+
+static const ParallaxBand* find_band_in(const ParallaxBand* arr, int count, int scene_y) {
+  for (int i = 0; i < count; ++i) {
+    const ParallaxBand* b = &arr[i];
     if (scene_y >= b->y0 && scene_y <= b->y1) {
       return b;
     }
   }
   return nullptr;
+}
+
+static const ParallaxBand* find_parallax_band(int scene_y) {
+  return find_band_in(s_parallax_bands, s_parallax_band_count, scene_y);
 }
 
 /** spec/scene-v0.md "Capas de fondo con imagen": array `"background_layers"` en el bloque
@@ -2017,6 +2118,12 @@ static void parse_scene_bg_image_layers(const char* sc_start, const char* sc_end
                                      sizeof ly->background_id)) {
       ly->background_id[0] = '\0';
     }
+    // spec/scene-v1.md "Bandas propias por capas 2-4": si esta entrada trae su propio
+    // "parallax_bands" no vacio, band_count > 0 hace que paint_bg_image_layers() lo use en
+    // vez de los campos uniformes parallax_x/fixed/repeat_x leidos abajo (que igual se
+    // parsean siempre, por si la capa no trae bandas).
+    const int max_y = (s_world_h > 0 ? s_world_h : kSceneH) - 1;
+    ly->band_count = parse_parallax_bands_array(p, oe, max_y, ly->bands);
     float px = 1.0f;
     if (!json_extract_float_for_key(p, oe, "parallax_x", &px)) {
       px = 1.0f;
@@ -2677,9 +2784,19 @@ static bool bake_tile_layers_into_world(const char* json, const char* json_end,
   return true;
 }
 
+static bool bg_image_layers_any_enabled(void) {
+  for (int i = 0; i < s_bg_image_layer_count; ++i) {
+    if (s_bg_image_layers[i].enabled) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool prepare_world_static_composite(const char* json, const char* json_end,
                                            const char* scene_start, const char* scene_end) {
   s_world_static_ready = false;
+  s_tiles_baked_into_world = false;
   if (!scene_uses_scrolling()) {
     return false;
   }
@@ -2690,8 +2807,31 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
     Serial.println("turtle_scene: aviso: fondo indexado no horneado");
   }
   load_bg_image_layers(json, json_end);
-  if (!bake_tile_layers_into_world(json, json_end, scene_start, scene_end, s_runtime_transp)) {
-    Serial.println("turtle_scene: aviso: tiles no horneados");
+  // Si hay capas 2-4 (background_layers) habilitadas, NO hornear los tiles junto a la capa
+  // base: se pintan en cada s_world_bg y las capas 2-4 se pintan encima de eso por fotograma
+  // (paint_bg_image_layers), lo que las dejaria por ENCIMA de los tiles -- al reves de lo que
+  // dice el spec ("Capas de fondo con imagen": por debajo de los tiles). Cuando esto pasa,
+  // paint_scene_static_layers() vuelve a dibujar los tiles en vivo cada fotograma (como el
+  // camino sin hornear) para que queden por encima de las capas 2-4. Sin capas 2-4 habilitadas
+  // se sigue horneando (comportamiento/performance de siempre, sin regresion).
+  if (!bg_image_layers_any_enabled()) {
+    if (!bake_tile_layers_into_world(json, json_end, scene_start, scene_end, s_runtime_transp)) {
+      Serial.println("turtle_scene: aviso: tiles no horneados");
+    } else {
+      s_tiles_baked_into_world = true;
+    }
+  } else {
+    // No se hornean pixeles, pero s_tile_layers/s_runtime_tile_layer_count (colision,
+    // coll_tileset_cache_prewarm) igual deben quedar frescos ya -- si se dejara el valor de
+    // la escena anterior, turtle_scene_begin_runtime()'s "if (s_runtime_tile_layer_count <= 0)"
+    // no lo notaria (podria seguir en >0 de la escena previa) y los actores arrancarian con
+    // colision de tiles vieja hasta el primer draw_tile_layers_for_scene() del frame 1.
+    int tile_px = s_runtime_tile_px;
+    if (tile_px < 4 || tile_px > 64) {
+      tile_px = 16;
+    }
+    s_runtime_tile_layer_count =
+        parse_tile_layers(scene_start, scene_end, tile_px, s_tile_layers, kMaxTileLayers);
   }
   s_world_static_ready = true;
   return true;
@@ -3433,6 +3573,13 @@ static void paint_scene_static_layers(void) {
   if (s_world_static_ready && s_world_bg) {
     paint_cached_world_background(s_runtime_transp);
     paint_bg_image_layers(s_runtime_transp);
+    // Si prepare_world_static_composite() no horneo los tiles (capas 2-4 habilitadas, ver
+    // comentario ahi), pintarlos en vivo aca -- despues de las capas 2-4, para quedar
+    // correctamente por ENCIMA de ellas en vez de horneados por debajo.
+    if (!s_tiles_baked_into_world) {
+      draw_tile_layers_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
+                                 s_runtime_sc_end, s_runtime_transp);
+    }
     return;
   }
   if (s_world_bg) {

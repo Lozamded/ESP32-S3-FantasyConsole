@@ -23,8 +23,28 @@ SPRITE_IMAGE_FORMAT_ROWS_RLE = "palette_rows_rle"
 # Tamano logico en celdas (evita sprites enormes en disco por error).
 MAX_BLOCKS_PER_AXIS = 32
 MAX_SPRITE_FRAMES = 32
-DEFAULT_CELL_PX = 4
+DEFAULT_CELL_PX = 8
+MIN_CELL_PX = 8
+MAX_CELL_PX = 256
+CELL_PX_STEP = 8
 _SPRITE_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+
+
+def normalize_cell_px(raw: object) -> int:
+    """Tamano de celda cuadrada en px; multiplo de 8 entre MIN y MAX (estandar tipo GB/GG).
+
+    Usar solo para valores nuevos elegidos explicitamente (input del editor); los sprites
+    existentes conservan su `cell_px` guardado tal cual al recargar/guardar sin redimensionar.
+    """
+    try:
+        n = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        n = DEFAULT_CELL_PX
+    if n <= MIN_CELL_PX:
+        return MIN_CELL_PX
+    n = min(MAX_CELL_PX, n)
+    snapped = int(round(n / float(CELL_PX_STEP))) * CELL_PX_STEP
+    return max(MIN_CELL_PX, snapped)
 
 
 def sprites_dir(project_root: Path) -> Path:

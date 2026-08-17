@@ -646,6 +646,8 @@ class PlaySession:
         self.input = InputState()
         self.fw = VIEWPORT_PIXEL_W
         self.fh = VIEWPORT_PIXEL_H
+        self.viewport_w = VIEWPORT_PIXEL_W
+        self.viewport_h = VIEWPORT_PIXEL_H
         self.tile_px = 16
         self.cam_x = 0
         self.cam_y = 0
@@ -662,11 +664,21 @@ class PlaySession:
 
     # -- lifecycle --------------------------------------------------
 
-    def begin(self, row: dict[str, Any], tile_px: int, *, project_target_fps: int, project_anim_fps: int) -> None:
+    def begin(
+        self,
+        row: dict[str, Any],
+        tile_px: int,
+        *,
+        project_target_fps: int,
+        project_anim_fps: int,
+        viewport_w: int = VIEWPORT_PIXEL_W,
+        viewport_h: int = VIEWPORT_PIXEL_H,
+    ) -> None:
         self.tile_px = tile_px
+        self.viewport_w, self.viewport_h = viewport_w, viewport_h
         wsx = clamp_world_steps(row.get("world_steps_x", 1))
         wsy = clamp_world_steps(row.get("world_steps_y", 1))
-        self.fw, self.fh = scene_world_pixel_size(wsx, wsy)
+        self.fw, self.fh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
         self.camera = parse_scene_camera_from_row(row)
         self.target_fps = scene_target_fps(row, project_target_fps)
         self.default_anim_fps = scene_default_anim_fps(row, project_anim_fps)
@@ -689,7 +701,9 @@ class PlaySession:
         # copia una vez por frame -- barato en desktop, no vale la pena el dirty-rect).
         static_row = dict(row)
         static_row["objects"] = []
-        self._static_rgba, _sfw, _sfh = render_scene_rgba(self.project_root, static_row, tile_px)
+        self._static_rgba, _sfw, _sfh = render_scene_rgba(
+            self.project_root, static_row, tile_px, viewport_w=viewport_w, viewport_h=viewport_h
+        )
 
         self.player_id = _resolve_player_actor_id(self.camera.target, list(placements))
 
@@ -805,18 +819,22 @@ class PlaySession:
     # -- camara ----------------------------------------------------
 
     def _scrolling(self) -> bool:
-        return self.fw > VIEWPORT_PIXEL_W or self.fh > VIEWPORT_PIXEL_H
+        return self.fw > self.viewport_w or self.fh > self.viewport_h
 
     def _update_camera(self) -> None:
         if not self._scrolling():
             self.cam_x, self.cam_y = 0, 0
             return
         if self.camera.mode == CAMERA_MODE_FIXED or self.player_id is None:
-            self.cam_x, self.cam_y = clamp_camera_position(self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh)
+            self.cam_x, self.cam_y = clamp_camera_position(
+                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=self.viewport_w, viewport_h=self.viewport_h
+            )
             return
         player = self._actor_by_id(self.player_id)
         if player is None:
-            self.cam_x, self.cam_y = clamp_camera_position(self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh)
+            self.cam_x, self.cam_y = clamp_camera_position(
+                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=self.viewport_w, viewport_h=self.viewport_h
+            )
             return
         self.cam_x, self.cam_y = compute_follow_camera(
             player.x,
@@ -825,6 +843,8 @@ class PlaySession:
             self.cam_y,
             world_w=self.fw,
             world_h=self.fh,
+            viewport_w=self.viewport_w,
+            viewport_h=self.viewport_h,
             margin_x=self.camera.margin_x,
             margin_y=self.camera.margin_y,
         )
@@ -876,5 +896,7 @@ class PlaySession:
                         rgbs=font_rgbs,
                         tint_index=a.text_color,
                     )
-        viewport = _crop_world_rgba_to_viewport(rgba, self.fw, self.fh, self.cam_x, self.cam_y)
-        return viewport, VIEWPORT_PIXEL_W, VIEWPORT_PIXEL_H
+        viewport = _crop_world_rgba_to_viewport(
+            rgba, self.fw, self.fh, self.cam_x, self.cam_y, viewport_w=self.viewport_w, viewport_h=self.viewport_h
+        )
+        return viewport, self.viewport_w, self.viewport_h

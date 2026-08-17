@@ -1,0 +1,17 @@
+Paquete TurtleCart para microSD (FantasyConsole / TurtleReader)
+
+Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
+
+  main.turtlecart
+  backgrounds/intro_bg.tbg
+  backgrounds/sky.tbg
+  objects/player.json
+  scripts/global.lua
+  scripts/intro.lua
+  sprites/character_idle.tsp
+  studio/project_bundle.json
+
+No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos/scripts referenciados
+estan en backgrounds/, sprites/, tiles/, fonts/, objects/, scripts/.
+
+Generado por TurtleStudio.

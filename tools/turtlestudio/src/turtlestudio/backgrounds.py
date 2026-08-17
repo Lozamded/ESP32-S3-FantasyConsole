@@ -24,7 +24,7 @@ BACKGROUND_RENDER_SOLID = "solid_palette_index"
 BACKGROUND_RENDER_INDEXED = "indexed_pixels"
 DEFAULT_BACKGROUND_PIXEL_W = SCENE_PIXEL_W
 DEFAULT_BACKGROUND_PIXEL_H = SCENE_PIXEL_H
-# Fondos mas grandes que la vista (p. ej. capas de parallax); la escena sigue siendo 264×198.
+# Fondos mas grandes que la vista (p. ej. capas de parallax); la escena sigue siendo 164×124.
 BACKGROUND_PARALLAX_FACTOR = 2
 MAX_BACKGROUND_PIXEL_W = SCENE_PIXEL_W * BACKGROUND_PARALLAX_FACTOR
 MAX_BACKGROUND_PIXEL_H = SCENE_PIXEL_H * BACKGROUND_PARALLAX_FACTOR

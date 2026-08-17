@@ -23,17 +23,17 @@ from turtlestudio.tile_collision import (
     parse_tileset_collision_meta,
 )
 
-DEFAULT_TILE_PX = 16
-MIN_TILE_PX = 4
+DEFAULT_TILE_PX = 8
+MIN_TILE_PX = 8
 MAX_TILE_PX = 128
-TILE_PX_STEP = 4
+TILE_PX_STEP = 8
 TILESET_JSON_VERSION = 1
 TILESET_JSON_KIND = "turtlestudio.tileset"
 MAX_TILES_PER_TILESET = 256
 
 
 def normalize_tile_px(raw: object) -> int:
-    """Tamano de tile cuadrado en px; multiplo de 4 entre MIN y MAX."""
+    """Tamano de tile cuadrado en px; multiplo de 8 entre MIN y MAX (estandar tipo GB/GG)."""
     try:
         n = int(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError):

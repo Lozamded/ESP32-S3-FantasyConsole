@@ -25,7 +25,7 @@ from PyQt6.QtWidgets import (
 from turtlestudio import play_lua_bridge as plb
 from turtlestudio import play_runtime as pr
 from turtlestudio.i18n import tr
-from turtlestudio.project import MANIFEST_NAME, manifest_path
+from turtlestudio.project import MANIFEST_NAME, manifest_path, parse_viewport_from_manifest
 from turtlestudio.scene_editor import _normalize_row, _rgba_floats_to_qimage
 from turtlestudio.tiles import parse_tile_px_from_manifest
 
@@ -113,6 +113,8 @@ class PlayWidget(QWidget):
         self._project_target_fps = 30
         self._project_anim_fps = 8
         self._tile_px = 16
+        self._viewport_w = pr.VIEWPORT_PIXEL_W
+        self._viewport_h = pr.VIEWPORT_PIXEL_H
         self._entry_relpath = "scripts/global.lua"
 
         self.session: pr.PlaySession | None = None
@@ -138,6 +140,7 @@ class PlayWidget(QWidget):
             QMessageBox.warning(self, tr("play.read_error_title"), tr("play.read_error_msg", manifest=MANIFEST_NAME, e=e))
             return
         self._tile_px = parse_tile_px_from_manifest(data)
+        self._viewport_w, self._viewport_h = parse_viewport_from_manifest(data)
         self._project_target_fps = int(data.get("target_fps", 30) or 30)
         self._project_anim_fps = int(data.get("default_anim_fps", 8) or 8)
         raw_scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
@@ -241,7 +244,7 @@ class PlayWidget(QWidget):
         if row_raw is None:
             return
         try:
-            row = _normalize_row(row_raw, self._tile_px)
+            row = _normalize_row(row_raw, self._tile_px, viewport_w=self._viewport_w, viewport_h=self._viewport_h)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, tr("common.error"), str(e))
             return
@@ -253,6 +256,8 @@ class PlayWidget(QWidget):
                 self._tile_px,
                 project_target_fps=self._project_target_fps,
                 project_anim_fps=self._project_anim_fps,
+                viewport_w=self._viewport_w,
+                viewport_h=self._viewport_h,
             )
             entry_bridge = plb.EntryLuaBridge(self.session)
             entry_bridge.run(self._entry_relpath)

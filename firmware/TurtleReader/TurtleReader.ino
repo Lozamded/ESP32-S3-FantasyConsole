@@ -294,7 +294,7 @@ void setup() {
   delay(1000);
 
   Serial.println();
-  Serial.println("== TurtleReader + Lua + GPU (264x198, 32 col) ==");
+  Serial.println("== TurtleReader + Lua + GPU (164x124, 32 col) ==");
 #if defined(ESP32) || defined(ESP_PLATFORM)
   log_heap_caps("boot");
 #endif

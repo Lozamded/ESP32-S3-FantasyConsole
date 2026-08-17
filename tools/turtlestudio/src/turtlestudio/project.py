@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -16,6 +17,28 @@ FORMAT_VERSION = 1
 # Archivo por escena bajo scenes/ (espejo legible; la fuente de verdad al abrir es el manifest).
 SCENE_JSON_VERSION = 1
 SCENE_JSON_KIND = "turtlestudio.scene"
+
+
+class TargetBoard(str, Enum):
+    """ESP32-S3 (N16R8) is the shipping target; P4 is the in-progress RCA-composite
+    sketch (see FantasyConsole/firmware/TurtleReaderP4/). Selecting a board here is
+    not wired to build/export yet — both boards load the same .turtlecart."""
+
+    ESP32_S3_N16R8 = "esp32s3_n16r8"
+    ESP32_P4 = "esp32p4"
+
+
+# Viewport por defecto al crear un proyecto nuevo para esa placa. S3 (placa que se
+# fabrica hoy) es 164x124 -- spec/scene-v0.md, spec/lua/entry-v0.md y el firmware
+# TurtleReader/ ya usan ese valor. P4 sigue en 264x198: firmware TurtleReaderP4/ y
+# spec/scene-v1.md, spec/scene-v2.md, spec/rca-composite-driver-v0.md no se tocaron
+# (targets sin construir/probar en hardware; reconciliar cuando se decida su resolucion
+# real, ver spec/scene-v2.md "No hay resolucion P4 distinta de resolucion S3", que ya
+# no es cierto y queda pendiente de reescribir junto con esa decision).
+BOARD_DEFAULT_VIEWPORT: dict[TargetBoard, tuple[int, int]] = {
+    TargetBoard.ESP32_S3_N16R8: (164, 124),
+    TargetBoard.ESP32_P4: (264, 198),
+}
 
 from turtlestudio.palette_policy import (
     DEFAULT_TRANSPARENT_INDEX,
@@ -77,9 +100,9 @@ def is_project_dir(project_root: Path) -> bool:
     return manifest_path(project_root).is_file()
 
 
-# Tamano logico escena / vista previa canvas (spec/scene-v0.md)
-SCENE_PIXEL_W = 264
-SCENE_PIXEL_H = 198
+# Tamano logico escena / vista previa canvas (spec/scene-v0.md) = default S3 (BOARD_DEFAULT_VIEWPORT).
+SCENE_PIXEL_W = 164
+SCENE_PIXEL_H = 124
 # Vista en consola (camara); el mundo puede ser un multiplo (pasos).
 VIEWPORT_PIXEL_W = SCENE_PIXEL_W
 VIEWPORT_PIXEL_H = SCENE_PIXEL_H
@@ -87,6 +110,21 @@ WORLD_STEPS_MIN = 1
 WORLD_STEPS_MAX = 2  # alineado con BACKGROUND_PARALLAX_FACTOR
 
 BACKGROUND_LAYER_COUNT = 4
+
+
+def parse_viewport_from_manifest(data: dict[str, Any]) -> tuple[int, int]:
+    """(viewport_w, viewport_h) del manifest; falta -> 164x124 (default S3, SCENE_PIXEL_W/H).
+    Proyectos viejos con target_board=esp32p4 y sin viewport_w/h explicito tambien caen aqui;
+    si de verdad son P4 a 264x198, declarar viewport_w/h explicito en el manifest."""
+    try:
+        w = int(data.get("viewport_w", SCENE_PIXEL_W))
+    except (TypeError, ValueError):
+        w = SCENE_PIXEL_W
+    try:
+        h = int(data.get("viewport_h", SCENE_PIXEL_H))
+    except (TypeError, ValueError):
+        h = SCENE_PIXEL_H
+    return max(1, w), max(1, h)
 
 
 def _default_scene_camera() -> SceneCameraConfig:
@@ -106,10 +144,13 @@ def clamp_world_steps(v: object, *, default: int = 1) -> int:
 def scene_world_pixel_size(
     steps_x: int,
     steps_y: int,
+    *,
+    base_w: int = SCENE_PIXEL_W,
+    base_h: int = SCENE_PIXEL_H,
 ) -> tuple[int, int]:
     sx = clamp_world_steps(steps_x)
     sy = clamp_world_steps(steps_y)
-    return SCENE_PIXEL_W * sx, SCENE_PIXEL_H * sy
+    return base_w * sx, base_h * sy
 
 
 @dataclass(frozen=True)
@@ -130,6 +171,11 @@ class BackgroundLayer:
     parallax_x: float = 1.0
     fixed: bool = False
     repeat_x: bool = False
+    # spec/scene-v1.md "Bandas propias por capas 2-4": mismo esquema que el `parallax_bands`
+    # de escena (capa 1, ver scene_parallax.py), pero propio de esta entrada -- si no esta
+    # vacio anula parallax_x/fixed/repeat_x de arriba. Sin efecto en la entrada de indice 0
+    # (capa 1 ya usa el `parallax_bands` de escena). Dicts crudos (sin clamp) hasta el guardado.
+    parallax_bands: tuple[dict[str, Any], ...] = ()
 
 
 _DEFAULT_SCENE_BACKGROUND_LAYERS: tuple[BackgroundLayer, ...] = (
@@ -156,8 +202,8 @@ def _clamp_scene_xy(
     world_w: int = SCENE_PIXEL_W,
     world_h: int = SCENE_PIXEL_H,
 ) -> tuple[int, int]:
-    ww = max(SCENE_PIXEL_W, int(world_w))
-    wh = max(SCENE_PIXEL_H, int(world_h))
+    ww = max(1, int(world_w))
+    wh = max(1, int(world_h))
     return (
         max(0, min(ww - 1, x)),
         max(0, min(wh - 1, y)),
@@ -246,7 +292,7 @@ class SceneEntry:
     background: str = ""
     # Hasta 4 capas de tilemap (rejilla segun `tiles.tile_px` del manifest).
     tile_layers: tuple[Any, ...] = ()
-    # Mundo = VIEWPORT * pasos (1 = 264×198; 2 = 528×396).
+    # Mundo = VIEWPORT * pasos (1 = 164×124; 2 = 328×248).
     world_steps_x: int = 1
     world_steps_y: int = 1
     camera: SceneCameraConfig = field(default_factory=_default_scene_camera)
@@ -268,6 +314,9 @@ class ProjectInfo:
     tile_px: int
     target_fps: int
     default_anim_fps: int
+    target_board: TargetBoard
+    viewport_w: int
+    viewport_h: int
 
 
 def _posix_relpath(s: str) -> str:
@@ -426,7 +475,7 @@ def parse_background_layers(
     n_colors: int,
 ) -> tuple[BackgroundLayer, ...]:
     """Cuatro capas de fondo a pantalla completa; si falta el array, se deriva de legacy_flat_index."""
-    from turtlestudio.scene_parallax import MAX_PARALLAX_X, MIN_PARALLAX_X
+    from turtlestudio.scene_parallax import MAX_PARALLAX_BANDS, MAX_PARALLAX_X, MIN_PARALLAX_X
 
     fb = clamp_palette_color_index(legacy_flat_index, n_colors=n_colors)
     if not isinstance(raw, list):
@@ -457,7 +506,13 @@ def parse_background_layers(
             px = max(MIN_PARALLAX_X, min(MAX_PARALLAX_X, px))
             fixed = bool(d.get("fixed", False))
             repeat_x = bool(d.get("repeat_x", False))
-            out.append(BackgroundLayer(en, ci, op, bg, px, fixed, repeat_x))
+            raw_bands = d.get("parallax_bands")
+            bands = (
+                tuple(b for b in raw_bands if isinstance(b, dict))[: MAX_PARALLAX_BANDS]
+                if i > 0 and isinstance(raw_bands, list)
+                else ()
+            )
+            out.append(BackgroundLayer(en, ci, op, bg, px, fixed, repeat_x, bands))
         else:
             out.append(BackgroundLayer(True, fb, 255) if i == 0 else BackgroundLayer(False, 1, 255))
     return tuple(out)
@@ -477,8 +532,9 @@ def firmware_background_index_from_layers(
 
 
 def background_layers_to_json_list(layers: tuple[BackgroundLayer, ...]) -> list[dict[str, Any]]:
-    return [
-        {
+    out = []
+    for ly in layers:
+        d: dict[str, Any] = {
             "enabled": ly.enabled,
             "color_index": ly.color_index,
             "opacity": ly.opacity,
@@ -487,8 +543,10 @@ def background_layers_to_json_list(layers: tuple[BackgroundLayer, ...]) -> list[
             "fixed": ly.fixed,
             "repeat_x": ly.repeat_x,
         }
-        for ly in layers
-    ]
+        if ly.parallax_bands:
+            d["parallax_bands"] = list(ly.parallax_bands)
+        out.append(d)
+    return out
 
 
 def _parse_scenes_from_manifest(
@@ -506,6 +564,7 @@ def _parse_scenes_from_manifest(
     from turtlestudio.tiles import parse_tile_px_from_manifest
 
     tile_px = parse_tile_px_from_manifest(data)
+    viewport_w, viewport_h = parse_viewport_from_manifest(data)
     raw_scenes = data.get("scenes")
     pal_fallback = default_palette or DEFAULT_EXAMPLE_PALETTE_REL
 
@@ -568,7 +627,7 @@ def _parse_scenes_from_manifest(
             bg_fw = firmware_background_index_from_layers(layers, fallback=bg)
             wsx = clamp_world_steps(item.get("world_steps_x", 1))
             wsy = clamp_world_steps(item.get("world_steps_y", 1))
-            ww, wh = scene_world_pixel_size(wsx, wsy)
+            ww, wh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
             raw_objs = item.get("objects", [])
             if not isinstance(raw_objs, list):
                 raw_objs = []
@@ -695,6 +754,14 @@ def load_project(project_root: Path) -> ProjectInfo:
     tile_px = parse_tile_px_from_manifest(data)
     target_fps, default_anim_fps = parse_runtime_from_manifest(data)
 
+    board_raw = data.get("target_board", TargetBoard.ESP32_S3_N16R8.value)
+    try:
+        target_board = TargetBoard(board_raw)
+    except ValueError:
+        target_board = TargetBoard.ESP32_S3_N16R8
+
+    viewport_w, viewport_h = parse_viewport_from_manifest(data)
+
     return ProjectInfo(
         root=root,
         format_version=ver,
@@ -707,6 +774,9 @@ def load_project(project_root: Path) -> ProjectInfo:
         tile_px=tile_px,
         target_fps=target_fps,
         default_anim_fps=default_anim_fps,
+        target_board=target_board,
+        viewport_w=viewport_w,
+        viewport_h=viewport_h,
     )
 
 
@@ -783,8 +853,10 @@ def _write_mirror_scene_json_files(
                 pass
 
 
-def _default_manifest_dict(display_name: str) -> dict[str, Any]:
+def _default_manifest_dict(display_name: str, board: TargetBoard) -> dict[str, Any]:
     from turtlestudio.tiles import DEFAULT_TILE_PX, tiles_section_to_json
+
+    viewport_w, viewport_h = BOARD_DEFAULT_VIEWPORT[board]
 
     return {
         "format_version": FORMAT_VERSION,
@@ -807,6 +879,9 @@ def _default_manifest_dict(display_name: str) -> dict[str, Any]:
         "transparent_index": DEFAULT_TRANSPARENT_INDEX,
         "target_fps": 30,
         "default_anim_fps": 8,
+        "target_board": board.value,
+        "viewport_w": viewport_w,
+        "viewport_h": viewport_h,
     }
 
 
@@ -827,6 +902,7 @@ def create_project(
     *,
     display_name: str | None = None,
     force: bool = False,
+    board: TargetBoard = TargetBoard.ESP32_S3_N16R8,
 ) -> Path:
     """
     Crea la carpeta del proyecto, subcarpetas estandar, `turtlestudio.json`,
@@ -849,7 +925,7 @@ def create_project(
     _ensure_example_palette(root)
 
     name = (display_name or root.name or "untitled").strip() or "untitled"
-    data = _default_manifest_dict(name)
+    data = _default_manifest_dict(name, board)
     mp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     global_rel = Path(DEFAULT_ENTRY)
@@ -907,11 +983,13 @@ def _normalize_scenes_for_save(
 
     mp = manifest_path(root)
     tile_px = DEFAULT_TILE_PX
+    viewport_w, viewport_h = SCENE_PIXEL_W, SCENE_PIXEL_H
     if mp.is_file():
         try:
             mdata = json.loads(mp.read_text(encoding="utf-8"))
             if isinstance(mdata, dict):
                 tile_px = parse_tile_px_from_manifest(mdata)
+                viewport_w, viewport_h = parse_viewport_from_manifest(mdata)
         except (OSError, json.JSONDecodeError):
             tile_px = DEFAULT_TILE_PX
 
@@ -969,7 +1047,22 @@ def _normalize_scenes_for_save(
         stem = validate_scene_script_stem(item.get("script"), fallback_scene_id=sid)
         wsx = clamp_world_steps(item.get("world_steps_x", 1))
         wsy = clamp_world_steps(item.get("world_steps_y", 1))
-        ww, wh = scene_world_pixel_size(wsx, wsy)
+        ww, wh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
+        if any(ly.parallax_bands for ly in layers):
+            from turtlestudio.scene_parallax import (
+                parse_scene_parallax_bands_from_row,
+                scene_parallax_bands_to_json,
+            )
+
+            def _clamp_layer_bands(ly: BackgroundLayer) -> BackgroundLayer:
+                if not ly.parallax_bands:
+                    return ly
+                bands_ok = parse_scene_parallax_bands_from_row(
+                    {"parallax_bands": list(ly.parallax_bands)}, world_h=wh
+                )
+                return replace(ly, parallax_bands=tuple(scene_parallax_bands_to_json(bands_ok)))
+
+            layers = tuple(_clamp_layer_bands(ly) for ly in layers)
         tile_saved = validate_tile_layers_for_save(
             root,
             item.get("tile_layers"),

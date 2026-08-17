@@ -84,7 +84,7 @@ local dy = axis(BTN_DOWN, BTN_UP)  -- abajo = -1, arriba = +1
 
 ### Posicion y movimiento
 
-Coordenadas en **espacio escena** (264×198, origen abajo-izquierda, Y hacia arriba): **`spec/scene-v0.md`**.
+Coordenadas en **espacio escena** (164×124, origen abajo-izquierda, Y hacia arriba): **`spec/scene-v0.md`**.
 
 | Funcion | Descripcion |
 |---------|-------------|

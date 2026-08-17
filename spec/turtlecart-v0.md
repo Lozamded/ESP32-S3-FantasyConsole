@@ -51,7 +51,7 @@ Orden recomendado: `TURTLECART:` → `ENTRY:` → `INITIAL_SCENE:` → `BUNDLE_F
 
 ## Escena y coordenadas
 
-El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scene-v0.md`**: escena **264×198**, **(0,0) en la esquina inferior izquierda**, **Y positivo hacia arriba**. El cartucho v0 no exige un bloque `SCENE:`; se asume la escena canonica salvo extension futura.
+El espacio logico del juego (tamano, origen, ejes) esta definido en **`spec/scene-v0.md`**: escena **164×124**, **(0,0) en la esquina inferior izquierda**, **Y positivo hacia arriba**. El cartucho v0 no exige un bloque `SCENE:`; se asume la escena canonica salvo extension futura.
 
 ## Objetivo tecnico de v0
 

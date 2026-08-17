@@ -196,6 +196,10 @@ class FontEditorWidget(QWidget):
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
+        self.btn_bucket = QPushButton(tr("common.bucket"))
+        self.btn_bucket.setCheckable(True)
+        self.btn_bucket.clicked.connect(lambda: self._set_tool(Tool.BUCKET))
+        tools.addWidget(self.btn_bucket)
         tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(4, 48)
@@ -334,6 +338,7 @@ class FontEditorWidget(QWidget):
         self.btn_pencil.setChecked(tool == Tool.PENCIL)
         self.btn_eraser.setChecked(tool == Tool.ERASER)
         self.btn_dropper.setChecked(tool == Tool.EYEDROPPER)
+        self.btn_bucket.setChecked(tool == Tool.BUCKET)
 
     # ------------------------------------------------------------------
     # Slots

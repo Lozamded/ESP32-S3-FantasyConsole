@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
     QComboBox,
+    QDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -30,9 +31,13 @@ from turtlestudio.palette_policy import (
     clamp_paint_palette_index,
 )
 from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
+from turtlestudio.sprite_import_dialog import SpriteImportDialog
 from turtlestudio.sprites import (
     MAX_BLOCKS_PER_AXIS,
+    MAX_CELL_PX,
     MAX_SPRITE_FRAMES,
+    MIN_CELL_PX,
+    CELL_PX_STEP,
     DEFAULT_CELL_PX,
     list_sprite_json_stems,
     normalize_palette_rows,
@@ -49,6 +54,7 @@ class Tool(str, Enum):
     PENCIL = "pencil"
     ERASER = "eraser"
     EYEDROPPER = "eyedropper"
+    BUCKET = "bucket"
 
 
 class SpriteCanvas(QWidget):
@@ -141,6 +147,25 @@ class SpriteCanvas(QWidget):
         painter.drawLine(cx, cy - 6, cx, cy + 6)
         painter.end()
 
+    def _flood_fill(self, x0: int, y0: int) -> None:
+        target = self.rows[y0][x0]
+        if target == self.current_index:
+            return
+        pw, ph = self.pixel_size()
+        stack = [(x0, y0)]
+        seen: set[tuple[int, int]] = set()
+        while stack:
+            x, y = stack.pop()
+            if (x, y) in seen or not (0 <= x < pw and 0 <= y < ph):
+                continue
+            if self.rows[y][x] != target:
+                continue
+            seen.add((x, y))
+            self.rows[y][x] = self.current_index
+            stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+        self.changed.emit()
+        self.update()
+
     def _paint_at(self, pos) -> None:
         pw, ph = self.pixel_size()
         if pw == 0 or ph == 0:
@@ -151,6 +176,9 @@ class SpriteCanvas(QWidget):
             return
         if self.tool == Tool.EYEDROPPER:
             self.current_index = self.rows[y][x]
+            return
+        if self.tool == Tool.BUCKET:
+            self._flood_fill(x, y)
             return
         idx = TRANSPARENT_PALETTE_INDEX if self.tool == Tool.ERASER else self.current_index
         if self.rows[y][x] != idx:
@@ -165,7 +193,7 @@ class SpriteCanvas(QWidget):
         self._paint_at(event.position())
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._drawing:
+        if self._drawing and self.tool != Tool.BUCKET:
             self._paint_at(event.position())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -276,6 +304,10 @@ class SpriteEditorWidget(QWidget):
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
+        self.btn_bucket = QPushButton(tr("common.bucket"))
+        self.btn_bucket.setCheckable(True)
+        self.btn_bucket.clicked.connect(lambda: self._set_tool(Tool.BUCKET))
+        tools.addWidget(self.btn_bucket)
         tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(4, 48)
@@ -313,12 +345,16 @@ class SpriteEditorWidget(QWidget):
         self.spin_blocks_h.setRange(1, MAX_BLOCKS_PER_AXIS)
         form.addRow(tr("sprite.blocks_h"), self.spin_blocks_h)
         self.spin_cell_px = QSpinBox()
-        self.spin_cell_px.setRange(1, 64)
+        self.spin_cell_px.setRange(MIN_CELL_PX, MAX_CELL_PX)
+        self.spin_cell_px.setSingleStep(CELL_PX_STEP)
         self.spin_cell_px.setValue(DEFAULT_CELL_PX)
         form.addRow(tr("sprite.px_per_block"), self.spin_cell_px)
         self.btn_resize = QPushButton(tr("common.resize"))
         self.btn_resize.clicked.connect(self._action_resize)
         form.addRow(self.btn_resize)
+        self.btn_import = QPushButton(tr("sprite.import_button"))
+        self.btn_import.clicked.connect(self._action_import_image)
+        form.addRow(self.btn_import)
         self.spin_origin_x = QSpinBox()
         self.spin_origin_x.setRange(0, MAX_BLOCKS_PER_AXIS * 64)
         self.spin_origin_x.valueChanged.connect(self._on_origin_changed)
@@ -416,6 +452,7 @@ class SpriteEditorWidget(QWidget):
         self.btn_pencil.setChecked(tool == Tool.PENCIL)
         self.btn_eraser.setChecked(tool == Tool.ERASER)
         self.btn_dropper.setChecked(tool == Tool.EYEDROPPER)
+        self.btn_bucket.setChecked(tool == Tool.BUCKET)
 
     # ------------------------------------------------------------------
     # Slots
@@ -471,6 +508,30 @@ class SpriteEditorWidget(QWidget):
             for fr in self._frames
         ]
         self.blocks_w, self.blocks_h, self.cell_px = new_bw, new_bh, new_cp
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _action_import_image(self) -> None:
+        if not self.sprite_id:
+            QMessageBox.warning(self, tr("sprite.import_button"), tr("sprite.import_no_sprite_open"))
+            return
+        pw, ph = self.canvas.pixel_size()
+        rgbs01 = [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in self.grid.colors()]
+        dlg = SpriteImportDialog(
+            self.project_root,
+            pw,
+            ph,
+            rgbs01,
+            frame_index=self._frame_index,
+            frame_count=len(self._frames),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        rows = dlg.result_rows()
+        if rows is None:
+            return
+        self._frames[self._frame_index] = rows
         self._mark_dirty()
         self._refresh_canvas()
 

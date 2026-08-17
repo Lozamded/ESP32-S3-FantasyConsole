@@ -10,6 +10,7 @@ from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -33,6 +34,7 @@ from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
 from turtlestudio.scene_editor import TilePickerWidget
 from turtlestudio.sprite_editor import Tool
 from turtlestudio.sprites import normalize_palette_rows
+from turtlestudio.tileset_import_dialog import TilesetImportDialog
 from turtlestudio.tile_collision import (
     TILE_COLLISION_KINDS,
     TILE_COLLISION_NONE,
@@ -135,6 +137,26 @@ class TileCanvas(QWidget):
             painter.drawRect(left * z, top * z, w * z, h * z)
         painter.end()
 
+    def _flood_fill(self, x0: int, y0: int) -> None:
+        target = self.rows[y0][x0]
+        if target == self.current_index:
+            return
+        px = self.tile_px
+        stack = [(x0, y0)]
+        seen: set[tuple[int, int]] = set()
+        while stack:
+            x, y = stack.pop()
+            if (x, y) in seen or not (0 <= x < px and 0 <= y < px):
+                continue
+            if self.rows[y][x] != target:
+                continue
+            seen.add((x, y))
+            self.rows[y][x] = self.current_index
+            stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+        self.update()
+        if self._on_paint is not None:
+            self._on_paint()
+
     def _paint_at(self, pos) -> None:
         px = self.tile_px
         x = int(pos.x()) // self.zoom
@@ -143,6 +165,9 @@ class TileCanvas(QWidget):
             return
         if self.tool == Tool.EYEDROPPER:
             self.current_index = self.rows[y][x]
+            return
+        if self.tool == Tool.BUCKET:
+            self._flood_fill(x, y)
             return
         idx = TRANSPARENT_PALETTE_INDEX if self.tool == Tool.ERASER else self.current_index
         if self.rows[y][x] != idx:
@@ -158,7 +183,7 @@ class TileCanvas(QWidget):
         self._paint_at(event.position())
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._drawing:
+        if self._drawing and self.tool != Tool.BUCKET:
             self._paint_at(event.position())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
@@ -262,6 +287,10 @@ class TilesetEditorWidget(QWidget):
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
+        self.btn_bucket = QPushButton(tr("common.bucket"))
+        self.btn_bucket.setCheckable(True)
+        self.btn_bucket.clicked.connect(lambda: self._set_tool(Tool.BUCKET))
+        tools.addWidget(self.btn_bucket)
         tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(4, 48)
@@ -298,6 +327,9 @@ class TilesetEditorWidget(QWidget):
         self.btn_resize = QPushButton(tr("common.resize"))
         self.btn_resize.clicked.connect(self._action_resize)
         form.addRow(self.btn_resize)
+        self.btn_import = QPushButton(tr("tileset.import_button"))
+        self.btn_import.clicked.connect(self._action_import_image)
+        form.addRow(self.btn_import)
         self.lbl_palette = QLabel("—")
         form.addRow(tr("tileset.palette_label"), self.lbl_palette)
         side.addLayout(form)
@@ -419,6 +451,7 @@ class TilesetEditorWidget(QWidget):
         self.btn_pencil.setChecked(tool == Tool.PENCIL)
         self.btn_eraser.setChecked(tool == Tool.ERASER)
         self.btn_dropper.setChecked(tool == Tool.EYEDROPPER)
+        self.btn_bucket.setChecked(tool == Tool.BUCKET)
 
     def _current_collision(self) -> dict[str, Any]:
         if not self._collision:
@@ -520,6 +553,29 @@ class TilesetEditorWidget(QWidget):
         new_px = self.spin_tile_px.value()
         self._tiles = [normalize_palette_rows(rows, new_px, new_px, fill_index=1) for rows in self._tiles]
         self.tile_px = new_px
+        self._mark_dirty()
+        self._refresh_canvas()
+        self._refresh_tile_strip_icons()
+
+    def _action_import_image(self) -> None:
+        if not self.tileset_id:
+            QMessageBox.warning(self, tr("tileset.import_button"), tr("tileset.import_no_tileset_open"))
+            return
+        rgbs01 = [self._grid_rgb01(c) for c in self.grid.colors()]
+        dlg = TilesetImportDialog(
+            self.project_root,
+            self.tile_px,
+            rgbs01,
+            tile_index=self._tile_index,
+            tile_count=len(self._tiles),
+            parent=self,
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        rows = dlg.result_rows()
+        if rows is None:
+            return
+        self._tiles[self._tile_index] = rows
         self._mark_dirty()
         self._refresh_canvas()
         self._refresh_tile_strip_icons()
