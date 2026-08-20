@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -32,7 +33,7 @@ from turtlestudio.objects import OBJECT_COLLISION_MODE_AABB
 from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import PALETTE_SIZE, TRANSPARENT_PALETTE_INDEX
 from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
-from turtlestudio.scene_editor import TilePickerWidget
+from turtlestudio.scene_editor import TilePickerWidget, _tool_icon
 from turtlestudio.sprite_editor import Tool
 from turtlestudio.sprites import normalize_palette_rows
 from turtlestudio.tileset_import_dialog import TilesetImportDialog
@@ -66,6 +67,8 @@ from turtlestudio.tiles import (
 
 class TileCanvas(QWidget):
     """Zoomed pixel-index grid for a single square tile, plus a collision AABB overlay."""
+
+    tool_context_menu_requested = pyqtSignal(object)  # QPoint (global)
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -198,6 +201,10 @@ class TileCanvas(QWidget):
             # Un solo checkpoint de historial por trazo, no uno por pixel.
             self._on_stroke_finished()
 
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        self.tool_context_menu_requested.emit(event.globalPos())
+        event.accept()
+
 
 class TilesetEditorWidget(QWidget):
     def __init__(self, project_root: Path, parent: QWidget | None = None) -> None:
@@ -280,6 +287,7 @@ class TilesetEditorWidget(QWidget):
         self.canvas = TileCanvas()
         self.canvas.set_on_paint(self._mark_dirty)
         self.canvas.set_on_stroke_finished(self._commit_history)
+        self.canvas.tool_context_menu_requested.connect(self._on_canvas_context_menu)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -287,22 +295,36 @@ class TilesetEditorWidget(QWidget):
 
         tools = QHBoxLayout()
         self.btn_pencil = QPushButton(tr("common.pencil"))
+        self.btn_pencil.setIcon(_tool_icon("pencil"))
+        self.btn_pencil.setIconSize(QSize(18, 18))
         self.btn_pencil.setCheckable(True)
         self.btn_pencil.setChecked(True)
         self.btn_pencil.clicked.connect(lambda: self._set_tool(Tool.PENCIL))
         tools.addWidget(self.btn_pencil)
         self.btn_eraser = QPushButton(tr("common.eraser"))
+        self.btn_eraser.setIcon(_tool_icon("eraser"))
+        self.btn_eraser.setIconSize(QSize(18, 18))
         self.btn_eraser.setCheckable(True)
         self.btn_eraser.clicked.connect(lambda: self._set_tool(Tool.ERASER))
         tools.addWidget(self.btn_eraser)
         self.btn_dropper = QPushButton(tr("common.eyedropper"))
+        self.btn_dropper.setIcon(_tool_icon("eyedropper"))
+        self.btn_dropper.setIconSize(QSize(18, 18))
         self.btn_dropper.setCheckable(True)
         self.btn_dropper.clicked.connect(lambda: self._set_tool(Tool.EYEDROPPER))
         tools.addWidget(self.btn_dropper)
         self.btn_bucket = QPushButton(tr("common.bucket"))
+        self.btn_bucket.setIcon(_tool_icon("bucket"))
+        self.btn_bucket.setIconSize(QSize(18, 18))
         self.btn_bucket.setCheckable(True)
         self.btn_bucket.clicked.connect(lambda: self._set_tool(Tool.BUCKET))
         tools.addWidget(self.btn_bucket)
+        tools.addSpacing(8)
+        tools.addWidget(QLabel(tr("scene.current_tool_label")))
+        self.lbl_current_tool_icon = QLabel()
+        self.lbl_current_tool_icon.setFixedSize(26, 26)
+        tools.addWidget(self.lbl_current_tool_icon)
+        self._update_current_tool_icon()
         tools.addWidget(QLabel(tr("common.zoom")))
         self.zoom_spin = QSpinBox()
         self.zoom_spin.setRange(4, 48)
@@ -511,6 +533,34 @@ class TilesetEditorWidget(QWidget):
         self.btn_eraser.setChecked(tool == Tool.ERASER)
         self.btn_dropper.setChecked(tool == Tool.EYEDROPPER)
         self.btn_bucket.setChecked(tool == Tool.BUCKET)
+        self._update_current_tool_icon()
+
+    def _update_current_tool_icon(self) -> None:
+        self.lbl_current_tool_icon.setPixmap(_tool_icon(self.canvas.tool.value, size=24).pixmap(QSize(24, 24)))
+
+    def _tool_menu_specs(self) -> tuple[tuple[Tool, str, QPushButton], ...]:
+        return (
+            (Tool.PENCIL, "common.pencil", self.btn_pencil),
+            (Tool.ERASER, "common.eraser", self.btn_eraser),
+            (Tool.EYEDROPPER, "common.eyedropper", self.btn_dropper),
+            (Tool.BUCKET, "common.bucket", self.btn_bucket),
+        )
+
+    def _build_tool_menu(self) -> tuple[QMenu, dict[Any, QPushButton]]:
+        menu = QMenu(self)
+        action_to_button: dict[Any, QPushButton] = {}
+        for tool, label_key, btn in self._tool_menu_specs():
+            act = menu.addAction(_tool_icon(tool.value), tr(label_key))
+            act.setCheckable(True)
+            act.setChecked(self.canvas.tool == tool)
+            action_to_button[act] = btn
+        return menu, action_to_button
+
+    def _on_canvas_context_menu(self, global_pos: Any) -> None:
+        menu, action_to_button = self._build_tool_menu()
+        chosen = menu.exec(global_pos)
+        if chosen is not None and chosen in action_to_button:
+            action_to_button[chosen].click()
 
     def _current_collision(self) -> dict[str, Any]:
         if not self._collision:

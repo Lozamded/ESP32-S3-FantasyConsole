@@ -483,9 +483,12 @@ def _tile_icon(rows: list[list[int]], rgbs: list[tuple[float, float, float]], *,
 
 
 # ----------------------------------------------------------------------
-# Draw-mode tool icons (procedural, no image assets -- same house convention
+# Pixel-editor tool icons (procedural, no image assets -- same house convention
 # as _tile_icon above). Each _draw_*_icon function paints into a fixed 20x20
-# coordinate space; _make_tool_icon scales that space to the requested pixel size.
+# coordinate space; _tool_icon scales that space to the requested pixel size.
+# Shared by every Pencil/Eraser/Eyedropper/Bucket toolbar in the app (scene
+# tile-paint, sprite, background, font glyph, tileset editors) -- imported from
+# here the same way font_editor.py already imports _tile_icon from this module.
 # ----------------------------------------------------------------------
 
 
@@ -500,6 +503,18 @@ def _draw_brush_tool_icon(p: QPainter) -> None:
     p.drawPolygon(QPolygonF([QPointF(11, 9), QPointF(16, 4), QPointF(14, 7)]))
     p.setBrush(QColor(232, 120, 130))
     p.drawEllipse(QPointF(4, 16), 2.0, 2.0)
+
+
+def _draw_eraser_tool_icon(p: QPainter) -> None:
+    p.save()
+    p.translate(10, 11)
+    p.rotate(-35)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(235, 120, 150))
+    p.drawRoundedRect(QRectF(-7, -4, 14, 8), 2, 2)
+    p.setBrush(QColor(250, 250, 250))
+    p.drawRect(QRectF(-7, -4, 5, 8))
+    p.restore()
 
 
 def _draw_eyedropper_tool_icon(p: QPainter) -> None:
@@ -531,6 +546,8 @@ def _draw_bucket_tool_icon(p: QPainter) -> None:
 
 _TOOL_ICON_DRAWERS = {
     "brush": _draw_brush_tool_icon,
+    "pencil": _draw_brush_tool_icon,  # sprite/background/font/tileset editors call the same tool "pencil"
+    "eraser": _draw_eraser_tool_icon,
     "eyedropper": _draw_eyedropper_tool_icon,
     "bucket": _draw_bucket_tool_icon,
 }
