@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -99,6 +99,7 @@ class MainWindow(QMainWindow):
 
         self._build_menu()
         self._build_ui()
+        self._build_undo_shortcuts()
 
         if project_root is not None:
             self.open_project(project_root)
@@ -192,6 +193,34 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 4)
         self.setCentralWidget(outer)
+
+    # -- undo/redo ---------------------------------------------------------
+
+    def _build_undo_shortcuts(self) -> None:
+        """Ctrl+Z/Ctrl+Shift+Z (and Ctrl+Y) dispatch to whichever editor tab is
+        currently visible; each editor owns its own SnapshotHistory scoped to the
+        item it has open (see edit_history.py), so this is just routing -- tabs
+        without undo()/redo() (Play, Export) are silently ignored."""
+        undo_sc = QShortcut(QKeySequence.StandardKey.Undo, self)
+        undo_sc.activated.connect(self._action_undo)
+        redo_sc = QShortcut(QKeySequence.StandardKey.Redo, self)
+        redo_sc.activated.connect(self._action_redo)
+        # StandardKey.Redo is Ctrl+Shift+Z on some platforms/styles and Ctrl+Y on
+        # others; bind both explicitly so Ctrl+Y always works regardless of platform.
+        redo_sc_y = QShortcut(QKeySequence("Ctrl+Y"), self)
+        redo_sc_y.activated.connect(self._action_redo)
+
+    def _action_undo(self) -> None:
+        widget = self.center_stack.currentWidget()
+        undo = getattr(widget, "undo", None)
+        if callable(undo):
+            undo()
+
+    def _action_redo(self) -> None:
+        widget = self.center_stack.currentWidget()
+        redo = getattr(widget, "redo", None)
+        if callable(redo):
+            redo()
 
     # -- project actions ---------------------------------------------------------
 

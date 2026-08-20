@@ -15,9 +15,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QIcon, QImage, QMouseEvent, QPainter, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -49,6 +51,7 @@ from turtlestudio.backgrounds import (
     parse_background_solid_palette_index,
 )
 from turtlestudio.build import load_palette_rgb01_for_preview
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.objects import list_object_ids_for_scene_palette, read_object_file
 from turtlestudio.palette_policy import (
@@ -95,6 +98,8 @@ from turtlestudio.scene_tiles import (
     draw_scene_step_bounds_on_rgba,
     draw_scene_tile_grid_on_rgba,
     empty_tile_cells,
+    flood_fill_cell_index,
+    get_cell_index,
     list_tileset_stems_for_palette,
     paint_tile_layers_on_rgba,
     parse_tile_layers,
@@ -121,6 +126,7 @@ from turtlestudio.tiles import (
 )
 
 _ORIGIN_CROSS_RGB = (1.0, 0.9, 0.2)
+_SELECTION_FRAME_RGB = (0.2, 0.9, 1.0)
 
 
 # ----------------------------------------------------------------------
@@ -205,6 +211,32 @@ def _draw_cross_on_rgba(rgba: list[float], fw: int, fh: int, sx: int, sy: int) -
             rgba[i + 1] = g
             rgba[i + 2] = b
             rgba[i + 3] = 1.0
+
+
+def _draw_rect_outline_on_rgba(
+    rgba: list[float], fw: int, fh: int, sx0: int, sy0: int, w: int, h: int, r: float, g: float, b: float
+) -> None:
+    """1px border around the scene-space bbox (sx0, sy0)=bottom-left, w x h, expanded
+    1px outward so it frames the sprite instead of overlapping its edge pixels."""
+    x0, y0 = sx0 - 1, sy0 - 1
+    x1, y1 = sx0 + w, sy0 + h
+
+    def set_px(sx: int, sy: int) -> None:
+        if sx < 0 or sx >= fw or sy < 0 or sy >= fh:
+            return
+        ty = (fh - 1) - sy
+        i = (ty * fw + sx) * 4
+        rgba[i] = r
+        rgba[i + 1] = g
+        rgba[i + 2] = b
+        rgba[i + 3] = 1.0
+
+    for sx in range(x0, x1 + 1):
+        set_px(sx, y0)
+        set_px(sx, y1)
+    for sy in range(y0, y1 + 1):
+        set_px(x0, sy)
+        set_px(x1, sy)
 
 
 def _paint_background_stem(
@@ -323,6 +355,7 @@ def render_scene_rgba(
     paint_layer_index: int | None = None,
     hover_cell: tuple[int, int] | None = None,
     selected_parallax_band_index: int | None = None,
+    selected_object_index: int | None = None,
 ) -> tuple[list[float], int, int]:
     wsx = clamp_world_steps(row.get("world_steps_x", 1))
     wsy = clamp_world_steps(row.get("world_steps_y", 1))
@@ -391,6 +424,26 @@ def render_scene_rgba(
         )
         draw_scene_camera_viewport_on_rgba(rgba, fw, fh, cam_x, cam_y, viewport_w=viewport_w, viewport_h=viewport_h)
 
+    # Se dibuja al final, encima de todo (tiles, capas, limites de mundo, viewport de
+    # camara), para que el marco de seleccion siempre sea visible sin importar que
+    # otras superposiciones esten activas.
+    if selected_object_index is not None and 0 <= selected_object_index < len(placements):
+        sel = placements[selected_object_index]
+        if isinstance(sel, dict):
+            sel_oid = str(sel.get("id", "")).strip()
+            if sel_oid:
+                try:
+                    sel_sx = int(sel.get("x", 0))
+                    sel_sy = int(sel.get("y", 0))
+                except (TypeError, ValueError):
+                    sel_sx = sel_sy = None
+                if sel_sx is not None:
+                    sel_info = _resolve_object_sprite_preview(project_root, sel_oid)
+                    sbx, sby = sprite_blit_bottom_left(sel_sx, sel_sy, int(sel_info["origin_x"]), int(sel_info["origin_y"]))
+                    _draw_rect_outline_on_rgba(
+                        rgba, fw, fh, sbx, sby, int(sel_info["pw"]), int(sel_info["ph"]), *_SELECTION_FRAME_RGB
+                    )
+
     return rgba, fw, fh
 
 
@@ -427,6 +480,74 @@ def _tile_icon(rows: list[list[int]], rgbs: list[tuple[float, float, float]], *,
         size, size, Qt.AspectRatioMode.IgnoreAspectRatio, Qt.TransformationMode.FastTransformation
     )
     return QIcon(pix)
+
+
+# ----------------------------------------------------------------------
+# Draw-mode tool icons (procedural, no image assets -- same house convention
+# as _tile_icon above). Each _draw_*_icon function paints into a fixed 20x20
+# coordinate space; _make_tool_icon scales that space to the requested pixel size.
+# ----------------------------------------------------------------------
+
+
+def _draw_brush_tool_icon(p: QPainter) -> None:
+    pen = QPen(QColor(214, 176, 110))
+    pen.setWidthF(4.5)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(4, 16), QPointF(12, 8))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(50, 50, 50))
+    p.drawPolygon(QPolygonF([QPointF(11, 9), QPointF(16, 4), QPointF(14, 7)]))
+    p.setBrush(QColor(232, 120, 130))
+    p.drawEllipse(QPointF(4, 16), 2.0, 2.0)
+
+
+def _draw_eyedropper_tool_icon(p: QPainter) -> None:
+    pen = QPen(QColor(150, 150, 160))
+    pen.setWidthF(3.2)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    p.setPen(pen)
+    p.drawLine(QPointF(6, 16), QPointF(14, 6))
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(120, 190, 230))
+    p.drawEllipse(QPointF(15, 5), 3.2, 3.2)
+    p.setBrush(QColor(90, 170, 220))
+    p.drawEllipse(QPointF(5, 17), 1.6, 1.6)
+
+
+def _draw_bucket_tool_icon(p: QPainter) -> None:
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(170, 170, 178))
+    p.drawPolygon(QPolygonF([QPointF(4, 8), QPointF(16, 8), QPointF(13, 17), QPointF(7, 17)]))
+    pen = QPen(QColor(90, 90, 95))
+    pen.setWidthF(1.6)
+    p.setPen(pen)
+    p.setBrush(Qt.BrushStyle.NoBrush)
+    p.drawArc(QRectF(5, 2, 10, 10), 0, 180 * 16)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(90, 190, 235))
+    p.drawPolygon(QPolygonF([QPointF(15, 15), QPointF(18, 15), QPointF(16.5, 19)]))
+
+
+_TOOL_ICON_DRAWERS = {
+    "brush": _draw_brush_tool_icon,
+    "eyedropper": _draw_eyedropper_tool_icon,
+    "bucket": _draw_bucket_tool_icon,
+}
+
+
+def _tool_icon(tool: str, *, size: int = 20) -> QIcon:
+    draw = _TOOL_ICON_DRAWERS.get(tool)
+    if draw is None:
+        return QIcon()
+    pm = QPixmap(size, size)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    p.scale(size / 20.0, size / 20.0)
+    draw(p)
+    p.end()
+    return QIcon(pm)
 
 
 # ----------------------------------------------------------------------
@@ -472,6 +593,11 @@ class SceneCanvas(QWidget):
     """Displays the composited scene RGBA and reports clicks in scene space."""
 
     cell_clicked = pyqtSignal(int, int)
+    stroke_finished = pyqtSignal()
+    object_drag_started = pyqtSignal(int, int)
+    object_drag_moved = pyqtSignal(int, int)
+    object_drag_finished = pyqtSignal()
+    tool_context_menu_requested = pyqtSignal(object)  # QPoint (global), avoids importing QPoint just for the hint
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -480,6 +606,10 @@ class SceneCanvas(QWidget):
         self._fh = 0
         self.zoom = 2
         self.paintable = False
+        # Modo Editor (no pintando tiles): clic+arrastre sobre un objeto lo selecciona
+        # y lo mueve, en vez de pintar celdas -- ver object_drag_* mas arriba.
+        self.object_mode = False
+        self._drawing = False
         self.setMouseTracking(True)
 
     def set_frame(self, image: QImage, fw: int, fh: int) -> None:
@@ -518,17 +648,47 @@ class SceneCanvas(QWidget):
         return x_img, (self._fh - 1) - y_img
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if not self.paintable or event.button() != Qt.MouseButton.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        if not self.paintable and not self.object_mode:
             return
         xy = self._scene_xy_at(event.position())
-        if xy is not None:
+        if xy is None:
+            return
+        self._drawing = True
+        if self.paintable:
             self.cell_clicked.emit(*xy)
+        else:
+            self.object_drag_started.emit(*xy)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self.paintable and (event.buttons() & Qt.MouseButton.LeftButton):
-            xy = self._scene_xy_at(event.position())
-            if xy is not None:
-                self.cell_clicked.emit(*xy)
+        if not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        xy = self._scene_xy_at(event.position())
+        if xy is None:
+            return
+        if self.paintable:
+            self.cell_clicked.emit(*xy)
+        elif self.object_mode and self._drawing:
+            self.object_drag_moved.emit(*xy)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        was_drawing = self._drawing
+        self._drawing = False
+        if not was_drawing:
+            return
+        if self.paintable:
+            # Un solo checkpoint de historial por trazo de pintura de tiles, no uno
+            # por celda (cell_clicked se emite por cada celda tocada al arrastrar).
+            self.stroke_finished.emit()
+        elif self.object_mode:
+            self.object_drag_finished.emit()
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802
+        if not self.paintable:
+            return
+        self.tool_context_menu_requested.emit(event.globalPos())
+        event.accept()
 
 
 # ----------------------------------------------------------------------
@@ -606,8 +766,13 @@ class SceneEditorWidget(QWidget):
         self._dirty = False
         self._paint_layer: int | None = None
         self._paint_tile_index = 0
+        self._paint_tool = "brush"  # "brush" | "eyedropper" | "bucket"
         self._hover_cell: tuple[int, int] | None = None
+        self._dragging_object_index: int | None = None
+        self._drag_offset: tuple[int, int] | None = None
         self._suspend = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -641,12 +806,14 @@ class SceneEditorWidget(QWidget):
         self._dirty = False
         self._refresh_scene_combo()
         self._load_current_into_form()
+        self._history.reset(self._snapshot())
 
     def open_scene(self, scene_id: str) -> None:
         ids = [s["id"] for s in self._scenes]
         if scene_id in ids:
             self._current_index = ids.index(scene_id)
             self._load_current_into_form()
+            self._history.reset(self._snapshot())
 
     # ------------------------------------------------------------------
     # UI construction
@@ -710,24 +877,78 @@ class SceneEditorWidget(QWidget):
         self.spin_zoom.setRange(1, 6)
         self.spin_zoom.setValue(2)
         canvas_tools.addWidget(self.spin_zoom)
-        canvas_tools.addWidget(QLabel(tr("scene.paint_layer_label")))
+        canvas_tools.addSpacing(12)
+        self.btn_mode_editor = QPushButton(tr("scene.mode_editor"))
+        self.btn_mode_editor.setCheckable(True)
+        self.btn_mode_editor.setChecked(True)
+        self.btn_mode_draw = QPushButton(tr("scene.mode_draw"))
+        self.btn_mode_draw.setCheckable(True)
+        self._mode_group = QButtonGroup(self)
+        self._mode_group.setExclusive(True)
+        self._mode_group.addButton(self.btn_mode_editor)
+        self._mode_group.addButton(self.btn_mode_draw)
+        self.btn_mode_draw.toggled.connect(self._on_mode_toggled)
+        canvas_tools.addWidget(self.btn_mode_editor)
+        canvas_tools.addWidget(self.btn_mode_draw)
+        canvas_tools.addStretch()
+        right_layout.addLayout(canvas_tools)
+
+        draw_tools = QHBoxLayout()
+        draw_tools.addWidget(QLabel(tr("scene.paint_layer_label")))
         self.combo_paint_layer = QComboBox()
         self.combo_paint_layer.addItem(tr("scene.paint_layer_none"), None)
         for i in range(TILE_LAYER_COUNT):
             self.combo_paint_layer.addItem(tr("scene.layer_n", n=i + 1), i)
         self.combo_paint_layer.currentIndexChanged.connect(self._on_paint_layer_combo_changed)
-        canvas_tools.addWidget(self.combo_paint_layer)
+        draw_tools.addWidget(self.combo_paint_layer)
+        draw_tools.addSpacing(12)
+        self.btn_tool_brush = QPushButton(tr("scene.tool_brush"))
+        self.btn_tool_brush.setCheckable(True)
+        self.btn_tool_brush.setChecked(True)
+        self.btn_tool_eyedropper = QPushButton(tr("scene.tool_eyedropper"))
+        self.btn_tool_eyedropper.setCheckable(True)
+        self.btn_tool_bucket = QPushButton(tr("scene.tool_bucket"))
+        self.btn_tool_bucket.setCheckable(True)
+        self._tool_group = QButtonGroup(self)
+        self._tool_group.setExclusive(True)
+        for btn, tool in (
+            (self.btn_tool_brush, "brush"),
+            (self.btn_tool_eyedropper, "eyedropper"),
+            (self.btn_tool_bucket, "bucket"),
+        ):
+            btn.setIcon(_tool_icon(tool))
+            btn.setIconSize(QSize(18, 18))
+            self._tool_group.addButton(btn)
+            draw_tools.addWidget(btn)
+            btn.toggled.connect(lambda checked, t=tool: checked and self._on_paint_tool_changed(t))
         self.chk_erase = QCheckBox(tr("common.eraser"))
-        canvas_tools.addWidget(self.chk_erase)
-        canvas_tools.addStretch()
-        right_layout.addLayout(canvas_tools)
+        draw_tools.addWidget(self.chk_erase)
+        draw_tools.addSpacing(12)
+        draw_tools.addWidget(QLabel(tr("scene.current_tool_label")))
+        self.lbl_current_tool_icon = QLabel()
+        self.lbl_current_tool_icon.setFixedSize(26, 26)
+        draw_tools.addWidget(self.lbl_current_tool_icon)
+        draw_tools.addStretch()
+        self._update_current_tool_icon()
+        self.draw_tools_row = QWidget()
+        self.draw_tools_row.setLayout(draw_tools)
+        right_layout.addWidget(self.draw_tools_row)
 
         self.tile_picker = TilePickerWidget()
         self.tile_picker.tile_selected.connect(self._on_tile_picker_selected)
         right_layout.addWidget(self.tile_picker)
 
+        # Modo Editor por defecto: el area de pintura de tiles solo aparece en modo Dibujar.
+        self.draw_tools_row.setVisible(False)
+        self.tile_picker.setVisible(False)
+
         self.canvas = SceneCanvas()
         self.canvas.cell_clicked.connect(self._on_canvas_cell_clicked)
+        self.canvas.stroke_finished.connect(self._commit_history)
+        self.canvas.object_drag_started.connect(self._on_object_drag_started)
+        self.canvas.object_drag_moved.connect(self._on_object_drag_moved)
+        self.canvas.object_drag_finished.connect(self._on_object_drag_finished)
+        self.canvas.tool_context_menu_requested.connect(self._on_canvas_context_menu)
         self.spin_zoom.valueChanged.connect(self.canvas.set_zoom)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
@@ -1316,8 +1537,11 @@ class SceneEditorWidget(QWidget):
         row = self._current_row()
         if row is None:
             self.canvas.set_frame(QImage(), 0, 0)
+            self.canvas.paintable = False
+            self.canvas.object_mode = False
             return
         selected_band = self.list_parallax_bands.currentRow()
+        selected_object = self.list_objects.currentRow()
         rgba, fw, fh = render_scene_rgba(
             self.project_root,
             row,
@@ -1327,14 +1551,54 @@ class SceneEditorWidget(QWidget):
             paint_layer_index=self._paint_layer,
             hover_cell=self._hover_cell,
             selected_parallax_band_index=selected_band if selected_band >= 0 else None,
+            selected_object_index=selected_object if selected_object >= 0 else None,
         )
         img = _rgba_floats_to_qimage(rgba, fw, fh)
         self.canvas.set_frame(img, fw, fh)
         self.canvas.paintable = self._paint_layer is not None
+        self.canvas.object_mode = self._paint_layer is None
 
     def _mark_dirty(self) -> None:
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+        # Un checkpoint por mark_dirty basta en toda la escena EXCEPTO el pincel de
+        # tiles al arrastrar (_on_canvas_cell_clicked evita llamar a _mark_dirty por
+        # celda y usa SceneCanvas.stroke_finished en su lugar -- ver mas abajo).
+        self._commit_history()
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any] | None:
+        return self._current_row()
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        row = self._current_row()
+        if row is not None:
+            self._history.commit(row)
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self._scenes[self._current_index] = state
+            self._load_current_into_form()
+        finally:
+            self._restoring = False
+        self._dirty = True
+        self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     # ------------------------------------------------------------------
     # Slots — scene management
@@ -1349,6 +1613,7 @@ class SceneEditorWidget(QWidget):
         self.combo_paint_layer.setCurrentIndex(0)
         self.combo_paint_layer.blockSignals(False)
         self._load_current_into_form()
+        self._history.reset(self._snapshot())
 
     def _action_new_scene(self) -> None:
         sid, ok = QInputDialog.getText(self, tr("scene.new_scene_title"), tr("scene.new_scene_id_label"))
@@ -1370,6 +1635,7 @@ class SceneEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_scene_combo()
         self._load_current_into_form()
+        self._history.reset(self._snapshot())
 
     def _action_delete_scene(self) -> None:
         row = self._current_row()
@@ -1390,6 +1656,7 @@ class SceneEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_scene_combo()
         self._load_current_into_form()
+        self._history.reset(self._snapshot())
 
     def _action_set_active(self) -> None:
         row = self._current_row()
@@ -1669,6 +1936,70 @@ class SceneEditorWidget(QWidget):
             self._refresh_tile_picker()
         self._refresh_canvas()
 
+    def _on_mode_toggled(self, draw_checked: bool) -> None:
+        self.draw_tools_row.setVisible(draw_checked)
+        self.tile_picker.setVisible(draw_checked)
+        if draw_checked:
+            if self.combo_paint_layer.currentData() is None:
+                # Sin esto la combo se queda en "Ninguna (solo vista)" y ninguna
+                # herramienta (pincel incluido) pinta hasta elegir capa a mano --
+                # entrar en modo Dibujar debe dejar el pincel listo de inmediato.
+                self.combo_paint_layer.setCurrentIndex(self._first_paintable_layer_combo_index())
+            return
+        # Volver a modo Editor: se sale de pintura de tiles, sin importar la capa elegida.
+        self.combo_paint_layer.blockSignals(True)
+        self.combo_paint_layer.setCurrentIndex(0)
+        self.combo_paint_layer.blockSignals(False)
+        self._paint_layer = None
+        self._hover_cell = None
+        self._refresh_tile_picker()
+        self._refresh_canvas()
+
+    def _first_paintable_layer_combo_index(self) -> int:
+        """combo_paint_layer index for the first tile layer with a tileset assigned,
+        falling back to Layer 1 (index 1) if none has one yet."""
+        row = self._current_row()
+        layers = row.get("tile_layers") if row else None
+        if isinstance(layers, list):
+            for i, ld in enumerate(layers):
+                if isinstance(ld, dict) and str(ld.get("tileset", "")).strip():
+                    return i + 1
+        return 1 if self.combo_paint_layer.count() > 1 else 0
+
+    def _on_paint_tool_changed(self, tool: str) -> None:
+        self._paint_tool = tool
+        # El borrador solo tiene sentido pintando (pincel/cubo); el cuentagotas solo lee.
+        self.chk_erase.setEnabled(tool != "eyedropper")
+        self._update_current_tool_icon()
+
+    def _update_current_tool_icon(self) -> None:
+        self.lbl_current_tool_icon.setPixmap(_tool_icon(self._paint_tool, size=24).pixmap(QSize(24, 24)))
+
+    def _tool_menu_specs(self) -> tuple[tuple[str, str, QPushButton], ...]:
+        return (
+            ("brush", "scene.tool_brush", self.btn_tool_brush),
+            ("eyedropper", "scene.tool_eyedropper", self.btn_tool_eyedropper),
+            ("bucket", "scene.tool_bucket", self.btn_tool_bucket),
+        )
+
+    def _build_tool_menu(self) -> tuple[QMenu, dict[Any, QPushButton]]:
+        menu = QMenu(self)
+        action_to_button: dict[Any, QPushButton] = {}
+        for tool, label_key, btn in self._tool_menu_specs():
+            act = menu.addAction(_tool_icon(tool), tr(label_key))
+            act.setCheckable(True)
+            act.setChecked(self._paint_tool == tool)
+            action_to_button[act] = btn
+        return menu, action_to_button
+
+    def _on_canvas_context_menu(self, global_pos: Any) -> None:
+        # Solo tiene sentido en modo Dibujar pintando una capa -- coincide con
+        # self.canvas.paintable, que ya filtra el evento antes de emitir la senal.
+        menu, action_to_button = self._build_tool_menu()
+        chosen = menu.exec(global_pos)
+        if chosen is not None and chosen in action_to_button:
+            action_to_button[chosen].setChecked(True)
+
     def _on_paint_layer_combo_changed(self, _index: int) -> None:
         self._paint_layer = self.combo_paint_layer.currentData()
         self._hover_cell = None
@@ -1693,12 +2024,28 @@ class SceneEditorWidget(QWidget):
         if cell is None:
             return
         gx, gy = cell
-        tile_index = TRANSPARENT_PALETTE_INDEX if self.chk_erase.isChecked() else self._paint_tile_index
         cells = layer.get("cells")
         if not isinstance(cells, list):
             return
-        set_cell_index(cells, gx, gy, tile_index)
-        self._mark_dirty()
+
+        if self._paint_tool == "eyedropper":
+            picked = get_cell_index(cells, gx, gy)
+            if picked is not None and not is_transparent_palette_index(picked):
+                self._paint_tile_index = picked
+                self.tile_picker.select_index(picked)
+            return
+
+        tile_index = TRANSPARENT_PALETTE_INDEX if self.chk_erase.isChecked() else self._paint_tile_index
+        if self._paint_tool == "bucket":
+            flood_fill_cell_index(cells, gx, gy, tile_index)
+        else:
+            set_cell_index(cells, gx, gy, tile_index)
+        # No _mark_dirty() aqui a proposito: se emite un cell_clicked por celda
+        # tocada al arrastrar, y un checkpoint de historial por celda haria falta un
+        # Ctrl+Z por celda para deshacer un solo trazo. SceneCanvas.stroke_finished
+        # (mouseReleaseEvent) hace el commit una sola vez al soltar el boton.
+        self._dirty = True
+        self.lbl_status.setText(tr("common.unsaved_changes"))
         self._refresh_canvas()
 
     # ------------------------------------------------------------------
@@ -1735,18 +2082,18 @@ class SceneEditorWidget(QWidget):
 
     def _on_object_selected(self, index: int) -> None:
         row = self._current_row()
-        if row is None or index < 0:
+        if row is None:
             return
         objs = row.get("objects") or []
-        if not (0 <= index < len(objs)):
-            return
-        p = objs[index]
-        self.spin_obj_x.blockSignals(True)
-        self.spin_obj_y.blockSignals(True)
-        self.spin_obj_x.setValue(int(p.get("x", 0)))
-        self.spin_obj_y.setValue(int(p.get("y", 0)))
-        self.spin_obj_x.blockSignals(False)
-        self.spin_obj_y.blockSignals(False)
+        if 0 <= index < len(objs):
+            p = objs[index]
+            self.spin_obj_x.blockSignals(True)
+            self.spin_obj_y.blockSignals(True)
+            self.spin_obj_x.setValue(int(p.get("x", 0)))
+            self.spin_obj_y.setValue(int(p.get("y", 0)))
+            self.spin_obj_x.blockSignals(False)
+            self.spin_obj_y.blockSignals(False)
+        self._refresh_canvas()
 
     def _on_object_xy_changed(self, _value: int) -> None:
         row = self._current_row()
@@ -1763,6 +2110,88 @@ class SceneEditorWidget(QWidget):
         self.list_objects.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
+
+    def _object_at_scene_xy(self, row: dict[str, Any], sx: int, sy: int) -> int | None:
+        """Topmost placed object whose sprite bbox contains (sx, sy), or None.
+        Iterates back-to-front since later entries in "objects" draw on top
+        (see _paint_scene_objects) -- a click should hit whatever is visible."""
+        placements = row.get("objects") or []
+        for idx in range(len(placements) - 1, -1, -1):
+            p = placements[idx]
+            if not isinstance(p, dict):
+                continue
+            oid = str(p.get("id", "")).strip()
+            if not oid:
+                continue
+            try:
+                ox = int(p.get("x", 0))
+                oy = int(p.get("y", 0))
+            except (TypeError, ValueError):
+                continue
+            info = _resolve_object_sprite_preview(self.project_root, oid)
+            bx, by = sprite_blit_bottom_left(ox, oy, int(info["origin_x"]), int(info["origin_y"]))
+            pw, ph = int(info["pw"]), int(info["ph"])
+            if bx <= sx < bx + pw and by <= sy < by + ph:
+                return idx
+        return None
+
+    def _on_object_drag_started(self, sx: int, sy: int) -> None:
+        row = self._current_row()
+        self._dragging_object_index = None
+        self._drag_offset = None
+        if row is None:
+            return
+        idx = self._object_at_scene_xy(row, sx, sy)
+        if idx is None:
+            return
+        objs = row.get("objects") or []
+        p = objs[idx]
+        self._dragging_object_index = idx
+        self._drag_offset = (sx - int(p.get("x", 0)), sy - int(p.get("y", 0)))
+        self.list_objects.blockSignals(True)
+        self.list_objects.setCurrentRow(idx)
+        self.list_objects.blockSignals(False)
+        self._on_object_selected(idx)
+
+    def _on_object_drag_moved(self, sx: int, sy: int) -> None:
+        if self._dragging_object_index is None or self._drag_offset is None:
+            return
+        row = self._current_row()
+        if row is None:
+            return
+        objs = row.get("objects") or []
+        idx = self._dragging_object_index
+        if not (0 <= idx < len(objs)):
+            return
+        ws_x = int(row.get("world_steps_x", 1))
+        ws_y = int(row.get("world_steps_y", 1))
+        ww, wh = scene_world_pixel_size(ws_x, ws_y, base_w=self._viewport_w, base_h=self._viewport_h)
+        dx, dy = self._drag_offset
+        nx = max(0, min(ww - 1, sx - dx))
+        ny = max(0, min(wh - 1, sy - dy))
+        objs[idx]["x"] = nx
+        objs[idx]["y"] = ny
+        self.spin_obj_x.blockSignals(True)
+        self.spin_obj_y.blockSignals(True)
+        self.spin_obj_x.setValue(nx)
+        self.spin_obj_y.setValue(ny)
+        self.spin_obj_x.blockSignals(False)
+        self.spin_obj_y.blockSignals(False)
+        self.list_objects.blockSignals(True)
+        self.list_objects.item(idx).setText(f"{objs[idx]['id']}  ({nx}, {ny})")
+        self.list_objects.blockSignals(False)
+        self._dirty = True
+        self.lbl_status.setText(tr("common.unsaved_changes"))
+        self._refresh_canvas()
+
+    def _on_object_drag_finished(self) -> None:
+        # Un solo checkpoint de historial por arrastre, igual que stroke_finished
+        # para pintura de tiles -- commit() equality-dedupe evita un checkpoint
+        # vacio si fue un clic sin movimiento.
+        if self._dragging_object_index is not None:
+            self._commit_history()
+        self._dragging_object_index = None
+        self._drag_offset = None
 
     # ------------------------------------------------------------------
     # Slots — camera

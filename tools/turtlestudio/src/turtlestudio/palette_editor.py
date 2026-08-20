@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPainter, QPen, QPixmap
@@ -35,6 +36,7 @@ from turtlestudio.build import (
     load_palette_lines,
     save_palette_lines,
 )
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.palette_policy import PALETTE_SIZE, TRANSPARENT_PALETTE_INDEX
 
@@ -180,6 +182,8 @@ class PaletteEditorWidget(QWidget):
         self._dirty: bool = False
         self._image_colors: list[tuple[int, int, int]] = []
         self._selected_image_color: tuple[int, int, int] | None = None
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -399,6 +403,7 @@ class PaletteEditorWidget(QWidget):
         self.grid.set_colors(self._colors)
         self._on_slot_selected(self.grid.selected())
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
 
     def _refresh_swatch(self) -> None:
         r = self.spin_r.value()
@@ -417,6 +422,40 @@ class PaletteEditorWidget(QWidget):
             spin.setValue(val)
             spin.blockSignals(False)
         self._refresh_swatch()
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {"colors": self._colors, "selected": self.grid.selected()}
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self._colors = state["colors"]
+            self.grid.set_colors(self._colors)
+            self.grid.set_selected(int(state["selected"]))
+            self._on_slot_selected(self.grid.selected())
+        finally:
+            self._restoring = False
+        self._dirty = True
+        self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     # ------------------------------------------------------------------
     # Slots
@@ -473,6 +512,7 @@ class PaletteEditorWidget(QWidget):
         self.grid.set_colors(self._colors)
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+        self._commit_history()
 
     def _action_use_image_color(self) -> None:
         if self._selected_image_color is None:
@@ -491,6 +531,7 @@ class PaletteEditorWidget(QWidget):
         self.grid.set_colors(self._colors)
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+        self._commit_history()
 
     def _action_save(self) -> None:
         rel = self.combo_palette.currentText().strip()

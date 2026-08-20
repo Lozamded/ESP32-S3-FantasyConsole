@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import QSize, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -25,6 +26,7 @@ from PyQt6.QtWidgets import (
 
 from turtlestudio.backgrounds import list_palette_relpaths
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines, load_palette_rgb01_for_preview
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.fonts import (
     DEFAULT_GLYPH_PX,
     GLYPH_PX_STEP,
@@ -111,6 +113,8 @@ class FontEditorWidget(QWidget):
         self.current_char = " "
         self._dirty = False
         self._suspend = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -177,6 +181,7 @@ class FontEditorWidget(QWidget):
         canvas_col = QVBoxLayout()
         self.canvas = SpriteCanvas()
         self.canvas.changed.connect(self._on_canvas_changed)
+        self.canvas.stroke_finished.connect(self._commit_history)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -307,6 +312,7 @@ class FontEditorWidget(QWidget):
         self._refresh_canvas()
         self._refresh_preview()
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
 
     def _refresh_canvas(self) -> None:
         rows = self.glyphs.get(self.current_char) or empty_glyph_rows(self.glyph_px, fill_index=TRANSPARENT_PALETTE_INDEX)
@@ -332,6 +338,56 @@ class FontEditorWidget(QWidget):
     def _mark_dirty(self) -> None:
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "glyphs": self.glyphs,
+            "current_char": self.current_char,
+            "glyph_px": self.glyph_px,
+            "line_height": self.line_height,
+            "baseline": self.baseline,
+        }
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self.glyphs = state["glyphs"]
+            self.current_char = state["current_char"]
+            self.glyph_px = int(state["glyph_px"])
+            self.line_height = int(state["line_height"])
+            self.baseline = int(state["baseline"])
+
+            self._suspend = True
+            self.spin_glyph_px.setValue(self.glyph_px)
+            self.spin_line_height.setValue(self.line_height)
+            self.spin_baseline.setValue(self.baseline)
+            self._suspend = False
+
+            self._refresh_canvas()
+            self._refresh_glyph_thumb()
+            self._refresh_preview()
+        finally:
+            self._restoring = False
+        self._mark_dirty()
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     def _set_tool(self, tool: Tool) -> None:
         self.canvas.set_tool(tool)
@@ -372,6 +428,7 @@ class FontEditorWidget(QWidget):
         self.baseline = self.spin_baseline.value()
         self._mark_dirty()
         self._refresh_preview()
+        self._commit_history()
 
     # ------------------------------------------------------------------
     # Actions
@@ -391,6 +448,7 @@ class FontEditorWidget(QWidget):
         self._refresh_canvas()
         self._refresh_glyph_thumb()
         self._refresh_preview()
+        self._commit_history()
 
     def _action_new_font(self) -> None:
         name, ok = QInputDialog.getText(self, tr("font.new_title"), tr("font.new_id_label"))

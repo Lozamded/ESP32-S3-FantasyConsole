@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 
 from turtlestudio.backgrounds import list_palette_relpaths
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.objects import OBJECT_COLLISION_MODE_AABB
 from turtlestudio.palette_editor import PaletteGridWidget
@@ -77,11 +78,15 @@ class TileCanvas(QWidget):
         self.collision_box: tuple[int, int, int, int] | None = None
         self._drawing = False
         self._on_paint: Any = None
+        self._on_stroke_finished: Any = None
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
     def set_on_paint(self, callback: Any) -> None:
         self._on_paint = callback
+
+    def set_on_stroke_finished(self, callback: Any) -> None:
+        self._on_stroke_finished = callback
 
     def set_tile(self, rows: list[list[int]], palette: list[tuple[int, int, int]], *, tile_px: int) -> None:
         self.rows = rows
@@ -187,7 +192,11 @@ class TileCanvas(QWidget):
             self._paint_at(event.position())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        was_drawing = self._drawing
         self._drawing = False
+        if was_drawing and self._on_stroke_finished is not None:
+            # Un solo checkpoint de historial por trazo, no uno por pixel.
+            self._on_stroke_finished()
 
 
 class TilesetEditorWidget(QWidget):
@@ -202,6 +211,8 @@ class TilesetEditorWidget(QWidget):
         self._tile_index = 0
         self._dirty = False
         self._suspend = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -268,6 +279,7 @@ class TilesetEditorWidget(QWidget):
         canvas_col = QVBoxLayout()
         self.canvas = TileCanvas()
         self.canvas.set_on_paint(self._mark_dirty)
+        self.canvas.set_on_stroke_finished(self._commit_history)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -426,6 +438,7 @@ class TilesetEditorWidget(QWidget):
         self._refresh_canvas()
         self._refresh_collision_form()
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
 
     @staticmethod
     def _grid_rgb01(rgb255: tuple[int, int, int]) -> tuple[float, float, float]:
@@ -445,6 +458,52 @@ class TilesetEditorWidget(QWidget):
     def _mark_dirty(self) -> None:
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "tiles": self._tiles,
+            "collision": self._collision,
+            "tile_index": self._tile_index,
+            "tile_px": self.tile_px,
+        }
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self._tiles = state["tiles"]
+            self._collision = state["collision"]
+            self._tile_index = min(int(state["tile_index"]), len(self._tiles) - 1)
+            self.tile_px = int(state["tile_px"])
+
+            self._suspend = True
+            self.spin_tile_px.setValue(self.tile_px)
+            self._suspend = False
+
+            self._refresh_tile_strip_icons()
+            self._refresh_canvas()
+            self._refresh_collision_form()
+        finally:
+            self._restoring = False
+        self._mark_dirty()
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     def _set_tool(self, tool: Tool) -> None:
         self.canvas.set_tool(tool)
@@ -524,6 +583,7 @@ class TilesetEditorWidget(QWidget):
         meta["oneway_direction"] = self.combo_oneway_dir.currentText()
         self._mark_dirty()
         self._update_collision_overlay()
+        self._commit_history()
 
     # ------------------------------------------------------------------
     # Actions
@@ -556,6 +616,7 @@ class TilesetEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_canvas()
         self._refresh_tile_strip_icons()
+        self._commit_history()
 
     def _action_import_image(self) -> None:
         if not self.tileset_id:
@@ -579,6 +640,7 @@ class TilesetEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_canvas()
         self._refresh_tile_strip_icons()
+        self._commit_history()
 
     def _action_add_tile(self) -> None:
         if len(self._tiles) >= MAX_TILES_PER_TILESET:
@@ -590,6 +652,7 @@ class TilesetEditorWidget(QWidget):
         self._refresh_tile_strip_icons()
         self._refresh_canvas()
         self._refresh_collision_form()
+        self._commit_history()
 
     def _action_remove_tile(self) -> None:
         if len(self._tiles) <= 1:
@@ -601,6 +664,7 @@ class TilesetEditorWidget(QWidget):
         self._refresh_tile_strip_icons()
         self._refresh_canvas()
         self._refresh_collision_form()
+        self._commit_history()
 
     def _action_auto_shape(self) -> None:
         box = default_shape_from_tile_pixels(
@@ -611,6 +675,7 @@ class TilesetEditorWidget(QWidget):
         meta["shape"] = box
         self._mark_dirty()
         self._refresh_collision_form()
+        self._commit_history()
 
     def _action_save(self) -> None:
         if not self.tileset_id:

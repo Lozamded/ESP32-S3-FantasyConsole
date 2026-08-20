@@ -68,8 +68,14 @@ scene.label,Escena:,Scene:
 scene.new_scene_button,Nueva…,New…
 scene.delete_button,Eliminar,Delete
 scene.activate_button,Activar,Activate
+scene.mode_editor,Editor,Editor
+scene.mode_draw,Dibujar,Draw
 scene.paint_layer_label,Capa de pintura:,Paint layer:
 scene.paint_layer_none,Ninguna (solo vista),None (view only)
+scene.tool_brush,Pincel,Brush
+scene.tool_eyedropper,Cuentagotas,Eyedropper
+scene.tool_bucket,Cubo de pintura,Paint bucket
+scene.current_tool_label,Herramienta actual:,Current tool:
 scene.layer_n,Capa {n},Layer {n}
 scene.layer_n_active,Capa {n} activa,Layer {n} active
 scene.properties_group,Propiedades de la escena,Scene properties
@@ -85,7 +91,7 @@ scene.bg_layer1_parallax_disabled_hint,Capa 1 usa 'Bandas de parallax' (debajo) 
 scene.color_label,Color:,Color:
 scene.opacity_label,Opacidad:,Opacity:
 scene.tile_layers_group,Capas de tiles,Tile layers
-scene.tile_layer_hint,Elige 'Capa de pintura' a la derecha del lienzo para pintar celdas.,Pick a 'Paint layer' to the right of the canvas to paint cells.
+scene.tile_layer_hint,Cambia a modo 'Dibujar' y elige 'Capa de pintura' a la derecha del lienzo para pintar celdas.,Switch to 'Draw' mode and pick a 'Paint layer' to the right of the canvas to paint cells.
 scene.objects_group,Objetos en la escena,Objects in the scene
 scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove

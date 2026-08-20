@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
@@ -23,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import (
@@ -61,6 +63,7 @@ class SpriteCanvas(QWidget):
     """Zoomed pixel-index grid; paints with the palette color at `current_index`."""
 
     changed = pyqtSignal()
+    stroke_finished = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -197,7 +200,12 @@ class SpriteCanvas(QWidget):
             self._paint_at(event.position())
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        was_drawing = self._drawing
         self._drawing = False
+        if was_drawing:
+            # Un solo checkpoint de historial por trazo, no uno por pixel (`changed`
+            # se emite por cada pixel pintado durante el arrastre).
+            self.stroke_finished.emit()
 
 
 class SpriteEditorWidget(QWidget):
@@ -216,6 +224,8 @@ class SpriteEditorWidget(QWidget):
         self._frames: list[list[list[int]]] = []
         self._frame_index = 0
         self._dirty = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -285,6 +295,7 @@ class SpriteEditorWidget(QWidget):
         canvas_col = QVBoxLayout()
         self.canvas = SpriteCanvas()
         self.canvas.changed.connect(self._mark_dirty)
+        self.canvas.stroke_finished.connect(self._commit_history)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -433,6 +444,7 @@ class SpriteEditorWidget(QWidget):
         self.grid.set_colors(self._load_palette_colors(self.palette_rel))
         self._refresh_canvas()
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
 
     def _refresh_canvas(self) -> None:
         self.canvas.set_sprite(
@@ -446,6 +458,69 @@ class SpriteEditorWidget(QWidget):
     def _mark_dirty(self) -> None:
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "frames": self._frames,
+            "frame_index": self._frame_index,
+            "blocks_w": self.blocks_w,
+            "blocks_h": self.blocks_h,
+            "cell_px": self.cell_px,
+            "origin_x": self.origin_x,
+            "origin_y": self.origin_y,
+        }
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self._frames = state["frames"]
+            self._frame_index = min(int(state["frame_index"]), len(self._frames) - 1)
+            self.blocks_w = int(state["blocks_w"])
+            self.blocks_h = int(state["blocks_h"])
+            self.cell_px = int(state["cell_px"])
+            self.origin_x = int(state["origin_x"])
+            self.origin_y = int(state["origin_y"])
+
+            for spin, value in (
+                (self.spin_blocks_w, self.blocks_w),
+                (self.spin_blocks_h, self.blocks_h),
+                (self.spin_cell_px, self.cell_px),
+                (self.spin_origin_x, self.origin_x),
+                (self.spin_origin_y, self.origin_y),
+            ):
+                spin.blockSignals(True)
+                spin.setValue(value)
+                spin.blockSignals(False)
+
+            self.frame_spin.blockSignals(True)
+            self.frame_spin.setRange(1, len(self._frames))
+            self.frame_spin.setValue(self._frame_index + 1)
+            self.frame_spin.blockSignals(False)
+            self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
+
+            self._refresh_canvas()
+        finally:
+            self._restoring = False
+        self._mark_dirty()
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     def _set_tool(self, tool: Tool) -> None:
         self.canvas.set_tool(tool)
@@ -474,6 +549,7 @@ class SpriteEditorWidget(QWidget):
         self.canvas.origin_y = self.origin_y
         self.canvas.update()
         self._mark_dirty()
+        self._commit_history()
 
     def _on_frame_spin_changed(self, value: int) -> None:
         idx = value - 1
@@ -510,6 +586,7 @@ class SpriteEditorWidget(QWidget):
         self.blocks_w, self.blocks_h, self.cell_px = new_bw, new_bh, new_cp
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _action_import_image(self) -> None:
         if not self.sprite_id:
@@ -534,6 +611,7 @@ class SpriteEditorWidget(QWidget):
         self._frames[self._frame_index] = rows
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _action_add_frame(self) -> None:
         if len(self._frames) >= MAX_SPRITE_FRAMES:
@@ -551,6 +629,7 @@ class SpriteEditorWidget(QWidget):
         self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _action_remove_frame(self) -> None:
         if len(self._frames) <= 1:
@@ -564,6 +643,7 @@ class SpriteEditorWidget(QWidget):
         self.lbl_frame_count.setText(tr("sprite.frame_count", n=len(self._frames)))
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _action_save(self) -> None:
         if not self.sprite_id:

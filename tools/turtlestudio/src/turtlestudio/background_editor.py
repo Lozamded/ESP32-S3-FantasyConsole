@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -36,6 +37,7 @@ from turtlestudio.backgrounds import (
     write_solid_background_json,
 )
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import PALETTE_SIZE, TRANSPARENT_PALETTE_INDEX
@@ -65,6 +67,8 @@ class BackgroundEditorWidget(QWidget):
         self.rows: list[list[int]] = []
         self.solid_index = 0
         self._dirty = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -142,6 +146,7 @@ class BackgroundEditorWidget(QWidget):
         canvas_col = QVBoxLayout()
         self.canvas = SpriteCanvas()
         self.canvas.changed.connect(self._mark_dirty)
+        self.canvas.stroke_finished.connect(self._commit_history)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -259,6 +264,7 @@ class BackgroundEditorWidget(QWidget):
         self._refresh_canvas()
         self._refresh_solid_preview()
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
 
     def _refresh_canvas(self) -> None:
         cell_px = max(self.pixel_w, self.pixel_h) + 1
@@ -274,6 +280,59 @@ class BackgroundEditorWidget(QWidget):
     def _mark_dirty(self) -> None:
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "rows": self.rows,
+            "solid_index": self.solid_index,
+            "pixel_w": self.pixel_w,
+            "pixel_h": self.pixel_h,
+        }
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self.mode = state["mode"]
+            self.rows = state["rows"]
+            self.solid_index = int(state["solid_index"])
+            self.pixel_w = int(state["pixel_w"])
+            self.pixel_h = int(state["pixel_h"])
+
+            self.spin_pw.blockSignals(True)
+            self.spin_pw.setValue(self.pixel_w)
+            self.spin_pw.blockSignals(False)
+            self.spin_ph.blockSignals(True)
+            self.spin_ph.setValue(self.pixel_h)
+            self.spin_ph.blockSignals(False)
+            self.combo_mode.blockSignals(True)
+            self.combo_mode.setCurrentIndex(self.combo_mode.findData(self.mode))
+            self.combo_mode.blockSignals(False)
+
+            self._refresh_canvas()
+            self._refresh_solid_preview()
+        finally:
+            self._restoring = False
+        self._mark_dirty()
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     def _set_tool(self, tool: Tool) -> None:
         self.canvas.set_tool(tool)
@@ -296,6 +355,7 @@ class BackgroundEditorWidget(QWidget):
             self.rows = solid_fill_indices(self.pixel_w, self.pixel_h, self.solid_index)
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _on_slot_selected(self, index: int) -> None:
         if index == TRANSPARENT_PALETTE_INDEX:
@@ -306,6 +366,7 @@ class BackgroundEditorWidget(QWidget):
             self._mark_dirty()
             self._refresh_canvas()
             self._refresh_solid_preview()
+            self._commit_history()
         else:
             self.canvas.set_color_index(index)
 
@@ -320,6 +381,7 @@ class BackgroundEditorWidget(QWidget):
             self.pixel_w, self.pixel_h = new_pw, new_ph
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     def _action_import_image(self) -> None:
         if not self.background_id:
@@ -339,6 +401,7 @@ class BackgroundEditorWidget(QWidget):
         self.combo_mode.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
+        self._commit_history()
 
     # ------------------------------------------------------------------
     # Actions

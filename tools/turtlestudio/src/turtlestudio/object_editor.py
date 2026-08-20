@@ -26,6 +26,7 @@ from PyQt6.QtWidgets import (
 )
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.objects import (
     OBJECT_COLLISION_MODE_AABB,
@@ -184,6 +185,8 @@ class ObjectEditorWidget(QWidget):
         self.script: str | None = None
         self._dirty = False
         self._suspend = False
+        self._history = SnapshotHistory()
+        self._restoring = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -423,6 +426,56 @@ class ObjectEditorWidget(QWidget):
         self._refresh_preview_sprite(self.sprite_id)
         self._refresh_collision_form()
         self.lbl_status.setText("")
+        self._history.reset(self._snapshot())
+
+    # ------------------------------------------------------------------
+    # Undo/redo
+    # ------------------------------------------------------------------
+
+    def _snapshot(self) -> dict[str, Any]:
+        return {
+            "name": self.edit_name.text(),
+            "sprite_id": self.sprite_id,
+            "script": self.script,
+            "animations": self.animations,
+            "collision": self.collision,
+        }
+
+    def _commit_history(self) -> None:
+        if self._restoring:
+            return
+        self._history.commit(self._snapshot())
+
+    def _restore(self, state: dict[str, Any]) -> None:
+        self._restoring = True
+        try:
+            self.sprite_id = state["sprite_id"]
+            self.script = state["script"]
+            self.animations = state["animations"]
+            self.collision = state["collision"]
+
+            self._suspend = True
+            self.edit_name.setText(state["name"])
+            self.edit_script.setText(self.script or "")
+            self._refresh_sprite_combo()
+            self._suspend = False
+
+            self._refresh_animation_list()
+            self._refresh_preview_sprite(self.sprite_id)
+            self._refresh_collision_form()
+        finally:
+            self._restoring = False
+        self._mark_dirty()
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     # ------------------------------------------------------------------
     # Slots
@@ -434,6 +487,7 @@ class ObjectEditorWidget(QWidget):
 
     def _on_name_edited(self) -> None:
         self._mark_dirty()
+        self._commit_history()
 
     def _on_sprite_changed(self, text: str) -> None:
         if self._suspend or not text:
@@ -441,11 +495,13 @@ class ObjectEditorWidget(QWidget):
         self.sprite_id = text
         self._refresh_preview_sprite(self.sprite_id)
         self._mark_dirty()
+        self._commit_history()
 
     def _on_script_edited(self) -> None:
         text = self.edit_script.text().strip()
         self.script = text or None
         self._mark_dirty()
+        self._commit_history()
 
     def _on_animation_selected(self, index: int) -> None:
         if 0 <= index < len(self.animations):
@@ -460,6 +516,7 @@ class ObjectEditorWidget(QWidget):
             self.collision = None
             self._mark_dirty()
             self._refresh_collision_form()
+            self._commit_history()
             return
         try:
             sprite_data = read_sprite_file(self.project_root, self.sprite_id)
@@ -470,6 +527,7 @@ class ObjectEditorWidget(QWidget):
         self.collision = default_collision_from_sprite(sprite_data, mode=self.combo_coll_mode.currentText())
         self._mark_dirty()
         self._refresh_collision_form()
+        self._commit_history()
 
     def _on_collision_mode_changed(self, mode: str) -> None:
         if self._suspend or self.collision is None:
@@ -488,6 +546,7 @@ class ObjectEditorWidget(QWidget):
         }
         self._mark_dirty()
         self.canvas.set_collision(self.collision)
+        self._commit_history()
 
     # ------------------------------------------------------------------
     # Actions
@@ -501,6 +560,7 @@ class ObjectEditorWidget(QWidget):
         self.collision = default_collision_from_sprite(sprite_data, mode=mode)
         self._mark_dirty()
         self._refresh_collision_form()
+        self._commit_history()
 
     def _action_auto_shape(self) -> None:
         self._regenerate_shape(self.combo_coll_mode.currentText())
@@ -523,6 +583,7 @@ class ObjectEditorWidget(QWidget):
         self.animations.append({"name": name.strip(), "sprite_id": sprite_id})
         self._refresh_animation_list()
         self._mark_dirty()
+        self._commit_history()
 
     def _action_remove_animation(self) -> None:
         idx = self.list_animations.currentRow()
@@ -530,6 +591,7 @@ class ObjectEditorWidget(QWidget):
             del self.animations[idx]
             self._refresh_animation_list()
             self._mark_dirty()
+            self._commit_history()
 
     def _action_new_object(self) -> None:
         name, ok = QInputDialog.getText(self, tr("object.new_title"), tr("object.new_id_label"))

@@ -350,6 +350,38 @@ def set_cell_index(
         cells[gy][gx] = max(0, min(255, int(tile_index)))
 
 
+def get_cell_index(cells: list[list[int]], gx: int, gy: int) -> int | None:
+    """Eyedropper support: the raw tile index at (gx, gy), or None if out of bounds."""
+    if 0 <= gy < len(cells) and 0 <= gx < len(cells[gy]):
+        return int(cells[gy][gx])
+    return None
+
+
+def flood_fill_cell_index(
+    cells: list[list[int]],
+    gx: int,
+    gy: int,
+    tile_index: int,
+) -> None:
+    """Paint-bucket tool: 4-connected flood fill from (gx, gy), replacing every cell
+    reachable through cells sharing the origin's tile index with `tile_index`."""
+    if not (0 <= gy < len(cells) and 0 <= gx < len(cells[gy])):
+        return
+    new_index = max(0, min(255, int(tile_index)))
+    target = cells[gy][gx]
+    if target == new_index:
+        return
+    stack = [(gx, gy)]
+    while stack:
+        x, y = stack.pop()
+        if not (0 <= y < len(cells) and 0 <= x < len(cells[y])):
+            continue
+        if cells[y][x] != target:
+            continue
+        cells[y][x] = new_index
+        stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+
+
 def list_tileset_stems_for_palette(
     project_root: Any,
     scene_palette_rel: str,

@@ -10,6 +10,7 @@ Copia TODO el contenido de esta carpeta a la RAIZ de la microSD:
   scripts/intro.lua
   sprites/character_idle.tsp
   studio/project_bundle.json
+  tiles/greenfield.tts
 
 No copies solo el .turtlecart: fondos/sprites/tilesets/fuentes/objetos/scripts referenciados
 estan en backgrounds/, sprites/, tiles/, fonts/, objects/, scripts/.
