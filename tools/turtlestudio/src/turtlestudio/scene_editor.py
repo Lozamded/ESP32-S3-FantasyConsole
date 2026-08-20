@@ -1171,12 +1171,36 @@ class SceneEditorWidget(QWidget):
             combo.currentTextChanged.connect(lambda v, idx=i: self._on_tile_layer_changed(idx))
             lrow.addWidget(combo, stretch=1)
             layout.addLayout(lrow)
-            self.tile_layer_rows.append({"enabled": chk, "tileset": combo})
+            warning = QLabel()
+            warning.setStyleSheet("color: #e0a030;")
+            warning.setWordWrap(True)
+            warning.setVisible(False)
+            layout.addWidget(warning)
+            self.tile_layer_rows.append({"enabled": chk, "tileset": combo, "warning": warning})
         hint = QLabel(tr("scene.tile_layer_hint"))
         hint.setStyleSheet("color: #888;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
         return box
+
+    def _update_tile_layer_warning(self, idx: int) -> None:
+        widgets = self.tile_layer_rows[idx]
+        warning = widgets["warning"]
+        stem = widgets["tileset"].currentText().strip()
+        if not stem:
+            warning.setVisible(False)
+            return
+        try:
+            data = read_tileset_file(self.project_root, stem)
+        except ValueError:
+            warning.setVisible(False)
+            return
+        tileset_px = tileset_file_pixel_dimensions(data)
+        if tileset_px == self._tile_px:
+            warning.setVisible(False)
+            return
+        warning.setText(tr("scene.tile_layer_px_mismatch", tileset_px=tileset_px, project_px=self._tile_px))
+        warning.setVisible(True)
 
     def _build_objects_group(self) -> QGroupBox:
         box = QGroupBox(tr("scene.objects_group"))
@@ -1430,6 +1454,7 @@ class SceneEditorWidget(QWidget):
                 idx = combo.findText(ts)
             combo.setCurrentIndex(max(0, idx))
             combo.blockSignals(False)
+            self._update_tile_layer_warning(i)
 
     def _refresh_object_combo(self, palette_rel: str) -> None:
         self.combo_add_object.blockSignals(True)
@@ -1944,6 +1969,7 @@ class SceneEditorWidget(QWidget):
             return
         layers = row.get("tile_layers") or []
         for i, widgets in enumerate(self.tile_layer_rows):
+            self._update_tile_layer_warning(i)
             if i >= len(layers):
                 continue
             layers[i]["enabled"] = widgets["enabled"].isChecked()
