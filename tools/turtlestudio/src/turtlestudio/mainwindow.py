@@ -33,6 +33,7 @@ from turtlestudio.play_widget import PlayWidget
 from turtlestudio.scene_editor import SceneEditorWidget
 from turtlestudio.sprite_editor import SpriteEditorWidget
 from turtlestudio.tileset_editor import TilesetEditorWidget
+from turtlestudio.welcome_widget import WelcomeWidget
 from turtlestudio.workspace_tabs import TabKind, TabRef, WorkspaceTabs
 from turtlestudio.project import (
     MANIFEST_NAME,
@@ -154,7 +155,11 @@ class MainWindow(QMainWindow):
 
         self.center_stack = _CenterStack()
         self.center_stack.currentChanged.connect(lambda _i: self.center_stack.updateGeometry())
-        self._empty_page = _PlaceholderPage(tr("mainwindow.empty_page"))
+        self._empty_page = WelcomeWidget()
+        self._empty_page.new_project_requested.connect(self._action_new_project)
+        self._empty_page.open_project_requested.connect(self.open_project)
+        self._empty_page.browse_requested.connect(self._action_open_project)
+        self._empty_page.set_recent_projects(self._load_recent_projects())
         self.center_stack.addWidget(self._empty_page)
 
         self.palette_editor = PaletteEditorWidget(Path("."))
@@ -250,7 +255,7 @@ class MainWindow(QMainWindow):
 
     def _action_clear_recent_projects(self) -> None:
         self._settings.remove(self._RECENT_PROJECTS_KEY)
-        self._rebuild_recent_menu()
+        self._on_recent_projects_changed()
 
     def _load_recent_projects(self) -> list[Path]:
         raw = self._settings.value(self._RECENT_PROJECTS_KEY, [])
@@ -263,12 +268,18 @@ class MainWindow(QMainWindow):
         recents.insert(0, path)
         del recents[self._MAX_RECENT_PROJECTS :]
         self._settings.setValue(self._RECENT_PROJECTS_KEY, [str(p) for p in recents])
-        self._rebuild_recent_menu()
+        self._on_recent_projects_changed()
 
     def _forget_recent_project(self, path: Path) -> None:
         recents = [p for p in self._load_recent_projects() if p != path]
         self._settings.setValue(self._RECENT_PROJECTS_KEY, [str(p) for p in recents])
+        self._on_recent_projects_changed()
+
+    def _on_recent_projects_changed(self) -> None:
         self._rebuild_recent_menu()
+        empty_page = getattr(self, "_empty_page", None)
+        if empty_page is not None:
+            empty_page.set_recent_projects(self._load_recent_projects())
 
     def _rebuild_recent_menu(self) -> None:
         self.recent_menu.clear()
