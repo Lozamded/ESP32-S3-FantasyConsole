@@ -1135,20 +1135,20 @@
       "parallax_bands": [
         {
           "y0": 73,
-          "y1": 122,
-          "parallax_x": 1.0,
+          "y1": 123,
+          "parallax_x": 0.15,
           "fixed": true
         },
         {
           "y0": 42,
           "y1": 72,
-          "parallax_x": 1.0,
+          "parallax_x": 0.1,
           "repeat_x": true
         },
         {
           "y0": 0,
           "y1": 41,
-          "parallax_x": 1.0,
+          "parallax_x": 0.05,
           "repeat_x": true
         }
       ],

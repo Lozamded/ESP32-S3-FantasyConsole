@@ -142,6 +142,12 @@ TURTLE_BSS_PSRAM static uint8_t s_scene_pixels[kSceneW * kSceneH];
 static uint8_t* s_world_bg = nullptr;
 static int s_world_bg_w = 0;
 static int s_world_bg_h = 0;
+/** Ancho real (px) de la imagen horneada en s_world_bg (capa 1) -- NO el ancho del buffer
+ *  de mundo (s_world_bg_w), que puede ser hasta 2x mas ancho que la imagen. paint_world_
+ *  background_banded() necesita este valor para el modulo de `repeat_x` (spec/scene-v0.md:
+ *  "modulo el ancho del bitmap de fondo"); usar s_world_bg_w ahi envolveria sobre relleno
+ *  solido en vez de repetir la imagen. 0 = sin imagen horneada (solo relleno solido). */
+static int s_bg_layer1_pixel_w = 0;
 static bool s_world_static_ready = false;
 /** true si bake_tile_layers_into_world() horneo los tiles dentro de s_world_bg (junto a la
  *  capa base). Cuando hay capas 2-4 (background_layers) habilitadas se deja en false a
@@ -1313,7 +1319,13 @@ static void paint_world_background_banded(int cam_x, int vis_y0, int vis_y1,
     const bool fixed = band ? band->fixed : false;
     const bool repeat_x = band ? band->repeat_x : false;
     const int x_offset = fixed ? 0 : static_cast<int>(cam_x * parallax_x);
-    turtle_gpu_blit_indexed_row_banded(scene_y, row, s_world_bg_w, x_offset, repeat_x,
+    // OJO: modulo/recorte de repeat_x debe ser sobre el ancho REAL de la imagen horneada
+    // (s_bg_layer1_pixel_w), no s_world_bg_w (ancho del buffer de mundo, hasta 2x mas
+    // ancho que la imagen) -- si no, "repetir" envuelve sobre el relleno solido que rellena
+    // el resto de la fila en vez de repetir la imagen (spec/scene-v0.md: "modulo el ancho
+    // del bitmap de fondo").
+    const int sample_w = (s_bg_layer1_pixel_w > 0) ? s_bg_layer1_pixel_w : s_world_bg_w;
+    turtle_gpu_blit_indexed_row_banded(scene_y, row, sample_w, x_offset, repeat_x,
                                        transparent_index);
   }
 }
@@ -2641,6 +2653,7 @@ static bool bake_indexed_background_into_world(const char* json, const char* jso
         world_buffer_put_scene_pixel(sx, sy, static_cast<uint8_t>(pci));
       }
     }
+    s_bg_layer1_pixel_w = pw;
     return true;
   }
   if (pw <= 0 || ph <= 0) {
@@ -2650,8 +2663,12 @@ static bool bake_indexed_background_into_world(const char* json, const char* jso
     Serial.printf("turtle_scene: fondo %dx%d > buffer %dx%d\n", pw, ph, s_world_bg_w, s_world_bg_h);
     return false;
   }
-  return decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph, s_world_bg,
-                                        s_world_bg_w);
+  if (!decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph, s_world_bg,
+                                      s_world_bg_w)) {
+    return false;
+  }
+  s_bg_layer1_pixel_w = pw;
+  return true;
 }
 
 /** Carga una capa extra (spec/scene-v0.md "Capas de fondo con imagen") en SU PROPIO buffer
@@ -2817,6 +2834,11 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
                                            const char* scene_start, const char* scene_end) {
   s_world_static_ready = false;
   s_tiles_baked_into_world = false;
+  // Default conservador: sin imagen de capa 1 (bake_indexed_background_into_world no
+  // encuentra `background`), el buffer entero es relleno solido parejo -- envolver al
+  // ancho del mundo es inofensivo ahi. bake_indexed_background_into_world lo corrige al
+  // ancho real de la imagen en cuanto hornea una.
+  s_bg_layer1_pixel_w = s_world_w;
   if (!scene_uses_scrolling()) {
     return false;
   }
@@ -2834,7 +2856,15 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
   // paint_scene_static_layers() vuelve a dibujar los tiles en vivo cada fotograma (como el
   // camino sin hornear) para que queden por encima de las capas 2-4. Sin capas 2-4 habilitadas
   // se sigue horneando (comportamiento/performance de siempre, sin regresion).
-  if (!bg_image_layers_any_enabled()) {
+  //
+  // Igual con parallax_bands (capa 1): paint_cached_world_background() re-samplea CADA FILA
+  // visible de s_world_bg con el x_offset de la banda que la cubra (paint_world_background_banded),
+  // no con la camara plana. Si los tiles estuvieran horneados en esas mismas filas de s_world_bg
+  // (bake_tile_layers_into_world), ese resample por banda tambien correria sobre los pixeles de
+  // tile -- una banda "fixed" (o con parallax_x != 1 / repeat_x) dejaria los tiles de esa franja
+  // sin scrollear con la camara, aunque el spec dice que las bandas solo tocan el fondo. Por eso
+  // tambien se salta el horneado de tiles (mismo camino "en vivo" de arriba) cuando hay bandas.
+  if (!bg_image_layers_any_enabled() && s_parallax_band_count <= 0) {
     if (!bake_tile_layers_into_world(json, json_end, scene_start, scene_end, s_runtime_transp)) {
       Serial.println("turtle_scene: aviso: tiles no horneados");
     } else {
