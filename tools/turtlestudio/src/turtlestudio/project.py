@@ -306,6 +306,8 @@ class SceneEntry:
     background: str = ""
     # Hasta 4 capas de tilemap (rejilla segun `tiles.tile_px` del manifest).
     tile_layers: tuple[Any, ...] = ()
+    # Indice (0..3) de la unica capa de tiles cuyos tiles solidos bloquean actores.
+    collision_tile_layer: int = 0
     # Mundo = VIEWPORT * pasos (1 = 164×124; 2 = 328×248).
     world_steps_x: int = 1
     world_steps_y: int = 1
@@ -575,7 +577,11 @@ def _parse_scenes_from_manifest(
     Si falta `scenes` en el JSON, sintetiza una escena `intro` con la paleta por defecto del proyecto.
     """
     ti = _clamp_transparent_index(data.get("transparent_index", DEFAULT_TRANSPARENT_INDEX))
-    from turtlestudio.scene_tiles import default_tile_layers, parse_tile_layers
+    from turtlestudio.scene_tiles import (
+        default_tile_layers,
+        normalize_collision_tile_layer,
+        parse_tile_layers,
+    )
     from turtlestudio.tiles import parse_tile_px_from_manifest
 
     tile_px = parse_tile_px_from_manifest(data)
@@ -665,6 +671,7 @@ def _parse_scenes_from_manifest(
                 world_w=ww,
                 world_h=wh,
             )
+            coll_layer = normalize_collision_tile_layer(item.get("collision_tile_layer", 0))
             from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
 
             scene_tf: int | None = None
@@ -686,6 +693,7 @@ def _parse_scenes_from_manifest(
                     background_layers=layers,
                     background="",
                     tile_layers=tile_ly,
+                    collision_tile_layer=coll_layer,
                     world_steps_x=wsx,
                     world_steps_y=wsy,
                     target_fps=scene_tf,
@@ -845,6 +853,8 @@ def _write_mirror_scene_json_files(
             payload["world_steps_x"] = int(row["world_steps_x"])
         if int(row.get("world_steps_y", 1)) != 1:
             payload["world_steps_y"] = int(row["world_steps_y"])
+        if int(row.get("collision_tile_layer", 0)) != 0:
+            payload["collision_tile_layer"] = int(row["collision_tile_layer"])
         if isinstance(row.get("parallax_bands"), list):
             payload["parallax_bands"] = list(row["parallax_bands"])
         from turtlestudio.scene_camera import parse_scene_camera_from_row, scene_camera_to_json
@@ -999,7 +1009,7 @@ def _normalize_scenes_for_save(
     if not scenes:
         raise ValueError("Debe existir al menos una escena.")
     from turtlestudio.backgrounds import validate_scene_background_for_save
-    from turtlestudio.scene_tiles import validate_tile_layers_for_save
+    from turtlestudio.scene_tiles import normalize_collision_tile_layer, validate_tile_layers_for_save
     from turtlestudio.tiles import DEFAULT_TILE_PX, parse_tile_px_from_manifest
 
     mp = manifest_path(root)
@@ -1106,6 +1116,7 @@ def _normalize_scenes_for_save(
             "script": stem,
             "objects": objs_ok,
             "tile_layers": tile_saved,
+            "collision_tile_layer": normalize_collision_tile_layer(item.get("collision_tile_layer", 0)),
             "world_steps_x": wsx,
             "world_steps_y": wsy,
         }

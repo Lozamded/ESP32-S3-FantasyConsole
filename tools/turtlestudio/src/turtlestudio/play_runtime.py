@@ -49,6 +49,7 @@ from turtlestudio.scene_camera import (
 from turtlestudio.scene_editor import render_scene_rgba
 from turtlestudio.scene_tiles import (
     SceneTileLayer,
+    normalize_collision_tile_layer,
     parse_tile_layers,
     scene_tile_grid_dimensions,
 )
@@ -307,11 +308,15 @@ class TileCollisionIndex:
         tile_px: int,
         world_w: int,
         world_h: int,
+        collision_tile_layer: int = 0,
     ) -> None:
         self.project_root = project_root
         self.tile_px = tile_px
         self.cols, self.rows = scene_tile_grid_dimensions(tile_px, world_w=world_w, world_h=world_h)
-        self.layers = [ly for ly in layers if ly.enabled and ly.tileset.strip()]
+        # spec/scene-v0.md "Capa de colision": solo esta capa bloquea actores (paridad
+        # con turtle_scene.cpp tile_cell_blocks_actor / s_runtime_collision_tile_layer).
+        ly = layers[collision_tile_layer] if 0 <= collision_tile_layer < len(layers) else None
+        self.layer = ly if ly is not None and ly.enabled and ly.tileset.strip() else None
         self._cache: dict[str, _TilesetCollisionCache] = {}
 
     def _tileset_cache(self, stem: str) -> _TilesetCollisionCache:
@@ -342,23 +347,23 @@ class TileCollisionIndex:
     ) -> bool:
         if gx < 0 or gy < 0 or gx >= self.cols or gy >= self.rows:
             return False
+        ly = self.layer
+        if ly is None:
+            return False
         tsx0 = gx * self.tile_px
         tsy0 = (self.rows - 1 - gy) * self.tile_px
-        for ly in self.layers:
-            if gy >= len(ly.cells):
-                continue
-            row = ly.cells[gy]
-            if gx >= len(row):
-                continue
-            ti = row[gx]
-            if ti == TRANSPARENT_PALETTE_INDEX or ti < 0:
-                continue
-            cache = self._tileset_cache(ly.tileset)
-            if cache.tile_px != self.tile_px or ti >= len(cache.meta):
-                continue
-            if _tile_meta_blocks(cache.meta[ti], self.tile_px, tsx0, tsy0, ax0, ay0, ax1, ay1, step_dx, step_dy, ground_probe):
-                return True
-        return False
+        if gy >= len(ly.cells):
+            return False
+        row = ly.cells[gy]
+        if gx >= len(row):
+            return False
+        ti = row[gx]
+        if ti == TRANSPARENT_PALETTE_INDEX or ti < 0:
+            return False
+        cache = self._tileset_cache(ly.tileset)
+        if cache.tile_px != self.tile_px or ti >= len(cache.meta):
+            return False
+        return _tile_meta_blocks(cache.meta[ti], self.tile_px, tsx0, tsy0, ax0, ay0, ax1, ay1, step_dx, step_dy, ground_probe)
 
     def actor_hits(self, ax0: int, ay0: int, ax1: int, ay1: int, step_dx: int, step_dy: int, *, ground_probe: bool = False) -> bool:
         px = self.tile_px
@@ -689,7 +694,15 @@ class PlaySession:
         self._font_cache = {}
 
         tile_layers = parse_tile_layers(row.get("tile_layers"), tile_px=tile_px, world_w=self.fw, world_h=self.fh)
-        self.tile_index = TileCollisionIndex(self.project_root, tile_layers, tile_px=tile_px, world_w=self.fw, world_h=self.fh)
+        coll_layer = normalize_collision_tile_layer(row.get("collision_tile_layer", 0))
+        self.tile_index = TileCollisionIndex(
+            self.project_root,
+            tile_layers,
+            tile_px=tile_px,
+            world_w=self.fw,
+            world_h=self.fh,
+            collision_tile_layer=coll_layer,
+        )
 
         palette_rel = str(row.get("palette", "")).strip()
         pal_path = (self.project_root / palette_rel).resolve() if palette_rel else None

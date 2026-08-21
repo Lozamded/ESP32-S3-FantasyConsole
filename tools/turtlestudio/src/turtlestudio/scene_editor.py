@@ -102,6 +102,7 @@ from turtlestudio.scene_tiles import (
     flood_fill_cell_index,
     get_cell_index,
     list_tileset_stems_for_palette,
+    normalize_collision_tile_layer,
     paint_tile_layers_on_rgba,
     parse_tile_layers,
     scene_coords_to_cell,
@@ -1183,6 +1184,19 @@ class SceneEditorWidget(QWidget):
         hint.setStyleSheet("color: #888;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
+
+        coll_row = QHBoxLayout()
+        coll_row.addWidget(QLabel(tr("scene.collision_layer_label")))
+        self.combo_collision_layer = QComboBox()
+        for i in range(TILE_LAYER_COUNT):
+            self.combo_collision_layer.addItem(tr("scene.layer_n", n=i + 1), i)
+        self.combo_collision_layer.currentIndexChanged.connect(self._on_collision_tile_layer_changed)
+        coll_row.addWidget(self.combo_collision_layer, stretch=1)
+        layout.addLayout(coll_row)
+        coll_hint = QLabel(tr("scene.collision_layer_hint"))
+        coll_hint.setStyleSheet("color: #888;")
+        coll_hint.setWordWrap(True)
+        layout.addWidget(coll_hint)
         return section
 
     def _update_tile_layer_warning(self, idx: int) -> None:
@@ -1458,6 +1472,14 @@ class SceneEditorWidget(QWidget):
             combo.setCurrentIndex(max(0, idx))
             combo.blockSignals(False)
             self._update_tile_layer_warning(i)
+        self._load_collision_layer(row)
+
+    def _load_collision_layer(self, row: dict[str, Any]) -> None:
+        layer = normalize_collision_tile_layer(row.get("collision_tile_layer", 0))
+        self.combo_collision_layer.blockSignals(True)
+        idx = self.combo_collision_layer.findData(layer)
+        self.combo_collision_layer.setCurrentIndex(max(0, idx))
+        self.combo_collision_layer.blockSignals(False)
 
     def _refresh_object_combo(self, palette_rel: str) -> None:
         self.combo_add_object.blockSignals(True)
@@ -1981,6 +2003,17 @@ class SceneEditorWidget(QWidget):
         if self._paint_layer is not None:
             self._refresh_tile_picker()
         self._refresh_canvas()
+
+    def _on_collision_tile_layer_changed(self, _index: int) -> None:
+        if self._suspend:
+            return
+        row = self._current_row()
+        if row is None:
+            return
+        row["collision_tile_layer"] = normalize_collision_tile_layer(
+            self.combo_collision_layer.currentData()
+        )
+        self._mark_dirty()
 
     def _on_mode_toggled(self, draw_checked: bool) -> None:
         self.draw_tools_row.setVisible(draw_checked)

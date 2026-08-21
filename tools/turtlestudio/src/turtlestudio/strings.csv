@@ -93,6 +93,8 @@ scene.opacity_label,Opacidad:,Opacity:
 scene.tile_layers_group,Capas de tiles,Tile layers
 scene.tile_layer_hint,Cambia a modo 'Dibujar' y elige 'Capa de pintura' a la derecha del lienzo para pintar celdas.,Switch to 'Draw' mode and pick a 'Paint layer' to the right of the canvas to paint cells.
 scene.tile_layer_px_mismatch,"⚠ Este tileset usa {tileset_px}px pero el proyecto usa {project_px}px -- no se dibujara.","⚠ This tileset uses {tileset_px}px but the project uses {project_px}px -- it will not render."
+scene.collision_layer_label,Capa de colision:,Collision layer:
+scene.collision_layer_hint,Unica capa de tiles que bloquea actores (solido/oneway); las otras 3 son solo decorativas aunque tengan colision propia.,Only tile layer that blocks actors (solid/one-way); the other 3 are decoration only even if their own tiles have collision set.
 scene.objects_group,Objetos en la escena,Objects in the scene
 scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove

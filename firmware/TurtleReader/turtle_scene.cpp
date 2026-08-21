@@ -165,6 +165,10 @@ static int s_target_fps = 30;
 static int s_default_anim_fps = 8;
 static int s_runtime_tile_px = 16;
 static int s_runtime_tile_layer_count = 0;
+/** spec/scene-v0.md "Capa de colision": unica capa de tiles cuyos tiles solidos
+ *  bloquean actores; las otras 3 son puramente decorativas sin importar su propio
+ *  metadato de colision. Default 0 (compat: proyectos con una sola capa de tiles). */
+static int s_runtime_collision_tile_layer = 0;
 static int s_world_w = kSceneW;
 static int s_world_h = kSceneH;
 static int s_cam_x = 0;
@@ -1830,6 +1834,22 @@ static void parse_scene_world(const char* sc_start, const char* sc_end) {
   s_world_h = kSceneH * sy;
 }
 
+/** spec/scene-v0.md "Capa de colision". Sin campo (carts viejos) -> capa 0. */
+static void parse_scene_collision_layer(const char* sc_start, const char* sc_end) {
+  int layer = 0;
+  if (json_extract_int_for_key(sc_start, sc_end, "collision_tile_layer", &layer)) {
+    if (layer < 0) {
+      layer = 0;
+    }
+    if (layer >= kMaxTileLayers) {
+      layer = kMaxTileLayers - 1;
+    }
+  } else {
+    layer = 0;
+  }
+  s_runtime_collision_tile_layer = layer;
+}
+
 static int clamp_camera_margin(int margin, int viewport_size) {
   const int cap = (viewport_size - 1) / 2;
   if (margin < 0) {
@@ -3421,35 +3441,35 @@ static bool tile_cell_blocks_actor(int gx, int gy, int ax0, int ay0, int ax1, in
   const int tsx0 = gx * px;
   const int tsx1 = tsx0 + px - 1;
 
-  for (int li = 0; li < s_runtime_tile_layer_count; ++li) {
-    const TileLayer* ly = &s_tile_layers[li];
-    // Capa sin ningun tile solido (p. ej. decorativa): se salta antes de tocar la
-    // cache de tileset de colision, que solo tiene 1 entrada (evita thrashing).
-    if (!ly->enabled || !ly->tileset[0] || !ly->has_solid_tiles) {
-      continue;
-    }
-    if (gx >= ly->cols || gy >= ly->rows) {
-      continue;
-    }
-    const int ti = ly->cells[gy][gx];
-    if (ti < 0 || ti == static_cast<int>(s_runtime_transp)) {
-      continue;
-    }
-    const TurtleTileset* ts =
-        coll_tileset_cache_get(s_runtime_json, s_runtime_json_end, ly->tileset);
-    if (!ts) {
-      continue;
-    }
-    if (ti >= static_cast<int>(ts->tile_count)) {
-      continue;
-    }
-    const TurtleTileCollEntry* ce = &ts->coll[ti];
-    if (turtle_tile_collision_blocks(ce, px, tsx0, tsy0, tsx1, tsy1, ax0, ay0, ax1, ay1, step_dx,
-                                     step_dy, ground_probe)) {
-      return true;
-    }
+  // spec/scene-v0.md "Capa de colision": solo la capa designada bloquea actores;
+  // las otras 3 son decorativas aunque sus propios tiles esten marcados solid/oneway.
+  const int li = s_runtime_collision_tile_layer;
+  if (li < 0 || li >= s_runtime_tile_layer_count) {
+    return false;
   }
-  return false;
+  const TileLayer* ly = &s_tile_layers[li];
+  // Capa sin ningun tile solido (p. ej. decorativa): se salta antes de tocar la
+  // cache de tileset de colision, que solo tiene 1 entrada (evita thrashing).
+  if (!ly->enabled || !ly->tileset[0] || !ly->has_solid_tiles) {
+    return false;
+  }
+  if (gx >= ly->cols || gy >= ly->rows) {
+    return false;
+  }
+  const int ti = ly->cells[gy][gx];
+  if (ti < 0 || ti == static_cast<int>(s_runtime_transp)) {
+    return false;
+  }
+  const TurtleTileset* ts = coll_tileset_cache_get(s_runtime_json, s_runtime_json_end, ly->tileset);
+  if (!ts) {
+    return false;
+  }
+  if (ti >= static_cast<int>(ts->tile_count)) {
+    return false;
+  }
+  const TurtleTileCollEntry* ce = &ts->coll[ti];
+  return turtle_tile_collision_blocks(ce, px, tsx0, tsy0, tsx1, tsy1, ax0, ay0, ax1, ay1, step_dx,
+                                      step_dy, ground_probe);
 }
 
 static bool rects_overlap(int ax0, int ay0, int ax1, int ay1, int bx0, int by0, int bx1,
@@ -3806,6 +3826,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   }
   parse_scene_timing(json, json_end, sc_start, sc_end);
   parse_scene_world(sc_start, sc_end);
+  parse_scene_collision_layer(sc_start, sc_end);
   parse_scene_camera(sc_start, sc_end);
   parse_scene_parallax_bands(sc_start, sc_end);
   parse_scene_bg_image_layers(sc_start, sc_end);

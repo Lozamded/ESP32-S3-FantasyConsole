@@ -111,6 +111,16 @@ def parse_tile_layers(
     return tuple(out)
 
 
+def normalize_collision_tile_layer(raw: Any) -> int:
+    """spec/scene-v0.md 'Capa de colision': indice 0..3 de la unica capa de tiles que
+    bloquea actores (las otras 3 son decorativas). Sin dato / invalido -> 0."""
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(TILE_LAYER_COUNT - 1, v))
+
+
 def default_tile_layers(
     tile_px: int,
     *,

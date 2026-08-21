@@ -3,5 +3,43 @@
   "kind": "turtlestudio.object",
   "id": "player",
   "name": "player",
-  "sprite_id": "character_idle"
+  "sprite_id": "character_idle",
+  "script": "character",
+  "animations": [
+    {
+      "name": "idle",
+      "sprite_id": "character_idle"
+    },
+    {
+      "name": "walk",
+      "sprite_id": "character_walk"
+    },
+    {
+      "name": "jump",
+      "sprite_id": "character_jump"
+    },
+    {
+      "name": "fall",
+      "sprite_id": "character_fall"
+    },
+    {
+      "name": "attack",
+      "sprite_id": "character_attack"
+    },
+    {
+      "name": "air_attack",
+      "sprite_id": "character_air_attack"
+    },
+    {
+      "name": "crouch",
+      "sprite_id": "character_crouch"
+    }
+  ],
+  "collision": {
+    "mode": "aabb",
+    "x0": -9,
+    "y0": 0,
+    "x1": 8,
+    "y1": 27
+  }
 }

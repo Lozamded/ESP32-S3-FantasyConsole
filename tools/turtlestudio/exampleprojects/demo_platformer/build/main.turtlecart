@@ -1,7 +1,0 @@
-TURTLECART:0
-ENTRY:scripts/global.lua
-INITIAL_SCENE:intro
-BUNDLE_FILE:studio/project_bundle.json
----FILE:scripts/global.lua---
-print('test')
----END---
