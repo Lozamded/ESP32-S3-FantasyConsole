@@ -100,6 +100,20 @@ def is_project_dir(project_root: Path) -> bool:
     return manifest_path(project_root).is_file()
 
 
+def read_project_display_name(project_root: Path) -> str:
+    """Best-effort peek at a project's display `name`, e.g. for a recent-projects
+    list where the project may not be (fully) loaded. Falls back to the folder
+    name if the manifest is missing/unreadable/invalid — never raises."""
+    try:
+        data = json.loads(manifest_path(project_root).read_text(encoding="utf-8"))
+        name = data.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except (OSError, json.JSONDecodeError):
+        pass
+    return project_root.name
+
+
 # Tamano logico escena / vista previa canvas (spec/scene-v0.md) = default S3 (BOARD_DEFAULT_VIEWPORT).
 SCENE_PIXEL_W = 164
 SCENE_PIXEL_H = 124
@@ -306,6 +320,7 @@ class ProjectInfo:
     root: Path
     format_version: int
     name: str
+    short_name: str
     entry: str
     default_palette: str | None
     scenes: tuple[SceneEntry, ...]
@@ -716,6 +731,11 @@ def load_project(project_root: Path) -> ProjectInfo:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("Campo 'name' obligatorio (string no vacio).")
 
+    short_name_raw = data.get("short_name", "")
+    if not isinstance(short_name_raw, str):
+        raise ValueError("short_name debe ser un string.")
+    short_name = short_name_raw.strip()
+
     entry = data.get("entry", DEFAULT_ENTRY)
     if not isinstance(entry, str) or not entry.strip():
         raise ValueError("Campo 'entry' debe ser una ruta relativa no vacia.")
@@ -766,6 +786,7 @@ def load_project(project_root: Path) -> ProjectInfo:
         root=root,
         format_version=ver,
         name=name.strip(),
+        short_name=short_name,
         entry=entry,
         default_palette=pal,
         scenes=scenes,

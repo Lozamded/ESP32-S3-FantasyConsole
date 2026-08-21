@@ -51,6 +51,7 @@ from turtlestudio.backgrounds import (
     parse_background_solid_palette_index,
 )
 from turtlestudio.build import load_palette_rgb01_for_preview
+from turtlestudio.collapsible import CollapsibleSection
 from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
 from turtlestudio.objects import list_object_ids_for_scene_palette, read_object_file
@@ -976,9 +977,10 @@ class SceneEditorWidget(QWidget):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-    def _build_properties_group(self) -> QGroupBox:
-        box = QGroupBox(tr("scene.properties_group"))
-        form = QFormLayout(box)
+    def _build_properties_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.properties_group"))
+        form = QFormLayout()
+        section.content_layout().addLayout(form)
         self.lbl_scene_id = QLabel("—")
         form.addRow(tr("scene.id_label"), self.lbl_scene_id)
         self.combo_palette = QComboBox()
@@ -995,11 +997,11 @@ class SceneEditorWidget(QWidget):
         self.spin_world_y.setRange(1, 2)
         self.spin_world_y.valueChanged.connect(self._on_world_steps_changed)
         form.addRow(tr("scene.world_steps_y"), self.spin_world_y)
-        return box
+        return section
 
-    def _build_background_group(self) -> QGroupBox:
-        box = QGroupBox(tr("scene.background_group"))
-        layout = QVBoxLayout(box)
+    def _build_background_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.background_group"))
+        layout = section.content_layout()
 
         hint = QLabel(tr("scene.bg_layer_image_hint"))
         hint.setStyleSheet("color: #888;")
@@ -1086,7 +1088,7 @@ class SceneEditorWidget(QWidget):
                 row_widgets["bands"] = bands_widgets
 
             self.bg_layer_rows.append(row_widgets)
-        return box
+        return section
 
     def _build_layer_parallax_bands_group(self, layer_idx: int) -> tuple[QGroupBox, dict[str, Any]]:
         """Grupo de bandas anidado bajo background_layers[layer_idx] (capas 2-4). Misma
@@ -1158,9 +1160,9 @@ class SceneEditorWidget(QWidget):
         widgets["editor_widgets"] = [list_bands, btn_add, btn_remove, spin_y0, spin_y1, spin_x, chk_fixed, chk_repeat_x]
         return box, widgets
 
-    def _build_tile_layers_group(self) -> QGroupBox:
-        box = QGroupBox(tr("scene.tile_layers_group"))
-        layout = QVBoxLayout(box)
+    def _build_tile_layers_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.tile_layers_group"))
+        layout = section.content_layout()
         self.tile_layer_rows: list[dict[str, Any]] = []
         for i in range(TILE_LAYER_COUNT):
             lrow = QHBoxLayout()
@@ -1181,7 +1183,7 @@ class SceneEditorWidget(QWidget):
         hint.setStyleSheet("color: #888;")
         hint.setWordWrap(True)
         layout.addWidget(hint)
-        return box
+        return section
 
     def _update_tile_layer_warning(self, idx: int) -> None:
         widgets = self.tile_layer_rows[idx]
@@ -1202,9 +1204,9 @@ class SceneEditorWidget(QWidget):
         warning.setText(tr("scene.tile_layer_px_mismatch", tileset_px=tileset_px, project_px=self._tile_px))
         warning.setVisible(True)
 
-    def _build_objects_group(self) -> QGroupBox:
-        box = QGroupBox(tr("scene.objects_group"))
-        layout = QVBoxLayout(box)
+    def _build_objects_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.objects_group"))
+        layout = section.content_layout()
         self.list_objects = QListWidget()
         self.list_objects.currentRowChanged.connect(self._on_object_selected)
         layout.addWidget(self.list_objects)
@@ -1232,11 +1234,12 @@ class SceneEditorWidget(QWidget):
         self.spin_obj_y.valueChanged.connect(self._on_object_xy_changed)
         pos_row.addWidget(self.spin_obj_y)
         layout.addLayout(pos_row)
-        return box
+        return section
 
-    def _build_camera_group(self) -> QGroupBox:
-        box = QGroupBox(tr("scene.camera_group"))
-        form = QFormLayout(box)
+    def _build_camera_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.camera_group"))
+        form = QFormLayout()
+        section.content_layout().addLayout(form)
         self.combo_camera_mode = QComboBox()
         self.combo_camera_mode.addItems([CAMERA_MODE_FOLLOW, CAMERA_MODE_FIXED])
         self.combo_camera_mode.currentTextChanged.connect(self._on_camera_changed)
@@ -1261,7 +1264,7 @@ class SceneEditorWidget(QWidget):
         self.spin_cam_margin_y.setRange(0, VIEWPORT_PIXEL_H)
         self.spin_cam_margin_y.valueChanged.connect(self._on_camera_changed)
         form.addRow(tr("scene.margin_y_label"), self.spin_cam_margin_y)
-        return box
+        return section
 
     def _build_parallax_bands_group(self) -> QGroupBox:
         box = QGroupBox(tr("scene.parallax_group"))

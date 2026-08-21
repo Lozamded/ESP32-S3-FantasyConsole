@@ -48,6 +48,8 @@ class BuildDialogWidget(QWidget):
 
     def refresh(self) -> None:
         data = self._read_manifest()
+        self.edit_name.setText(str(data.get("name", "")))
+        self.edit_shortname.setText(str(data.get("short_name", "")))
         self.combo_scene.blockSignals(True)
         self.combo_scene.clear()
         scenes = data.get("scenes") if isinstance(data.get("scenes"), list) else []
@@ -68,6 +70,17 @@ class BuildDialogWidget(QWidget):
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(6, 6, 6, 6)
+
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel(tr("build.name_label")))
+        self.edit_name = QLineEdit()
+        self.edit_name.editingFinished.connect(self._on_name_edited)
+        name_row.addWidget(self.edit_name, stretch=1)
+        name_row.addWidget(QLabel(tr("build.short_name_label")))
+        self.edit_shortname = QLineEdit()
+        self.edit_shortname.editingFinished.connect(self._on_shortname_edited)
+        name_row.addWidget(self.edit_shortname, stretch=1)
+        outer.addLayout(name_row)
 
         out_row = QHBoxLayout()
         out_row.addWidget(QLabel(tr("build.output_label")))
@@ -115,9 +128,28 @@ class BuildDialogWidget(QWidget):
     def _append_log(self, text: str) -> None:
         self.log.appendPlainText(text)
 
+    def _write_manifest_field(self, key: str, value: str) -> None:
+        mp = manifest_path(self.project_root)
+        data = self._read_manifest()
+        data[key] = value
+        mp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
     # ------------------------------------------------------------------
     # Slots / actions
     # ------------------------------------------------------------------
+
+    def _on_name_edited(self) -> None:
+        name = self.edit_name.text().strip()
+        if not name:
+            self.edit_name.setText(str(self._read_manifest().get("name", "")))
+            return
+        self.edit_name.setText(name)
+        self._write_manifest_field("name", name)
+
+    def _on_shortname_edited(self) -> None:
+        short_name = self.edit_shortname.text().strip()
+        self.edit_shortname.setText(short_name)
+        self._write_manifest_field("short_name", short_name)
 
     def _action_browse_output(self) -> None:
         start = self.edit_output.text().strip() or str(self.project_root)

@@ -1161,5 +1161,6 @@
   "default_anim_fps": 8,
   "target_board": "esp32s3_n16r8",
   "viewport_w": 164,
-  "viewport_h": 124
+  "viewport_h": 124,
+  "short_name": "demoplat"
 }

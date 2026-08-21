@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import QSettings, Qt
 from PyQt6.QtGui import QAction, QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ from turtlestudio.project import (
     ProjectInfo,
     create_project,
     load_project,
+    read_project_display_name,
 )
 
 # Section label (Spanish, matches the old tool) -> project-relative directory.
@@ -89,10 +90,14 @@ class _PlaceholderPage(QWidget):
 
 
 class MainWindow(QMainWindow):
+    _RECENT_PROJECTS_KEY = "recent_projects"
+    _MAX_RECENT_PROJECTS = 8
+
     def __init__(self, project_root: Path | None = None) -> None:
         super().__init__()
         self.project: ProjectInfo | None = None
         self.project_root: Path | None = None
+        self._settings = QSettings("TurtleStudio", "TurtleStudio")
 
         self.setWindowTitle("TurtleStudio")
         self.resize(1280, 720)
@@ -113,6 +118,9 @@ class MainWindow(QMainWindow):
         open_action = QAction(tr("mainwindow.menu_open_project"), self)
         open_action.triggered.connect(self._action_open_project)
         file_menu.addAction(open_action)
+
+        self.recent_menu = file_menu.addMenu(tr("mainwindow.menu_open_recent"))
+        self._rebuild_recent_menu()
 
         new_action = QAction(tr("mainwindow.menu_new_project"), self)
         new_action.triggered.connect(self._action_new_project)
@@ -229,6 +237,58 @@ class MainWindow(QMainWindow):
         if path:
             self.open_project(Path(path))
 
+    def _action_open_recent(self, path: Path) -> None:
+        if not path.is_dir():
+            QMessageBox.critical(
+                self,
+                tr("mainwindow.open_project_error_title"),
+                tr("mainwindow.open_recent_missing", path=str(path)),
+            )
+            self._forget_recent_project(path)
+            return
+        self.open_project(path)
+
+    def _action_clear_recent_projects(self) -> None:
+        self._settings.remove(self._RECENT_PROJECTS_KEY)
+        self._rebuild_recent_menu()
+
+    def _load_recent_projects(self) -> list[Path]:
+        raw = self._settings.value(self._RECENT_PROJECTS_KEY, [])
+        if isinstance(raw, str):
+            raw = [raw]
+        return [Path(item) for item in raw or []]
+
+    def _remember_recent_project(self, path: Path) -> None:
+        recents = [p for p in self._load_recent_projects() if p != path]
+        recents.insert(0, path)
+        del recents[self._MAX_RECENT_PROJECTS :]
+        self._settings.setValue(self._RECENT_PROJECTS_KEY, [str(p) for p in recents])
+        self._rebuild_recent_menu()
+
+    def _forget_recent_project(self, path: Path) -> None:
+        recents = [p for p in self._load_recent_projects() if p != path]
+        self._settings.setValue(self._RECENT_PROJECTS_KEY, [str(p) for p in recents])
+        self._rebuild_recent_menu()
+
+    def _rebuild_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        recents = self._load_recent_projects()
+        if not recents:
+            empty_action = QAction(tr("mainwindow.menu_open_recent_empty"), self)
+            empty_action.setEnabled(False)
+            self.recent_menu.addAction(empty_action)
+            return
+        for path in recents:
+            label = read_project_display_name(path) if path.is_dir() else str(path)
+            action = QAction(label, self)
+            action.setToolTip(str(path))
+            action.triggered.connect(lambda _checked=False, p=path: self._action_open_recent(p))
+            self.recent_menu.addAction(action)
+        self.recent_menu.addSeparator()
+        clear_action = QAction(tr("mainwindow.menu_open_recent_clear"), self)
+        clear_action.triggered.connect(self._action_clear_recent_projects)
+        self.recent_menu.addAction(clear_action)
+
     def _action_show_export(self) -> None:
         self.workspace_tabs.select(TabKind.EXPORT)
 
@@ -264,6 +324,7 @@ class MainWindow(QMainWindow):
             return
         self.project = info
         self.project_root = root
+        self._remember_recent_project(root)
         self.setWindowTitle(f"TurtleStudio — {info.name}")
         self.workspace_tabs.set_target_board(info.target_board)
         self.palette_editor.set_project_root(root)

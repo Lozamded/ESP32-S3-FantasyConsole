@@ -187,6 +187,10 @@ mainwindow.empty_page,Abre o crea un proyecto TurtleStudio.,Open or create a Tur
 mainwindow.menu_file,&Archivo,&File
 mainwindow.menu_open_project,&Abrir proyecto…,&Open project…
 mainwindow.menu_new_project,&Nuevo proyecto…,&New project…
+mainwindow.menu_open_recent,Abrir &reciente,Open &Recent
+mainwindow.menu_open_recent_empty,(Vacío),(Empty)
+mainwindow.menu_open_recent_clear,Vaciar lista,Clear Recent
+mainwindow.open_recent_missing,La carpeta ya no existe: {path},The folder no longer exists: {path}
 mainwindow.open_project_title,Abrir proyecto TurtleStudio,Open TurtleStudio project
 mainwindow.new_project_folder_title,Carpeta para el nuevo proyecto,Folder for the new project
 mainwindow.new_project_title,Nuevo proyecto,New project
@@ -231,6 +235,8 @@ font.open_error_title,Abrir fuente,Open font
 font.new_title,Nueva fuente,New font
 font.new_id_label,Id de la fuente:,Font id:
 font.save_error_title,Guardar fuente,Save font
+build.name_label,Nombre:,Name:
+build.short_name_label,Nombre corto:,Short name:
 build.output_label,Carpeta de salida:,Output folder:
 build.browse,Examinar…,Browse…
 build.browse_title,Carpeta de salida,Output folder
