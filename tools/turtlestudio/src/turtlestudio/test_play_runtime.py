@@ -68,8 +68,9 @@ class MoveActorSolidTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            # gy=10 cubre y en escena [16,31]; gx=2 cubre x en [32,47].
-            grid[10][2] = 0
+            # gy=5 cubre y en escena [16,31]; gx=2 cubre x en [32,47] (rows=7 para
+            # WORLD_H=124/TILE_PX=16: sy0 = (rows-1-gy)*16 = (7-1-5)*16 = 16).
+            grid[5][2] = 0
             tiles = [{"collision": "solid"}]
             idx = _build_index(root, grid, tiles)
 
@@ -84,8 +85,8 @@ class MoveActorSolidTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            # gy=11 (fila inferior, y en [0,15]); gx=5 cubre x en [80,95].
-            grid[11][5] = 0
+            # gy=6 (fila inferior, y en [0,15], rows=7); gx=5 cubre x en [80,95].
+            grid[6][5] = 0
             tiles = [{"collision": "solid"}]
             idx = _build_index(root, grid, tiles)
 
@@ -101,7 +102,7 @@ class MoveActorNoneTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            grid[10][2] = 0
+            grid[5][2] = 0  # gy=5 -> scene_y [16,31], ver comentario en test_falls_and_lands_on_solid_tile
             tiles = [{"collision": "none"}]
             idx = _build_index(root, grid, tiles)
 
@@ -120,7 +121,7 @@ class MoveActorOnewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            grid[10][2] = 0
+            grid[5][2] = 0  # gy=5 -> scene_y [16,31], ver comentario en test_falls_and_lands_on_solid_tile
             idx = _build_index(root, grid, self._tiles_oneway_up())
 
             a = _actor(40, 100)
@@ -132,7 +133,7 @@ class MoveActorOnewayTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            grid[10][2] = 0
+            grid[5][2] = 0  # gy=5 -> scene_y [16,31], ver comentario en test_falls_and_lands_on_solid_tile
             idx = _build_index(root, grid, self._tiles_oneway_up())
 
             # Empieza debajo de la plataforma (box y en [8,15], plataforma en [16,31]).
@@ -147,7 +148,7 @@ class MoveActorShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            grid[10][2] = 0
+            grid[5][2] = 0  # gy=5 -> scene_y [16,31], ver comentario en test_falls_and_lands_on_solid_tile
             # Solo la mitad inferior del tile (local y 0..7) es solida -- si el tile
             # entero fuera solido, el actor quedaria en y=32 (igual que el test de
             # tile solido completo); aca debe caer mas, hasta y=24, demostrando que
@@ -174,7 +175,7 @@ class MoveActorShapeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             grid = _empty_grid()
-            grid[10][2] = 0
+            grid[5][2] = 0  # gy=5 -> scene_y [16,31], ver comentario en test_falls_and_lands_on_solid_tile
             tiles = [
                 {
                     "collision": {
@@ -206,6 +207,86 @@ class ClampActorPosTests(unittest.TestCase):
         pr.clamp_actor_pos(a, WORLD_W, WORLD_H)
         self.assertEqual(a.y, (WORLD_H - 1) - a.col_y1)
         self.assertFalse(a.grounded)
+
+
+class RenderRgbaViewportCropTests(unittest.TestCase):
+    """render_rgba() ahora recorta al viewport ANTES de dibujar actores/texto (no al
+    reves) para no copiar/blittear contra un buffer del tamano del MUNDO entero cada
+    fotograma -- ver plan de streaming/chunked world buffer. Estas pruebas comparan el
+    resultado nuevo (recortar primero, blittear con cam_x/cam_y) contra el
+    comportamiento de referencia (blittear sobre el mundo entero, recortar despues),
+    que debe ser bit a bit identico."""
+
+    FW, FH = 40, 30
+    VW, VH = 20, 15
+    CAM_X, CAM_Y = 10, 8
+
+    @staticmethod
+    def _actor(x: int, y: int, *, flip_h: bool = False) -> pr.ActorRuntimeState:
+        return pr.ActorRuntimeState(
+            id="p", x=x, y=y, pw=2, ph=2, origin_x=0, origin_y=0,
+            col_x0=0, col_y0=0, col_x1=1, col_y1=1,
+            sprite_id="s", frame_count=1, flip_h=flip_h,
+        )
+
+    def _blank_world(self) -> list[float]:
+        rgba = [0.0] * (self.FW * self.FH * 4)
+        for i in range(3, len(rgba), 4):
+            rgba[i] = 1.0
+        return rgba
+
+    def _assert_reorder_matches(self, blit) -> None:
+        """blit(rgba, fw, fh, **cam_kwargs) aplica un unico blit; compara blittear
+        sobre el mundo entero y recortar despues vs. recortar primero y blittear con
+        cam_x/cam_y (el nuevo orden)."""
+        world_ref = self._blank_world()
+        blit(world_ref, self.FW, self.FH)
+        cropped_ref = pr._crop_world_rgba_to_viewport(
+            world_ref, self.FW, self.FH, self.CAM_X, self.CAM_Y, viewport_w=self.VW, viewport_h=self.VH
+        )
+        viewport_new = pr._crop_world_rgba_to_viewport(
+            self._blank_world(), self.FW, self.FH, self.CAM_X, self.CAM_Y, viewport_w=self.VW, viewport_h=self.VH
+        )
+        blit(viewport_new, self.VW, self.VH, cam_x=self.CAM_X, cam_y=self.CAM_Y)
+        self.assertEqual(cropped_ref, viewport_new)
+
+    def test_actor_inside_viewport(self) -> None:
+        rows = [[5, 5], [5, 5]]
+        rgbs = [(0.0, 0.0, 0.0)] * 32
+        rgbs[5] = (1.0, 0.5, 0.25)
+        a = self._actor(12, 9)
+        self._assert_reorder_matches(
+            lambda rgba, fw, fh, **k: pr._blit_actor_sprite(rgba, fw, fh, a, rows, rgbs, **k)
+        )
+
+    def test_actor_outside_viewport_is_noop_both_ways(self) -> None:
+        rows = [[5, 5], [5, 5]]
+        rgbs = [(0.0, 0.0, 0.0)] * 32
+        rgbs[5] = (1.0, 0.5, 0.25)
+        b = self._actor(1, 1)  # bien fuera de la ventana de camara (10..30, 8..23)
+        self._assert_reorder_matches(
+            lambda rgba, fw, fh, **k: pr._blit_actor_sprite(rgba, fw, fh, b, rows, rgbs, **k)
+        )
+
+    def test_actor_flip_h(self) -> None:
+        rows = [[5, 5], [5, 5]]
+        rgbs = [(0.0, 0.0, 0.0)] * 32
+        rgbs[5] = (1.0, 0.5, 0.25)
+        c = self._actor(15, 10, flip_h=True)
+        self._assert_reorder_matches(
+            lambda rgba, fw, fh, **k: pr._blit_actor_sprite(rgba, fw, fh, c, rows, rgbs, **k)
+        )
+
+    def test_text_overlay(self) -> None:
+        glyphs = {"A": [[7, 7], [7, 7]]}
+        advances = {"A": 3}
+        rgbs = [(0.0, 0.0, 0.0)] * 32
+        rgbs[7] = (0.2, 0.9, 0.9)
+        self._assert_reorder_matches(
+            lambda rgba, fw, fh, **k: pr._blit_text_scene(
+                rgba, fw, fh, 13, 9, "A", glyphs=glyphs, advances=advances, glyph_px=2, rgbs=rgbs, **k
+            )
+        )
 
 
 class TruncDivTests(unittest.TestCase):

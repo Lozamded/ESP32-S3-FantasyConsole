@@ -567,3 +567,102 @@ def paint_tile_layers_on_rgba(
                     px,
                     rgbs,
                 )
+
+
+# Granularidad del cache por bloque (TurtleStudio editor, no firmware): puramente un
+# tamano de invalidacion interno, no tiene que alinear con world_steps ni con tile_px.
+TILE_CACHE_BLOCK_CELLS = 16
+
+
+def tile_block_key(gx: int, gy: int, *, block_cells: int = TILE_CACHE_BLOCK_CELLS) -> tuple[int, int]:
+    """Bloque (bx, by) que contiene la celda (gx, gy) -- para invalidar el cache de
+    render por bloque tras pintar una sola celda (ver paint_tile_layers_on_rgba_blocked)."""
+    return gx // block_cells, gy // block_cells
+
+
+def _composite_block_into_rgba(
+    rgba: list[float], fw: int, fh: int, block: list[float], bw: int, bh: int, px_x0: int, px_y0: int
+) -> None:
+    """Copia `block` (fila 0 = arriba, mismo almacenamiento que `rgba`) sobre `rgba` en
+    el offset de pixel (px_x0, px_y0) desde la esquina superior-izquierda, solo donde el
+    bloque tiene alpha (celda pintada) -- sin blending, igual que el resto del pintado
+    de tiles (nunca hay alpha parcial en un tile, solo transparente/opaco)."""
+    for by in range(bh):
+        fy = px_y0 + by
+        if fy < 0 or fy >= fh:
+            continue
+        brow = by * bw * 4
+        frow = fy * fw * 4
+        for bx in range(bw):
+            fx = px_x0 + bx
+            if fx < 0 or fx >= fw:
+                continue
+            bi = brow + bx * 4
+            if block[bi + 3] <= 0.0:
+                continue
+            fi = frow + fx * 4
+            rgba[fi] = block[bi]
+            rgba[fi + 1] = block[bi + 1]
+            rgba[fi + 2] = block[bi + 2]
+            rgba[fi + 3] = block[bi + 3]
+
+
+def paint_tile_layers_on_rgba_blocked(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    layers: tuple[SceneTileLayer, ...],
+    project_root: Any,
+    rgbs: list[tuple[float, float, float]],
+    *,
+    tile_px: int,
+    tile_cache: dict[str, tuple[int, list[list[list[int]]]]] | None = None,
+    block_cache: dict[tuple[int, int], tuple[list[float], int, int]] | None = None,
+    block_cells: int = TILE_CACHE_BLOCK_CELLS,
+) -> None:
+    """Como paint_tile_layers_on_rgba, pero -- si se pasa `block_cache` -- pinta por
+    bloques de `block_cells` x `block_cells` celdas, cada uno cacheado por separado en
+    `block_cache` (owned por el llamador, p. ej. el editor de escena). Evita re-caminar
+    la rejilla completa del mundo (paint_tile_layers_on_rgba: O(cols*rows) por capa) cada
+    vez que se toca una sola celda al arrastrar el pincel -- solo el bloque tocado se
+    recalcula; el resto se reutiliza tal cual. Sin `block_cache` (default), delega
+    integramente en paint_tile_layers_on_rgba: comportamiento identico al de hoy, usado
+    por Play/tests que no necesitan (ni deben) cachear entre llamadas."""
+    if block_cache is None:
+        paint_tile_layers_on_rgba(rgba, fw, fh, layers, project_root, rgbs, tile_px=tile_px, tile_cache=tile_cache)
+        return
+
+    px = normalize_tile_px(tile_px)
+    cols, rows = scene_tile_grid_dimensions(px, world_w=fw, world_h=fh)
+    if cols <= 0 or rows <= 0:
+        return
+    nbx = (cols + block_cells - 1) // block_cells
+    nby = (rows + block_cells - 1) // block_cells
+    tcache = tile_cache if tile_cache is not None else {}
+
+    for by in range(nby):
+        gy0 = by * block_cells
+        gy1 = min(rows, gy0 + block_cells)
+        for bx in range(nbx):
+            gx0 = bx * block_cells
+            gx1 = min(cols, gx0 + block_cells)
+            key = (bx, by)
+            cached = block_cache.get(key)
+            if cached is None:
+                sliced = tuple(
+                    SceneTileLayer(
+                        enabled=ly.enabled,
+                        tileset=ly.tileset,
+                        cells=tuple(row[gx0:gx1] for row in ly.cells[gy0:gy1]),
+                    )
+                    for ly in layers
+                    if len(ly.cells) >= gy1
+                )
+                bw = (gx1 - gx0) * px
+                bh = (gy1 - gy0) * px
+                block_rgba = [0.0] * (bw * bh * 4)
+                paint_tile_layers_on_rgba(block_rgba, bw, bh, sliced, project_root, rgbs, tile_px=px, tile_cache=tcache)
+                cached = (block_rgba, bw, bh)
+                block_cache[key] = cached
+            block_rgba, bw, bh = cached
+            _composite_block_into_rgba(rgba, fw, fh, block_rgba, bw, bh, gx0 * px, gy0 * px)

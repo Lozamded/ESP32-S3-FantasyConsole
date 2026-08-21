@@ -32,12 +32,35 @@ constexpr int kMaxSpriteH = 128;
 /** Escena canonica (spec/scene-v0.md); viewport = kSceneW x kSceneH. */
 constexpr int kSceneW = 164;
 constexpr int kSceneH = 124;
-constexpr int kMaxWorldSteps = 2;
-constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;
-constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;
+/** Mundo AUTORADO, hasta 8x8 pasos (spec/scene-v0.md). La rejilla de tiles (TileLayer,
+ *  abajo) es barata -- indices, no pixeles -- y queda resident para el mundo ENTERO sin
+ *  problema. Lo caro es el buffer horneado por pixel (s_world_bg): ese NO escala con
+ *  este limite, ver kWorldWindowSteps mas abajo -- se mantiene una "ventana" residente
+ *  fija de tamano constante que sigue a la camara (ensure_world_window_covers_camera). */
+constexpr int kMaxWorldSteps = 8;
+constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;   // 1312
+constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;   //  992
 constexpr int kMaxTileLayers = 4;
-constexpr int kMaxTileCols = 34;  /* kMaxWorldW / 16 */
-constexpr int kMaxTileRows = 25;  /* kMaxWorldH / 16 */
+constexpr int kMaxTileCols = 82;  /* kMaxWorldW / 16 */
+constexpr int kMaxTileRows = 62;  /* kMaxWorldH / 16 */
+/** Ventana RESIDENTE del buffer horneado (s_world_bg) -- deliberadamente independiente
+ *  de kMaxWorldSteps (mundo autorado). Centrada en la camara, con 1 paso de holgura por
+ *  lado respecto del viewport: un rebake solo hace falta tras ~kSceneW/kSceneH px mas de
+ *  scroll desde el ultimo, no cada fotograma. Simetrica (no sesgada a un eje) porque el
+ *  mismo firmware sirve tanto plataformeros (scroll casi-1-eje) como RPGs de scroll
+ *  libre en las 4 direcciones/diagonales. */
+constexpr int kWorldWindowSteps = 3;
+constexpr int kWorldWindowW = kSceneW * kWorldWindowSteps;  // 492
+constexpr int kWorldWindowH = kSceneH * kWorldWindowSteps;  // 372
+/** Maximo asset de fondo (capa 1) decodificable de una sola vez para hornear en la
+ *  ventana -- coincide con BACKGROUND_PARALLAX_FACTOR=2 de TurtleStudio (backgrounds.py,
+ *  MAX_BACKGROUND_PIXEL_W/H), asi que en la practica nunca se rechaza un fondo valido.
+ *  Menor que kWorldWindowW/H a proposito: sirve de scratch temporal para bake_indexed_
+ *  background_into_world, que decodifica la imagen completa aca y despues copia solo el
+ *  sub-rectangulo que cae dentro de la ventana actual (mas simple y seguro que una
+ *  variante de decode recortado/streaming del parser RLE de turtle_asset_bin.cpp). */
+constexpr int kMaxBgAssetW = kSceneW * 2;  // 328
+constexpr int kMaxBgAssetH = kSceneH * 2;  // 248
 /** spec/scene-v0.md: bandas de parallax horizontal por rango Y de escena. */
 constexpr int kMaxParallaxBands = 8;
 
@@ -138,6 +161,8 @@ struct SceneActor {
 TURTLE_BSS_PSRAM static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
 /** Decode temporal (fondos <= 1 pantalla); mundos grandes usan s_world_bg en PSRAM. */
 TURTLE_BSS_PSRAM static uint8_t s_scene_pixels[kSceneW * kSceneH];
+/** Scratch para bake_indexed_background_into_world (ver comentario en kMaxBgAssetW/H). */
+TURTLE_BSS_PSRAM static uint8_t s_bg_decode_scratch[kMaxBgAssetW * kMaxBgAssetH];
 /** Fondo indexado del mundo completo (scroll); se pinta por ventana con la camara. */
 static uint8_t* s_world_bg = nullptr;
 static int s_world_bg_w = 0;
@@ -148,6 +173,16 @@ static int s_world_bg_h = 0;
  *  "modulo el ancho del bitmap de fondo"); usar s_world_bg_w ahi envolveria sobre relleno
  *  solido en vez de repetir la imagen. 0 = sin imagen horneada (solo relleno solido). */
 static int s_bg_layer1_pixel_w = 0;
+/** Alto real (px) de la misma imagen (ver s_bg_layer1_pixel_w) -- usado junto con
+ *  s_bg_decode_scratch para muestrear filas repeat_x independientemente de la ventana
+ *  residente (ver comentario largo en paint_world_background_banded). */
+static int s_bg_layer1_pixel_h = 0;
+/** Origen (esquina inferior-izquierda, espacio escena) de la ventana residente dentro
+ *  del mundo autorado. s_world_bg_w/h ahora son el tamano de la VENTANA (hasta
+ *  kWorldWindowW/H, o el mundo entero si es mas chico que la ventana), no del mundo
+ *  entero -- ver ensure_world_window_covers_camera(). */
+static int s_win_x0 = 0;
+static int s_win_y0 = 0;
 static bool s_world_static_ready = false;
 /** true si bake_tile_layers_into_world() horneo los tiles dentro de s_world_bg (junto a la
  *  capa base). Cuando hay capas 2-4 (background_layers) habilitadas se deja en false a
@@ -229,8 +264,12 @@ struct ObjectJsonCacheEntry {
 static ObjectJsonCacheEntry s_object_cache[kMaxObjectCache];
 static int s_object_cache_count = 0;
 
+/** Techo compartido por alloc_scene_pixel_buffer(): s_world_bg (ventana residente,
+ *  no el mundo autorado entero -- ver kWorldWindowSteps) y cada BgImageLayer (capas
+ *  2-4, ya independientes del tamano de mundo). Deliberadamente NO escala con
+ *  kMaxWorldSteps. */
 static constexpr size_t kScenePixelsMaxBytes =
-    static_cast<size_t>(kMaxWorldW) * static_cast<size_t>(kMaxWorldH);
+    static_cast<size_t>(kWorldWindowW) * static_cast<size_t>(kWorldWindowH);
 static constexpr size_t kScenePixelsViewportBytes =
     static_cast<size_t>(kSceneW) * static_cast<size_t>(kSceneH);
 
@@ -276,12 +315,17 @@ static void scene_asset_buffers_release(void) {
 }
 
 static void world_buffer_put_scene_pixel(int sx, int sy, uint8_t ci) {
-  if (!s_world_bg || sx < 0 || sy < 0 || sx >= s_world_bg_w || sy >= s_world_bg_h) {
+  // (sx, sy) en espacio escena/mundo; s_world_bg es solo la VENTANA residente
+  // (s_win_x0/y0..+s_world_bg_w/h), no el mundo entero -- traducir antes del bounds
+  // check de siempre.
+  const int lx = sx - s_win_x0;
+  const int ly = sy - s_win_y0;
+  if (!s_world_bg || lx < 0 || ly < 0 || lx >= s_world_bg_w || ly >= s_world_bg_h) {
     return;
   }
-  const int ty = (s_world_bg_h - 1) - sy;
+  const int ty = (s_world_bg_h - 1) - ly;
   s_world_bg[static_cast<size_t>(ty) * static_cast<size_t>(s_world_bg_w) +
-              static_cast<size_t>(sx)] = ci;
+              static_cast<size_t>(lx)] = ci;
 }
 
 static void object_cache_free_entry(ObjectJsonCacheEntry* e) {
@@ -1307,24 +1351,53 @@ static bool draw_indexed_asset_at_origin(const char* inner, const char* inner_en
 /** Bandas de parallax activas (spec/scene-v0.md): una fila a la vez, cada una con su
  *  propio offset horizontal segun la banda que cubra ese scene_y (find_parallax_band).
  *  Filas sin banda usan parallax_x=1/fixed=false/repeat_x=false, es decir el mismo
- *  mapeo que el blit unico de paint_cached_world_background. */
+ *  mapeo que el blit unico de paint_cached_world_background.
+ *
+ *  OJO ventana residente: turtle_gpu_blit_indexed_row_banded() calcula
+ *  `sx = vx + x_offset` (y opcionalmente `sx %= sample_row_len`) asumiendo que
+ *  `sample_row[0]` es la columna de imagen 0 -- ya sea el origen del mundo (bandas
+ *  normales/repeat_x, parallax_x*cam_x) o la columna 0 de pantalla (bandas fixed).
+ *  s_world_bg ya NO cumple eso salvo que s_win_x0==0: es un buffer con origen movible
+ *  (s_win_x0/y0, ver ensure_world_window_covers_camera), asi que index 0 ahi es la
+ *  columna de MUNDO s_win_x0, no la columna 0 de imagen/mundo. Usar ese buffer
+ *  directamente aqui hacia que a partir del primer recentrado de ventana (~3 pasos de
+ *  distancia de la camara inicial) las bandas leyeran relleno solido en vez de la
+ *  imagen -- de ahi el fondo "negro" reportado. En cambio s_bg_decode_scratch (la
+ *  decodificacion completa mas reciente, ver bake_indexed_background_into_world) SIEMPRE
+ *  tiene index 0 = columna de imagen 0, sin importar donde ande la ventana -- se usa como
+ *  fuente aqui en vez de s_world_bg cuando hay una imagen real horneada. */
 static void paint_world_background_banded(int cam_x, int vis_y0, int vis_y1,
                                           uint8_t transparent_index) {
+  const int img_w = s_bg_layer1_pixel_w;
+  const int img_h = s_bg_layer1_pixel_h;
   for (int scene_y = vis_y0; scene_y <= vis_y1; ++scene_y) {
-    const int row_top = (s_world_bg_h - 1) - scene_y;
-    const uint8_t* row =
-        s_world_bg + static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w);
     const ParallaxBand* band = find_parallax_band(scene_y);
     const float parallax_x = band ? band->parallax_x : 1.0f;
     const bool fixed = band ? band->fixed : false;
     const bool repeat_x = band ? band->repeat_x : false;
     const int x_offset = fixed ? 0 : static_cast<int>(cam_x * parallax_x);
-    // OJO: modulo/recorte de repeat_x debe ser sobre el ancho REAL de la imagen horneada
-    // (s_bg_layer1_pixel_w), no s_world_bg_w (ancho del buffer de mundo, hasta 2x mas
-    // ancho que la imagen) -- si no, "repetir" envuelve sobre el relleno solido que rellena
-    // el resto de la fila en vez de repetir la imagen (spec/scene-v0.md: "modulo el ancho
-    // del bitmap de fondo").
-    const int sample_w = (s_bg_layer1_pixel_w > 0) ? s_bg_layer1_pixel_w : s_world_bg_w;
+    if (img_h > 0 && scene_y >= 0 && scene_y < img_h) {
+      // Imagen real disponible para esta fila: muestrear del scratch (origen estable en
+      // columna/fila 0 de IMAGEN, no de ventana).
+      const int img_row_top = (img_h - 1) - scene_y;
+      const uint8_t* row =
+          s_bg_decode_scratch + static_cast<size_t>(img_row_top) * static_cast<size_t>(img_w);
+      turtle_gpu_blit_indexed_row_banded(scene_y, row, img_w, x_offset, repeat_x,
+                                         transparent_index);
+      continue;
+    }
+    // Sin imagen (solo relleno solido) o fila fuera del alto de la imagen: cualquier
+    // pixel de la ventana sirve (relleno parejo), asi que el offset de ventana no
+    // importa aqui -- camino de siempre sobre s_world_bg.
+    const int local_y = scene_y - s_win_y0;
+    if (local_y < 0 || local_y >= s_world_bg_h) {
+      continue;  // fuera de la ventana residente; no deberia pasar (ver invariante de
+                 // ensure_world_window_covers_camera), se protege por las dudas
+    }
+    const int row_top = (s_world_bg_h - 1) - local_y;
+    const uint8_t* row =
+        s_world_bg + static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w);
+    const int sample_w = (img_w > 0) ? img_w : s_world_bg_w;
     turtle_gpu_blit_indexed_row_banded(scene_y, row, sample_w, x_offset, repeat_x,
                                        transparent_index);
   }
@@ -1336,7 +1409,7 @@ static void paint_cached_world_background(uint8_t transparent_index) {
   }
   /*
    * Blitea solo la ventana visible (viewport) del buffer del mundo, no el buffer
-   * entero (hasta kMaxWorldSteps por eje = hasta 4x pixeles de sobra). Se lee la
+   * entero (hasta kMaxWorldSteps por eje = hasta 8x pixeles de sobra). Se lee la
    * camara real de turtle_gpu (no el espejo s_cam_x/y) para no desalinearse con
    * el clip que hace turtle_gpu_blit_indexed_scene internamente.
    */
@@ -1344,6 +1417,8 @@ static void paint_cached_world_background(uint8_t transparent_index) {
   int cam_y = 0;
   turtle_gpu_get_camera(&cam_x, &cam_y);
 
+  // Recorte en espacio MUNDO -- turtle_gpu_blit_indexed_scene espera la posicion de
+  // destino en espacio mundo (resta la camara internamente), no en espacio ventana.
   int vis_x0 = cam_x;
   int vis_y0 = cam_y;
   int vis_x1 = cam_x + kSceneW - 1;
@@ -1354,11 +1429,11 @@ static void paint_cached_world_background(uint8_t transparent_index) {
   if (vis_y0 < 0) {
     vis_y0 = 0;
   }
-  if (vis_x1 >= s_world_bg_w) {
-    vis_x1 = s_world_bg_w - 1;
+  if (vis_x1 >= s_world_w) {
+    vis_x1 = s_world_w - 1;
   }
-  if (vis_y1 >= s_world_bg_h) {
-    vis_y1 = s_world_bg_h - 1;
+  if (vis_y1 >= s_world_h) {
+    vis_y1 = s_world_h - 1;
   }
   const int vis_w = vis_x1 - vis_x0 + 1;
   const int vis_h = vis_y1 - vis_y0 + 1;
@@ -1371,12 +1446,39 @@ static void paint_cached_world_background(uint8_t transparent_index) {
     return;
   }
 
-  const int row_top = (s_world_bg_h - 1) - vis_y1;
+  // s_world_bg es solo la ventana residente (s_win_x0/y0..+w/h) -- traducir el rango
+  // de espacio mundo de arriba a espacio ventana antes de indexar el buffer.
+  // ensure_world_window_covers_camera() garantiza que la camara cae DENTRO de la
+  // ventana; se acota defensivamente igual (p. ej. si el bake de la ventana fallo por
+  // falta de RAM y el contenido quedo de un frame/ventana anterior).
+  int lx0 = vis_x0 - s_win_x0;
+  int ly0 = vis_y0 - s_win_y0;
+  if (lx0 < 0) {
+    lx0 = 0;
+  }
+  if (ly0 < 0) {
+    ly0 = 0;
+  }
+  if (lx0 >= s_world_bg_w || ly0 >= s_world_bg_h) {
+    return;
+  }
+  int lw = vis_w;
+  int lh = vis_h;
+  if (lx0 + lw > s_world_bg_w) {
+    lw = s_world_bg_w - lx0;
+  }
+  if (ly0 + lh > s_world_bg_h) {
+    lh = s_world_bg_h - ly0;
+  }
+  if (lw <= 0 || lh <= 0) {
+    return;
+  }
+
+  const int row_top = (s_world_bg_h - 1) - (ly0 + lh - 1);
   const uint8_t* src = s_world_bg +
                        static_cast<size_t>(row_top) * static_cast<size_t>(s_world_bg_w) +
-                       static_cast<size_t>(vis_x0);
-  turtle_gpu_blit_indexed_scene(vis_x0, vis_y0, vis_w, vis_h, src, s_world_bg_w,
-                                transparent_index);
+                       static_cast<size_t>(lx0);
+  turtle_gpu_blit_indexed_scene(vis_x0, vis_y0, lw, lh, src, s_world_bg_w, transparent_index);
 }
 
 /** spec/scene-v0.md "Capas de fondo con imagen": una pasada extra por capa habilitada,
@@ -2566,16 +2668,21 @@ static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram) {
 }
 
 static bool ensure_world_buffer_filled(uint8_t fill_ci) {
-  if (s_world_bg && s_world_bg_w == s_world_w && s_world_bg_h == s_world_h) {
+  // Ventana residente, no el mundo autorado entero -- acotada al tamano real del
+  // mundo si este es mas chico que la ventana (para no reservar de mas ni desalinear
+  // la aritmetica de ensure_world_window_covers_camera, que asume ventana <= mundo).
+  const int want_w = (s_world_w < kWorldWindowW) ? s_world_w : kWorldWindowW;
+  const int want_h = (s_world_h < kWorldWindowH) ? s_world_h : kWorldWindowH;
+  if (s_world_bg && s_world_bg_w == want_w && s_world_bg_h == want_h) {
     return true;
   }
   world_bg_release();
-  const size_t need = static_cast<size_t>(s_world_w) * static_cast<size_t>(s_world_h);
+  const size_t need = static_cast<size_t>(want_w) * static_cast<size_t>(want_h);
   int in_psram = 0;
   uint8_t* buf = alloc_scene_pixel_buffer(need, &in_psram);
   if (!buf) {
-    Serial.printf("turtle_scene: sin RAM para mundo estatico %ux%u (necesita ~%u bytes)\n",
-                  static_cast<unsigned>(s_world_w), static_cast<unsigned>(s_world_h),
+    Serial.printf("turtle_scene: sin RAM para ventana de mundo %ux%u (necesita ~%u bytes)\n",
+                  static_cast<unsigned>(want_w), static_cast<unsigned>(want_h),
                   static_cast<unsigned>(need));
 #if defined(ESP32) || defined(ESP_PLATFORM)
     Serial.printf("  PSRAM libre ~%u, bloque max ~%u\n",
@@ -2586,10 +2693,10 @@ static bool ensure_world_buffer_filled(uint8_t fill_ci) {
     return false;
   }
   s_world_bg = buf;
-  s_world_bg_w = s_world_w;
-  s_world_bg_h = s_world_h;
+  s_world_bg_w = want_w;
+  s_world_bg_h = want_h;
   memset(s_world_bg, fill_ci, need);
-  Serial.printf("turtle_scene: buffer mundo %dx%d (%s)\n", s_world_bg_w, s_world_bg_h,
+  Serial.printf("turtle_scene: ventana de mundo %dx%d (%s)\n", s_world_bg_w, s_world_bg_h,
                 in_psram ? "PSRAM" : "DRAM");
   return true;
 }
@@ -2648,26 +2755,77 @@ static bool bake_indexed_background_into_world(const char* json, const char* jso
     if (ph > s_world_h) {
       ph = s_world_h;
     }
-    for (int sy = 0; sy < ph; ++sy) {
-      for (int sx = 0; sx < pw; ++sx) {
+    // Acotar el relleno a la interseccion (espacio mundo) con la ventana residente
+    // actual -- sin esto, este loop es O(mundo autorado), no O(ventana), y a 8x8
+    // pasos itera hasta 1312x992 celdas en cada rebake por nada (world_buffer_put_
+    // scene_pixel ya descarta lo que cae fuera de la ventana, pero solo despues de
+    // haber iterado hasta ahi).
+    const int fx0 = s_win_x0 > 0 ? s_win_x0 : 0;
+    const int fy0 = s_win_y0 > 0 ? s_win_y0 : 0;
+    const int win_x1 = s_win_x0 + s_world_bg_w;
+    const int win_y1 = s_win_y0 + s_world_bg_h;
+    const int fx1 = pw < win_x1 ? pw : win_x1;
+    const int fy1 = ph < win_y1 ? ph : win_y1;
+    for (int sy = fy0; sy < fy1; ++sy) {
+      for (int sx = fx0; sx < fx1; ++sx) {
         world_buffer_put_scene_pixel(sx, sy, static_cast<uint8_t>(pci));
       }
     }
     s_bg_layer1_pixel_w = pw;
+    // Sin imagen real horneada (relleno solido) -- s_bg_decode_scratch no se toco aqui,
+    // 0 le dice a paint_world_background_banded que no lo use para repeat_x.
+    s_bg_layer1_pixel_h = 0;
     return true;
   }
   if (pw <= 0 || ph <= 0) {
     return false;
   }
-  if (pw > s_world_bg_w || ph > s_world_bg_h) {
-    Serial.printf("turtle_scene: fondo %dx%d > buffer %dx%d\n", pw, ph, s_world_bg_w, s_world_bg_h);
+  // Comparar contra el mundo AUTORADO, no contra s_world_bg_w/h (que ahora es solo la
+  // ventana residente, tipicamente mas chica que el mundo entero -- ver kWorldWindowSteps).
+  if (pw > s_world_w || ph > s_world_h) {
+    Serial.printf("turtle_scene: fondo %dx%d > mundo %dx%d\n", pw, ph, s_world_w, s_world_h);
     return false;
   }
-  if (!decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph, s_world_bg,
-                                      s_world_bg_w)) {
+  if (pw > kMaxBgAssetW || ph > kMaxBgAssetH) {
+    Serial.printf("turtle_scene: fondo %dx%d excede el maximo decodificable %dx%d\n", pw, ph,
+                  kMaxBgAssetW, kMaxBgAssetH);
+    return false;
+  }
+  // Decodifica la imagen COMPLETA a un scratch temporal (acotado, <= kMaxBgAssetW x
+  // kMaxBgAssetH, independiente del tamano de mundo autorado) SIEMPRE que haya imagen,
+  // sin importar si la ventana actual se superpone con su posicion en el mundo -- este
+  // scratch es tambien la unica copia de la imagen anclada de forma estable (indices
+  // [0,pw)x[0,ph) locales a la imagen, NO al origen movible de la ventana) que
+  // paint_world_background_banded puede usar para muestrear filas repeat_x sin importar
+  // por donde ande la ventana (ver comentario largo alli sobre por que muestrear
+  // directo de s_world_bg rompe el patron de repeticion en cuanto s_win_x0 != 0).
+  if (!decode_indexed_asset_to_buffer(asset_inner, asset_inner_end, bg_id, pw, ph,
+                                      s_bg_decode_scratch, pw)) {
     return false;
   }
   s_bg_layer1_pixel_w = pw;
+  s_bg_layer1_pixel_h = ph;
+  // La imagen se ancla en el origen del mundo (esquina inferior-izquierda), no en el
+  // de la ventana -- si la ventana actual no se superpone con ella (comun en mundos
+  // grandes con un fondo chico), no hay nada mas que hornear en s_world_bg ahora mismo
+  // (el scratch ya quedo actualizado arriba para el muestreo repeat_x de todos modos).
+  const int ix0 = s_win_x0 > 0 ? s_win_x0 : 0;
+  const int iy0 = s_win_y0 > 0 ? s_win_y0 : 0;
+  const int win_x1b = s_win_x0 + s_world_bg_w;
+  const int win_y1b = s_win_y0 + s_world_bg_h;
+  const int ix1 = pw < win_x1b ? pw : win_x1b;
+  const int iy1 = ph < win_y1b ? ph : win_y1b;
+  if (ix0 >= ix1 || iy0 >= iy1) {
+    return true;
+  }
+  for (int sy = iy0; sy < iy1; ++sy) {
+    const int src_row_top = (ph - 1) - sy;
+    const uint8_t* src_row =
+        s_bg_decode_scratch + static_cast<size_t>(src_row_top) * static_cast<size_t>(pw);
+    for (int sx = ix0; sx < ix1; ++sx) {
+      world_buffer_put_scene_pixel(sx, sy, src_row[sx]);
+    }
+  }
   return true;
 }
 
@@ -2830,6 +2988,74 @@ static bool bg_image_layers_any_enabled(void) {
   return false;
 }
 
+static int clampi(int v, int lo, int hi) {
+  if (v < lo) {
+    return lo;
+  }
+  if (v > hi) {
+    return hi;
+  }
+  return v;
+}
+
+/** Recentra s_win_x0/y0 en (cx, cy) (tipicamente la camara), acotado a que la ventana
+ *  quede dentro del mundo autorado (s_world_bg_w/h <= s_world_w/h siempre, ver
+ *  ensure_world_buffer_filled). No hornea nada -- solo mueve el origen logico. */
+static void recenter_world_window(int cx, int cy) {
+  const int max_x0 = s_world_w - s_world_bg_w;
+  const int max_y0 = s_world_h - s_world_bg_h;
+  s_win_x0 = clampi(cx - (s_world_bg_w - kSceneW) / 2, 0, max_x0 > 0 ? max_x0 : 0);
+  s_win_y0 = clampi(cy - (s_world_bg_h - kSceneH) / 2, 0, max_y0 > 0 ? max_y0 : 0);
+}
+
+/** Limpia la ventana (relleno solido, evita que quede contenido viejo de la posicion
+ *  anterior en zonas que el bake de abajo no llegue a pisar) y la rehornea entera en su
+ *  origen actual (s_win_x0/y0). Mismo orden background+tiles que prepare_world_static_
+ *  composite(), pero solo hornea tiles si esa vez se decidio que s_tiles_baked_into_world
+ *  (bg layers 2-4 / parallax_bands activos siguen usando el camino "en vivo" de siempre,
+ *  ajeno a s_world_bg). */
+static void rebake_world_window(void) {
+  // Reutiliza s_runtime_json/s_runtime_sc_start (turtle_scene_begin_runtime los deja
+  // asignados antes de la primera llamada a prepare_world_static_composite, y no
+  // cambian durante la vida de la escena en curso) -- no hace falta un segundo juego
+  // de punteros solo para el rebake.
+  if (!s_world_bg || !s_runtime_json || !s_runtime_json_end || !s_runtime_sc_start ||
+      !s_runtime_sc_end) {
+    return;
+  }
+  const size_t need = static_cast<size_t>(s_world_bg_w) * static_cast<size_t>(s_world_bg_h);
+  memset(s_world_bg, static_cast<uint8_t>(s_runtime_bg), need);
+  if (!bake_indexed_background_into_world(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
+                                          s_runtime_sc_end)) {
+    Serial.println("turtle_scene: aviso: fondo indexado no rehorneado (ventana)");
+  }
+  if (s_tiles_baked_into_world) {
+    if (!bake_tile_layers_into_world(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
+                                     s_runtime_sc_end, s_runtime_transp)) {
+      Serial.println("turtle_scene: aviso: tiles no rehorneados (ventana)");
+    }
+  }
+}
+
+/** Llamar una vez por fotograma (paint_scene_static_layers, tras actualizar la camara):
+ *  si el viewport de la camara ya no cae ENTERO dentro de la ventana residente, la
+ *  recentra en la camara y la rehornea. Con scroll continuo pixel a pixel esto no
+ *  dispara cada fotograma: la ventana (kWorldWindowSteps=3 pasos) deja 1 paso entero de
+ *  holgura par cada lado del viewport (1 paso), asi que hace falta ~kSceneW/kSceneH px
+ *  mas de scroll desde el ultimo rebake, no uno por fotograma. */
+static void ensure_world_window_covers_camera(void) {
+  if (!s_world_static_ready || !s_world_bg) {
+    return;
+  }
+  const bool covered = s_cam_x >= s_win_x0 && s_cam_x + kSceneW - 1 <= s_win_x0 + s_world_bg_w - 1 &&
+                       s_cam_y >= s_win_y0 && s_cam_y + kSceneH - 1 <= s_win_y0 + s_world_bg_h - 1;
+  if (covered) {
+    return;
+  }
+  recenter_world_window(s_cam_x, s_cam_y);
+  rebake_world_window();
+}
+
 static bool prepare_world_static_composite(const char* json, const char* json_end,
                                            const char* scene_start, const char* scene_end) {
   s_world_static_ready = false;
@@ -2839,12 +3065,17 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
   // ancho del mundo es inofensivo ahi. bake_indexed_background_into_world lo corrige al
   // ancho real de la imagen en cuanto hornea una.
   s_bg_layer1_pixel_w = s_world_w;
+  s_bg_layer1_pixel_h = 0;
   if (!scene_uses_scrolling()) {
     return false;
   }
   if (!ensure_world_buffer_filled(static_cast<uint8_t>(s_runtime_bg))) {
     return false;
   }
+  // Centrar la ventana en la camara inicial de la escena ANTES de hornear -- si no, el
+  // primer bake usaria el origen (0,0) por defecto, que puede no cubrir la camara real
+  // con la que arranca la escena.
+  recenter_world_window(s_cam_x, s_cam_y);
   if (!bake_indexed_background_into_world(json, json_end, scene_start, scene_end)) {
     Serial.println("turtle_scene: aviso: fondo indexado no horneado");
   }
@@ -2957,6 +3188,96 @@ static void draw_tile_layers_for_scene(const char* json, const char* json_end,
   if (painted > 0) {
     Serial.printf("turtle_scene: %d celdas tile pintadas (%d capas)\n", painted, nl);
   }
+}
+
+/** Version "en vivo" de draw_tile_layers_for_scene(), para el UNICO llamador que corre
+ *  cada fotograma (paint_scene_static_layers, cuando background_layers[1..3] o
+ *  parallax_bands dejan s_tiles_baked_into_world=false -- ver prepare_world_static_
+ *  composite). A diferencia de aquella (llamada solo al comenzar la escena):
+ *  1) NO re-parsea tile_layers desde el JSON de la escena en cada llamada -- nada muta
+ *     celdas en runtime, s_tile_layers/s_runtime_tile_layer_count ya quedaron frescos al
+ *     comenzar la escena (turtle_scene_begin_runtime / prepare_world_static_composite).
+ *  2) Acota el recorrido de la rejilla al rango de celdas visible por la camara (mismo
+ *     patron que paint_cached_world_background con vis_x0/x1/y0/y1, en coordenadas de
+ *     rejilla en vez de pixeles) -- sin esto, este loop es O(mundo autorado) por
+ *     fotograma, y a 8x8 pasos eso es severo. */
+static void draw_tile_layers_live(uint8_t transparent_index) {
+  const int px = s_runtime_tile_px;
+  if (px < 4 || px > 64) {
+    return;
+  }
+  const int nl = s_runtime_tile_layer_count;
+  if (nl <= 0) {
+    return;
+  }
+  int cols = 0;
+  int rows = 0;
+  tile_grid_dims(px, &cols, &rows);
+  if (cols <= 0 || rows <= 0) {
+    return;
+  }
+
+  int gx0 = s_cam_x / px;
+  int gx1 = (s_cam_x + kSceneW - 1) / px;
+  if (gx0 < 0) {
+    gx0 = 0;
+  }
+  if (gx1 >= cols) {
+    gx1 = cols - 1;
+  }
+  // Fila 0 de la rejilla = arriba de la escena (Y invertida respecto a scene_y, que
+  // crece hacia arriba) -- convertir el rango vertical de camara a filas-desde-arriba.
+  int gy_top_lo = rows - 1 - ((s_cam_y + kSceneH - 1) / px);
+  int gy_top_hi = rows - 1 - (s_cam_y / px);
+  if (gy_top_lo < 0) {
+    gy_top_lo = 0;
+  }
+  if (gy_top_hi >= rows) {
+    gy_top_hi = rows - 1;
+  }
+  if (gx0 > gx1 || gy_top_lo > gy_top_hi) {
+    return;
+  }
+
+  char last_id[48] = "";
+  turtle_tileset_free(&s_tileset_draw);
+  AssetSdLoad sd;
+
+  for (int li = 0; li < nl; ++li) {
+    const TileLayer* ly = &s_tile_layers[li];
+    if (!ly->enabled || !ly->tileset[0]) {
+      continue;
+    }
+    if (strcmp(last_id, ly->tileset) != 0) {
+      turtle_tileset_free(&s_tileset_draw);
+      if (!resolve_tileset_tts(s_runtime_json, s_runtime_json_end, ly->tileset, &sd, &s_tileset_draw)) {
+        last_id[0] = '\0';
+        continue;
+      }
+      snprintf(last_id, sizeof last_id, "%s", ly->tileset);
+    }
+    if (s_tileset_draw.tile_px != static_cast<uint8_t>(px)) {
+      continue;
+    }
+    if (ly->rows < rows || ly->cols < cols) {
+      continue;
+    }
+    for (int gy = gy_top_lo; gy <= gy_top_hi; ++gy) {
+      const int sy0 = (rows - 1 - gy) * px;
+      for (int gx = gx0; gx <= gx1; ++gx) {
+        const int ti = ly->cells[gy][gx];
+        if (ti == static_cast<int>(transparent_index) || ti < 0) {
+          continue;
+        }
+        const uint8_t* tile = turtle_tileset_tile(&s_tileset_draw, ti);
+        if (!tile) {
+          continue;
+        }
+        turtle_gpu_blit_indexed_scene(gx * px, sy0, px, px, tile, px, transparent_index);
+      }
+    }
+  }
+  turtle_tileset_free(&s_tileset_draw);
 }
 
 static bool parse_placements(const char* scene_start, const char* scene_end, Placement* out,
@@ -3620,6 +3941,10 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
 static void paint_scene_static_layers(void) {
   turtle_gpu_set_camera(s_cam_x, s_cam_y);
   turtle_gpu_cls(static_cast<uint8_t>(s_runtime_bg));
+  // Primero: si la camara (ya actualizada por update_camera_follow_player(), ver
+  // draw_all_actors) se salio de la ventana residente, recentrarla y rehornearla ANTES
+  // de pintar nada este fotograma -- ver kWorldWindowSteps.
+  ensure_world_window_covers_camera();
   if (s_world_static_ready && s_world_bg) {
     paint_cached_world_background(s_runtime_transp);
     paint_bg_image_layers(s_runtime_transp);
@@ -3627,8 +3952,7 @@ static void paint_scene_static_layers(void) {
     // comentario ahi), pintarlos en vivo aca -- despues de las capas 2-4, para quedar
     // correctamente por ENCIMA de ellas en vez de horneados por debajo.
     if (!s_tiles_baked_into_world) {
-      draw_tile_layers_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
-                                 s_runtime_sc_end, s_runtime_transp);
+      draw_tile_layers_live(s_runtime_transp);
     }
     return;
   }
@@ -3639,8 +3963,12 @@ static void paint_scene_static_layers(void) {
                                           s_runtime_sc_end, s_runtime_transp)) {
     Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
   }
-  draw_tile_layers_for_scene(s_runtime_json, s_runtime_json_end, s_runtime_sc_start,
-                             s_runtime_sc_end, s_runtime_transp);
+  // draw_tile_layers_for_scene() (con su propio parse_tile_layers, ver mas arriba) ya
+  // corrio una vez al comenzar la escena en este mismo camino degradado (turtle_scene_
+  // begin_runtime, cuando prepare_world_static_composite fallo) -- s_tile_layers/
+  // s_runtime_tile_layer_count ya quedaron frescos, no hace falta re-parsear cada
+  // fotograma aca tampoco.
+  draw_tile_layers_live(s_runtime_transp);
 }
 
 static void draw_all_actors(void) {

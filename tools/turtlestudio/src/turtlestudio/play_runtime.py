@@ -529,7 +529,21 @@ class InputState:
 # ----------------------------------------------------------------------
 
 
-def _blit_actor_sprite(rgba: list[float], fw: int, fh: int, a: ActorRuntimeState, rows: list[list[int]], rgbs: list[tuple[float, float, float]]) -> None:
+def _blit_actor_sprite(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    a: ActorRuntimeState,
+    rows: list[list[int]],
+    rgbs: list[tuple[float, float, float]],
+    *,
+    cam_x: int = 0,
+    cam_y: int = 0,
+) -> None:
+    """(fw, fh, cam_x, cam_y): por defecto (0, 0) = comportamiento de siempre (rgba es
+    el mundo entero, a.x/a.y ya en su propio espacio). Con cam_x/cam_y != 0, rgba puede
+    ser un buffer mas chico (p. ej. solo el viewport) y a.x/a.y (espacio mundo) se
+    trasladan restando la camara antes de dibujar -- ver PlaySession.render_rgba."""
     h = len(rows)
     if h <= 0:
         return
@@ -538,7 +552,7 @@ def _blit_actor_sprite(rgba: list[float], fw: int, fh: int, a: ActorRuntimeState
         return
     blit_y = a.y - a.origin_y
     for py in range(h):
-        sy = blit_y + (h - 1 - py)
+        sy = blit_y + (h - 1 - py) - cam_y
         ty = (fh - 1) - sy
         if ty < 0 or ty >= fh:
             continue
@@ -551,7 +565,7 @@ def _blit_actor_sprite(rgba: list[float], fw: int, fh: int, a: ActorRuntimeState
             col = resolve_palette_color(idx, rgbs)
             if col is None:
                 continue
-            sx = (a.x + a.origin_x - lx) if a.flip_h else (a.x + lx - a.origin_x)
+            sx = ((a.x + a.origin_x - lx) if a.flip_h else (a.x + lx - a.origin_x)) - cam_x
             if sx < 0 or sx >= fw:
                 continue
             i = row_base + sx * 4
@@ -575,7 +589,11 @@ def _blit_text_scene(
     glyph_px: int,
     rgbs: list[tuple[float, float, float]],
     tint_index: int = -1,
+    cam_x: int = 0,
+    cam_y: int = 0,
 ) -> int:
+    """cam_x/cam_y: ver _blit_actor_sprite -- default (0, 0) preserva el comportamiento
+    de siempre (rgba = mundo entero); con la camara, rgba puede ser solo el viewport."""
     x = sx
     for ch in text:
         rows = glyphs.get(ch)
@@ -583,7 +601,7 @@ def _blit_text_scene(
         if rows is not None:
             for gy in range(glyph_px):
                 row = rows[gy] if gy < len(rows) else []
-                scene_y = sy + (glyph_px - 1 - gy)
+                scene_y = sy + (glyph_px - 1 - gy) - cam_y
                 ty = (fh - 1) - scene_y
                 if ty < 0 or ty >= fh:
                     continue
@@ -596,7 +614,7 @@ def _blit_text_scene(
                     col = resolve_palette_color(use_idx, rgbs)
                     if col is None:
                         continue
-                    sxp = x + gx
+                    sxp = x + gx - cam_x
                     if sxp < 0 or sxp >= fw:
                         continue
                     i = row_base + sxp * 4
@@ -879,14 +897,27 @@ class PlaySession:
     # -- render --------------------------------------------------------
 
     def render_rgba(self) -> tuple[list[float], int, int]:
-        rgba = list(self._static_rgba) if self._static_rgba else [0.0] * (self.fw * self.fh * 4)
+        # Recorta al viewport ANTES de dibujar actores (no al reves): copiar/blittear
+        # contra un buffer del tamano del MUNDO entero cada fotograma escala con
+        # world_steps (hasta 8x8 pasos); el crop de abajo ya es O(viewport), asi que
+        # aplicarlo primero deja todo lo que sigue tambien O(viewport), sin importar
+        # cuan grande sea el mundo autorado (ver plan de streaming/chunked world buffer).
+        vw, vh = self.viewport_w, self.viewport_h
+        if self._static_rgba:
+            rgba = _crop_world_rgba_to_viewport(
+                self._static_rgba, self.fw, self.fh, self.cam_x, self.cam_y, viewport_w=vw, viewport_h=vh
+            )
+        else:
+            rgba = [0.0] * (vw * vh * 4)
+            for i in range(3, len(rgba), 4):
+                rgba[i] = 1.0
         for a in self.actors:
             data = self.get_sprite_data(a.sprite_id)
             if data is None:
                 continue
             frames = parse_sprite_all_frame_rows(data)
             idx = a.frame_index if a.frame_index < len(frames) else 0
-            _blit_actor_sprite(rgba, self.fw, self.fh, a, frames[idx], self._rgbs)
+            _blit_actor_sprite(rgba, vw, vh, a, frames[idx], self._rgbs, cam_x=self.cam_x, cam_y=self.cam_y)
             if a.has_text and a.text_str and a.text_font_id:
                 font_data = self.get_font_data(a.text_font_id)
                 if font_data is not None:
@@ -898,8 +929,8 @@ class PlaySession:
                     font_rgbs, _ = load_palette_rgb01_for_preview(font_pal_path if font_pal_path and font_pal_path.is_file() else None)
                     _blit_text_scene(
                         rgba,
-                        self.fw,
-                        self.fh,
+                        vw,
+                        vh,
                         a.x + a.text_dx,
                         a.y + a.text_dy,
                         a.text_str,
@@ -908,8 +939,7 @@ class PlaySession:
                         glyph_px=px,
                         rgbs=font_rgbs,
                         tint_index=a.text_color,
+                        cam_x=self.cam_x,
+                        cam_y=self.cam_y,
                     )
-        viewport = _crop_world_rgba_to_viewport(
-            rgba, self.fw, self.fh, self.cam_x, self.cam_y, viewport_w=self.viewport_w, viewport_h=self.viewport_h
-        )
-        return viewport, self.viewport_w, self.viewport_h
+        return rgba, vw, vh

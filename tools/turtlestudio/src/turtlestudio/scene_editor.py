@@ -66,6 +66,8 @@ from turtlestudio.project import (
     MANIFEST_NAME,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
+    WORLD_STEPS_MAX,
+    WORLD_STEPS_MIN,
     background_layers_to_json_list,
     clamp_world_steps,
     manifest_path,
@@ -103,11 +105,12 @@ from turtlestudio.scene_tiles import (
     get_cell_index,
     list_tileset_stems_for_palette,
     normalize_collision_tile_layer,
-    paint_tile_layers_on_rgba,
+    paint_tile_layers_on_rgba_blocked,
     parse_tile_layers,
     scene_coords_to_cell,
     scene_tile_grid_dimensions,
     set_cell_index,
+    tile_block_key,
     tile_layers_to_json_list,
 )
 from turtlestudio.sprites import (
@@ -358,6 +361,7 @@ def render_scene_rgba(
     hover_cell: tuple[int, int] | None = None,
     selected_parallax_band_index: int | None = None,
     selected_object_index: int | None = None,
+    tile_block_cache: dict[tuple[int, int], tuple[list[float], int, int]] | None = None,
 ) -> tuple[list[float], int, int]:
     wsx = clamp_world_steps(row.get("world_steps_x", 1))
     wsy = clamp_world_steps(row.get("world_steps_y", 1))
@@ -398,7 +402,9 @@ def render_scene_rgba(
         _fill_rect_rgba(rgba, fw, fh, r, g, b, op)
 
     layers = parse_tile_layers(row.get("tile_layers"), tile_px=tile_px, world_w=fw, world_h=fh)
-    paint_tile_layers_on_rgba(rgba, fw, fh, layers, project_root, rgbs, tile_px=tile_px)
+    paint_tile_layers_on_rgba_blocked(
+        rgba, fw, fh, layers, project_root, rgbs, tile_px=tile_px, block_cache=tile_block_cache
+    )
 
     placements = row.get("objects") or []
     _paint_scene_objects(rgba, fw, fh, project_root, placements)
@@ -790,6 +796,12 @@ class SceneEditorWidget(QWidget):
         self._dragging_object_index: int | None = None
         self._drag_offset: tuple[int, int] | None = None
         self._suspend = False
+        # Cache de render de tiles por bloque (perf editor con world_steps grandes, no
+        # firmware): dropeado entero cuando cambia algo estructural (ver _tile_cache_
+        # signature); invalidado bloque-a-bloque al pintar una sola celda (ver
+        # _on_canvas_cell_clicked).
+        self._tile_block_cache: dict[tuple[int, int], tuple[list[float], int, int]] = {}
+        self._tile_cache_signature_value: tuple[Any, ...] | None = None
         self._history = SnapshotHistory()
         self._restoring = False
         self._build_ui()
@@ -991,11 +1003,11 @@ class SceneEditorWidget(QWidget):
         self.edit_script.editingFinished.connect(self._on_script_edited)
         form.addRow(tr("scene.script_label"), self.edit_script)
         self.spin_world_x = QSpinBox()
-        self.spin_world_x.setRange(1, 2)
+        self.spin_world_x.setRange(WORLD_STEPS_MIN, WORLD_STEPS_MAX)
         self.spin_world_x.valueChanged.connect(self._on_world_steps_changed)
         form.addRow(tr("scene.world_steps_x"), self.spin_world_x)
         self.spin_world_y = QSpinBox()
-        self.spin_world_y.setRange(1, 2)
+        self.spin_world_y.setRange(WORLD_STEPS_MIN, WORLD_STEPS_MAX)
         self.spin_world_y.valueChanged.connect(self._on_world_steps_changed)
         form.addRow(tr("scene.world_steps_y"), self.spin_world_y)
         return section
@@ -1121,7 +1133,7 @@ class SceneEditorWidget(QWidget):
         layout.addLayout(band_btn_row)
 
         edit_form = QFormLayout()
-        max_y = SCENE_PIXEL_H * 2 - 1
+        max_y = SCENE_PIXEL_H * WORLD_STEPS_MAX - 1
         spin_y0 = QSpinBox()
         spin_y0.setRange(0, max_y)
         spin_y0.valueChanged.connect(lambda _v, idx=layer_idx: self._on_layer_band_edited(idx))
@@ -1239,12 +1251,12 @@ class SceneEditorWidget(QWidget):
         pos_row = QHBoxLayout()
         pos_row.addWidget(QLabel(tr("scene.x_label")))
         self.spin_obj_x = QSpinBox()
-        self.spin_obj_x.setRange(0, SCENE_PIXEL_W * 2)
+        self.spin_obj_x.setRange(0, SCENE_PIXEL_W * WORLD_STEPS_MAX)
         self.spin_obj_x.valueChanged.connect(self._on_object_xy_changed)
         pos_row.addWidget(self.spin_obj_x)
         pos_row.addWidget(QLabel(tr("scene.y_label")))
         self.spin_obj_y = QSpinBox()
-        self.spin_obj_y.setRange(0, SCENE_PIXEL_H * 2)
+        self.spin_obj_y.setRange(0, SCENE_PIXEL_H * WORLD_STEPS_MAX)
         self.spin_obj_y.valueChanged.connect(self._on_object_xy_changed)
         pos_row.addWidget(self.spin_obj_y)
         layout.addLayout(pos_row)
@@ -1259,11 +1271,11 @@ class SceneEditorWidget(QWidget):
         self.combo_camera_mode.currentTextChanged.connect(self._on_camera_changed)
         form.addRow(tr("scene.mode_label"), self.combo_camera_mode)
         self.spin_cam_x = QSpinBox()
-        self.spin_cam_x.setRange(0, SCENE_PIXEL_W * 2)
+        self.spin_cam_x.setRange(0, SCENE_PIXEL_W * WORLD_STEPS_MAX)
         self.spin_cam_x.valueChanged.connect(self._on_camera_changed)
         form.addRow(tr("scene.x_label"), self.spin_cam_x)
         self.spin_cam_y = QSpinBox()
-        self.spin_cam_y.setRange(0, SCENE_PIXEL_H * 2)
+        self.spin_cam_y.setRange(0, SCENE_PIXEL_H * WORLD_STEPS_MAX)
         self.spin_cam_y.valueChanged.connect(self._on_camera_changed)
         form.addRow(tr("scene.y_label"), self.spin_cam_y)
         self.edit_cam_target = QLineEdit()
@@ -1306,7 +1318,7 @@ class SceneEditorWidget(QWidget):
         layout.addLayout(band_btn_row)
 
         edit_form = QFormLayout()
-        max_y = SCENE_PIXEL_H * 2 - 1
+        max_y = SCENE_PIXEL_H * WORLD_STEPS_MAX - 1
         self.spin_parallax_y0 = QSpinBox()
         self.spin_parallax_y0.setRange(0, max_y)
         self.spin_parallax_y0.valueChanged.connect(self._on_parallax_band_edited)
@@ -1600,6 +1612,24 @@ class SceneEditorWidget(QWidget):
         self.tile_picker.set_tiles(tiles, rgbs)
         self.tile_picker.select_index(min(self._paint_tile_index, len(tiles) - 1) if tiles else 0)
 
+    def _tile_cache_signature(self, row: dict[str, Any]) -> tuple[Any, ...]:
+        """Firma barata de todo lo que invalida el cache de render de tiles por bloque
+        entero (a diferencia de una sola celda pintada, que se invalida quirurgicamente
+        en _on_canvas_cell_clicked): tamano de mundo, tile_px, y por capa enabled+tileset
+        (el contenido de celdas NO entra aca a proposito -- eso es justo lo que el cache
+        por bloque existe para no tener que invalidar entero)."""
+        layers = row.get("tile_layers") or []
+        layer_sig = tuple(
+            (bool(ly.get("enabled")), str(ly.get("tileset", ""))) if isinstance(ly, dict) else (False, "")
+            for ly in layers
+        )
+        return (
+            int(row.get("world_steps_x", 1)),
+            int(row.get("world_steps_y", 1)),
+            self._tile_px,
+            layer_sig,
+        )
+
     def _refresh_canvas(self) -> None:
         row = self._current_row()
         if row is None:
@@ -1607,6 +1637,10 @@ class SceneEditorWidget(QWidget):
             self.canvas.paintable = False
             self.canvas.object_mode = False
             return
+        sig = self._tile_cache_signature(row)
+        if sig != self._tile_cache_signature_value:
+            self._tile_block_cache.clear()
+            self._tile_cache_signature_value = sig
         selected_band = self.list_parallax_bands.currentRow()
         selected_object = self.list_objects.currentRow()
         rgba, fw, fh = render_scene_rgba(
@@ -1619,6 +1653,7 @@ class SceneEditorWidget(QWidget):
             hover_cell=self._hover_cell,
             selected_parallax_band_index=selected_band if selected_band >= 0 else None,
             selected_object_index=selected_object if selected_object >= 0 else None,
+            tile_block_cache=self._tile_block_cache,
         )
         img = _rgba_floats_to_qimage(rgba, fw, fh)
         self.canvas.set_frame(img, fw, fh)
@@ -2117,8 +2152,17 @@ class SceneEditorWidget(QWidget):
         tile_index = TRANSPARENT_PALETTE_INDEX if self.chk_erase.isChecked() else self._paint_tile_index
         if self._paint_tool == "bucket":
             flood_fill_cell_index(cells, gx, gy, tile_index)
+            # El balde puede tocar celdas repartidas por varios bloques del cache; no
+            # vale la pena rastrear cuales -- es un solo click, no el arrastre repetido
+            # que el cache por bloque esta pensado para acelerar.
+            self._tile_block_cache.clear()
         else:
             set_cell_index(cells, gx, gy, tile_index)
+            # Pincel/borrador: se dispara un cell_clicked por celda tocada al arrastrar
+            # -- invalidar solo el bloque de esa celda (no todo el cache) es lo que hace
+            # que un trazo largo en un mundo de 8x8 pasos no re-camine los otros ~63
+            # bloques en cada evento.
+            self._tile_block_cache.pop(tile_block_key(gx, gy), None)
         # No _mark_dirty() aqui a proposito: se emite un cell_clicked por celda
         # tocada al arrastrar, y un checkpoint de historial por celda haria falta un
         # Ctrl+Z por celda para deshacer un solo trazo. SceneCanvas.stroke_finished
