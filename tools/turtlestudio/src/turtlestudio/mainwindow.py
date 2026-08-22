@@ -304,8 +304,19 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.select(TabKind.EXPORT)
 
     def _on_workspace_tab_selected(self, ref: TabRef) -> None:
-        if ref.kind != TabKind.PLAY_MODE:
+        if ref.kind == TabKind.PLAY_MODE:
+            # Play always starts stopped (leaving the tab always stops it, below),
+            # so a fresh re-read of the manifest here can't clobber a running
+            # session -- it just picks up scene edits saved from other tabs.
+            if self.project is not None:
+                self.play_widget.refresh()
+        else:
             self.play_widget.stop_on_tab_away()
+            if ref.kind == TabKind.SCENE_EDITOR and self.project is not None:
+                # Cheap catalog-only refresh (not a full self.scene_editor.refresh())
+                # so objects created/removed in the Object Editor tab show up in the
+                # "add object" combo without discarding unsaved scene edits/undo history.
+                self.scene_editor.refresh_object_catalog()
         widget = self._tab_widgets.get(ref.kind)
         if widget is not None:
             self.center_stack.setCurrentWidget(widget)

@@ -445,7 +445,7 @@
         },
         {
           "enabled": false,
-          "color_index": 1,
+          "color_index": 0,
           "opacity": 255,
           "background": "sky",
           "parallax_x": 1.0,
@@ -465,7 +465,7 @@
           "enabled": false,
           "color_index": 1,
           "opacity": 255,
-          "background": "sky",
+          "background": "intro_bg",
           "parallax_x": 1.0,
           "fixed": false,
           "repeat_x": false
@@ -475,8 +475,48 @@
       "objects": [
         {
           "id": "player",
-          "x": 25,
-          "y": 16
+          "x": 23,
+          "y": 29
+        },
+        {
+          "id": "eneny_snake",
+          "x": 118,
+          "y": 27
+        },
+        {
+          "id": "eneny_snake",
+          "x": 263,
+          "y": 43
+        },
+        {
+          "id": "eneny_snake",
+          "x": 400,
+          "y": 27
+        },
+        {
+          "id": "directional_block",
+          "x": 176,
+          "y": 29
+        },
+        {
+          "id": "directional_block",
+          "x": 49,
+          "y": 28
+        },
+        {
+          "id": "directional_block",
+          "x": 608,
+          "y": 44
+        },
+        {
+          "id": "directional_block",
+          "x": 736,
+          "y": 44
+        },
+        {
+          "id": "eneny_snake",
+          "x": 656,
+          "y": 44
         }
       ],
       "tile_layers": [

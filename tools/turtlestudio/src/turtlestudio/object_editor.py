@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter, QPen
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -78,7 +78,10 @@ def _load_sprite_preview(project_root: Path, sprite_id: str) -> dict[str, Any] |
 
 
 class ObjectPreviewCanvas(QWidget):
-    """Read-only sprite preview with an origin marker and a collision overlay."""
+    """Sprite preview with an origin marker and a draggable AABB collision overlay."""
+
+    collision_dragged = pyqtSignal(int, int, int, int)  # x0, y0, x1, y1 (origin-relative)
+    collision_drag_finished = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -90,6 +93,13 @@ class ObjectPreviewCanvas(QWidget):
         self.origin_y = 0
         self.zoom = 12
         self.collision: dict[str, Any] | None = None
+        self._collision_selected = False
+        self._dragging_resize: str | None = None
+        self._dragging_move = False
+        self._drag_start_screen: tuple[float, float] | None = None
+        self._drag_start_collision: tuple[int, int, int, int] | None = None
+        self.setMouseTracking(True)
+        self.setToolTip(tr("object.collision_drag_hint"))
 
     def set_sprite(self, info: dict[str, Any]) -> None:
         self.rows = info["rows"]
@@ -108,6 +118,11 @@ class ObjectPreviewCanvas(QWidget):
 
     def set_collision(self, collision: dict[str, Any] | None) -> None:
         self.collision = collision
+        self._collision_selected = False
+        self._dragging_resize = None
+        self._dragging_move = False
+        self._drag_start_screen = None
+        self._drag_start_collision = None
         self.update()
 
     def _update_minimum_size(self) -> None:
@@ -116,6 +131,184 @@ class ObjectPreviewCanvas(QWidget):
     def _to_canvas_row(self, y: int) -> int:
         """Origin-relative sprite-space y (up) -> pixel row from the top."""
         return (self.ph - 1) - (self.origin_y + y)
+
+    # ------------------------------------------------------------------
+    # Border-drag geometry (click/drag the AABB collider like the
+    # Semi-FantasyConsole object editor does)
+    # ------------------------------------------------------------------
+
+    def _aabb_box(self) -> tuple[int, int, int, int] | None:
+        if self.collision is None or self.collision.get("mode") != OBJECT_COLLISION_MODE_AABB:
+            return None
+        return (
+            int(self.collision["x0"]),
+            int(self.collision["y0"]),
+            int(self.collision["x1"]),
+            int(self.collision["y1"]),
+        )
+
+    def _aabb_screen_rect(self) -> tuple[float, float, float, float] | None:
+        """Screen-space (left, top, right, bottom) for the current AABB collider."""
+        box = self._aabb_box()
+        if box is None:
+            return None
+        x0, y0, x1, y1 = box
+        z = self.zoom
+        left = (self.origin_x + x0) * z
+        top = self._to_canvas_row(y1) * z
+        right = left + max(0, x1 - x0 + 1) * z
+        bottom = top + max(0, y1 - y0 + 1) * z
+        return left, top, right, bottom
+
+    def _edge_positions(self) -> dict[str, tuple[float, float]]:
+        rect = self._aabb_screen_rect()
+        if rect is None:
+            return {}
+        left, top, right, bottom = rect
+        mx, my = (left + right) / 2, (top + bottom) / 2
+        return {"top": (mx, top), "bottom": (mx, bottom), "left": (left, my), "right": (right, my)}
+
+    def _edge_hit(self, mx: float, my: float, radius: int = 7) -> str | None:
+        if not self._collision_selected:
+            return None
+        for edge, (ex, ey) in self._edge_positions().items():
+            if (mx - ex) ** 2 + (my - ey) ** 2 <= radius * radius:
+                return edge
+        return None
+
+    def _center_hit(self, mx: float, my: float, radius: int = 10) -> bool:
+        rect = self._aabb_screen_rect()
+        if rect is None:
+            return False
+        left, top, right, bottom = rect
+        cx, cy = (left + right) / 2, (top + bottom) / 2
+        return (mx - cx) ** 2 + (my - cy) ** 2 <= radius * radius
+
+    def _is_near_border(self, mx: float, my: float, threshold: int = 6) -> bool:
+        rect = self._aabb_screen_rect()
+        if rect is None:
+            return False
+        left, top, right, bottom = rect
+        in_outer = left - threshold <= mx <= right + threshold and top - threshold <= my <= bottom + threshold
+        in_inner = left + threshold < mx < right - threshold and top + threshold < my < bottom - threshold
+        return in_outer and not in_inner
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        mx, my = event.position().x(), event.position().y()
+
+        if self._collision_selected:
+            edge = self._edge_hit(mx, my)
+            if edge is not None:
+                self._dragging_resize = edge
+                self._drag_start_screen = (mx, my)
+                self._drag_start_collision = self._aabb_box()
+                return
+            if self._center_hit(mx, my):
+                self._dragging_move = True
+                self._drag_start_screen = (mx, my)
+                self._drag_start_collision = self._aabb_box()
+                return
+
+        if self._is_near_border(mx, my):
+            if not self._collision_selected:
+                self._collision_selected = True
+                self.update()
+            return
+
+        if self._collision_selected:
+            self._collision_selected = False
+            self.update()
+
+    def _apply_resize_drag(self, mx: float, my: float) -> None:
+        if self._drag_start_screen is None or self._drag_start_collision is None:
+            return
+        z = self.zoom
+        dx_px = int((mx - self._drag_start_screen[0]) / z)
+        dy_px = int((my - self._drag_start_screen[1]) / z)
+        x0, y0, x1, y1 = self._drag_start_collision
+        nx0, ny0, nx1, ny1 = x0, y0, x1, y1
+        if self._dragging_resize == "top":
+            ny1 = max(y0, min(MAX_COORD, y1 - dy_px))
+        elif self._dragging_resize == "bottom":
+            ny0 = min(y1, max(-MAX_COORD, y0 - dy_px))
+        elif self._dragging_resize == "left":
+            nx0 = min(x1, max(-MAX_COORD, x0 + dx_px))
+        elif self._dragging_resize == "right":
+            nx1 = max(x0, min(MAX_COORD, x1 + dx_px))
+        if (nx0, ny0, nx1, ny1) != self._aabb_box():
+            self.collision["x0"], self.collision["y0"] = nx0, ny0
+            self.collision["x1"], self.collision["y1"] = nx1, ny1
+            self.collision_dragged.emit(nx0, ny0, nx1, ny1)
+            self.update()
+
+    def _apply_move_drag(self, mx: float, my: float) -> None:
+        if self._drag_start_screen is None or self._drag_start_collision is None:
+            return
+        z = self.zoom
+        x0, y0, x1, y1 = self._drag_start_collision
+        dx_px = int((mx - self._drag_start_screen[0]) / z)
+        dy_px = int((my - self._drag_start_screen[1]) / z)
+        dx_px = max(-MAX_COORD - x0, min(MAX_COORD - x1, dx_px))
+        dy_px = max(y1 - MAX_COORD, min(MAX_COORD + y0, dy_px))
+        nx0, nx1 = x0 + dx_px, x1 + dx_px
+        ny0, ny1 = y0 - dy_px, y1 - dy_px
+        if (nx0, ny0, nx1, ny1) != self._aabb_box():
+            self.collision["x0"], self.collision["y0"] = nx0, ny0
+            self.collision["x1"], self.collision["y1"] = nx1, ny1
+            self.collision_dragged.emit(nx0, ny0, nx1, ny1)
+            self.update()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        mx, my = event.position().x(), event.position().y()
+
+        if self._dragging_resize is not None and event.buttons() & Qt.MouseButton.LeftButton:
+            self._apply_resize_drag(mx, my)
+            return
+
+        if self._dragging_move and event.buttons() & Qt.MouseButton.LeftButton:
+            self._apply_move_drag(mx, my)
+            return
+
+        if self._collision_selected:
+            edge = self._edge_hit(mx, my)
+            if edge in ("top", "bottom"):
+                self.setCursor(Qt.CursorShape.SizeVerCursor)
+            elif edge in ("left", "right"):
+                self.setCursor(Qt.CursorShape.SizeHorCursor)
+            elif self._center_hit(mx, my) or self._is_near_border(mx, my):
+                self.setCursor(Qt.CursorShape.SizeAllCursor)
+            else:
+                self.setCursor(Qt.CursorShape.ArrowCursor)
+        elif self._is_near_border(mx, my):
+            self.setCursor(Qt.CursorShape.PointingHandCursor)
+        else:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            was_dragging = self._dragging_resize is not None or self._dragging_move
+            self._dragging_resize = None
+            self._dragging_move = False
+            self._drag_start_screen = None
+            self._drag_start_collision = None
+            if was_dragging:
+                self.collision_drag_finished.emit()
+
+    def _draw_collision_handles(self, painter: QPainter, sx0: float, sy0: float, sx1: float, sy1: float) -> None:
+        mx, my = (sx0 + sx1) / 2, (sy0 + sy1) / 2
+        pen = QPen(QColor(255, 255, 255, 230))
+        pen.setWidth(2)
+        painter.setPen(pen)
+        painter.setBrush(QColor(255, 90, 90, 220))
+        r = 4
+        for ex, ey in ((mx, sy0), (mx, sy1), (sx0, my), (sx1, my)):
+            painter.drawEllipse(int(ex - r), int(ey - r), r * 2, r * 2)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        arm = 8
+        painter.drawLine(int(mx - arm), int(my), int(mx + arm), int(my))
+        painter.drawLine(int(mx), int(my - arm), int(mx), int(my + arm))
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -158,6 +351,8 @@ class ObjectPreviewCanvas(QWidget):
                 w = max(0, x1 - x0 + 1)
                 h = max(0, y1 - y0 + 1)
                 painter.drawRect(left * z, top * z, w * z, h * z)
+                if self._collision_selected or self._dragging_resize or self._dragging_move:
+                    self._draw_collision_handles(painter, left * z, top * z, (left + w) * z, (top + h) * z)
             else:
                 pts = self.collision.get("points") or []
                 poly = [
@@ -252,6 +447,8 @@ class ObjectEditorWidget(QWidget):
 
         canvas_col = QVBoxLayout()
         self.canvas = ObjectPreviewCanvas()
+        self.canvas.collision_dragged.connect(self._on_preview_collision_dragged)
+        self.canvas.collision_drag_finished.connect(self._on_preview_collision_drag_finished)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
         canvas_scroll.setWidget(self.canvas)
@@ -546,6 +743,22 @@ class ObjectEditorWidget(QWidget):
         }
         self._mark_dirty()
         self.canvas.set_collision(self.collision)
+        self._commit_history()
+
+    def _on_preview_collision_dragged(self, x0: int, y0: int, x1: int, y1: int) -> None:
+        if self.collision is None:
+            return
+        self.collision["x0"], self.collision["y0"] = x0, y0
+        self.collision["x1"], self.collision["y1"] = x1, y1
+        self._suspend = True
+        self.spin_x0.setValue(x0)
+        self.spin_y0.setValue(y0)
+        self.spin_x1.setValue(x1)
+        self.spin_y1.setValue(y1)
+        self._suspend = False
+        self._mark_dirty()
+
+    def _on_preview_collision_drag_finished(self) -> None:
         self._commit_history()
 
     # ------------------------------------------------------------------

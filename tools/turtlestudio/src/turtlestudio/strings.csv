@@ -96,6 +96,9 @@ scene.tile_layer_px_mismatch,"⚠ Este tileset usa {tileset_px}px pero el proyec
 scene.collision_layer_label,Capa de colision:,Collision layer:
 scene.collision_layer_hint,Unica capa de tiles que bloquea actores (solido/oneway); las otras 3 son solo decorativas aunque tengan colision propia.,Only tile layer that blocks actors (solid/one-way); the other 3 are decoration only even if their own tiles have collision set.
 scene.objects_group,Objetos en la escena,Objects in the scene
+scene.object_catalog_label,Catalogo (arrastra al lienzo para colocar):,Catalog (drag onto the canvas to place):
+scene.object_filter_placeholder,Filtrar por nombre...,Filter by name...
+scene.object_catalog_drag_hint,Arrastra un objeto al lienzo para colocarlo ahi; o seleccionalo y usa Añadir.,Drag an object onto the canvas to place it there; or select it and use Add.
 scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove
 scene.x_label,X:,X:
@@ -223,6 +226,7 @@ object.has_collision,Tiene colision,Has collision
 object.collision_mode_label,Forma:,Shape:
 object.auto_shape,Auto (segun sprite),Auto (from sprite)
 object.points_label,Puntos:,Points:
+object.collision_drag_hint,Clic en el borde para seleccionar la colision; arrastra los puntos de las esquinas/lados para redimensionar o el centro para mover.,Click the border to select the collider; drag the edge handles to resize or the center to move it.
 object.open_error_title,Abrir objeto,Open object
 object.new_title,Nuevo objeto,New object
 object.new_id_label,Id del objeto:,Object id:

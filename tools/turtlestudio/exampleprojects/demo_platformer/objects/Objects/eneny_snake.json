@@ -1,0 +1,20 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "eneny_snake",
+  "name": "eneny_snake",
+  "sprite_id": "snake_walk",
+  "animations": [
+    {
+      "name": "slide",
+      "sprite_id": "snake_walk"
+    }
+  ],
+  "collision": {
+    "mode": "aabb",
+    "x0": -6,
+    "y0": 0,
+    "x1": 7,
+    "y1": 13
+  }
+}

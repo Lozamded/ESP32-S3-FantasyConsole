@@ -15,9 +15,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import QPointF, QRectF, QSize, Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtCore import QMimeData, QPointF, QRectF, QSize, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QDrag, QIcon, QImage, QMouseEvent, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (
+    QAbstractItemView,
     QButtonGroup,
     QCheckBox,
     QComboBox,
@@ -622,6 +623,7 @@ class SceneCanvas(QWidget):
     object_drag_started = pyqtSignal(int, int)
     object_drag_moved = pyqtSignal(int, int)
     object_drag_finished = pyqtSignal()
+    object_dropped = pyqtSignal(str, int, int)  # object id, scene-space x, y
     tool_context_menu_requested = pyqtSignal(object)  # QPoint (global), avoids importing QPoint just for the hint
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -632,10 +634,12 @@ class SceneCanvas(QWidget):
         self.zoom = 2
         self.paintable = False
         # Modo Editor (no pintando tiles): clic+arrastre sobre un objeto lo selecciona
-        # y lo mueve, en vez de pintar celdas -- ver object_drag_* mas arriba.
+        # y lo mueve, en vez de pintar celdas -- ver object_drag_* mas arriba. Tambien
+        # el unico modo en que se aceptan drops desde el catalogo (ver dropEvent).
         self.object_mode = False
         self._drawing = False
         self.setMouseTracking(True)
+        self.setAcceptDrops(True)
 
     def set_frame(self, image: QImage, fw: int, fh: int) -> None:
         self._image = image
@@ -714,6 +718,51 @@ class SceneCanvas(QWidget):
             return
         self.tool_context_menu_requested.emit(event.globalPos())
         event.accept()
+
+    def dragEnterEvent(self, event) -> None:  # noqa: N802
+        if self.object_mode and event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dragMoveEvent(self, event) -> None:  # noqa: N802
+        if self.object_mode and event.mimeData().hasText():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:  # noqa: N802
+        if not self.object_mode:
+            return
+        oid = event.mimeData().text().strip()
+        if not oid:
+            return
+        xy = self._scene_xy_at(event.position())
+        if xy is None:
+            return
+        self.object_dropped.emit(oid, *xy)
+        event.acceptProposedAction()
+
+
+class _ObjectCatalogList(QListWidget):
+    """Object-id catalog for the "add object" panel.
+
+    Items are draggable onto SceneCanvas (see SceneCanvas.object_dropped) to
+    place that object at the drop point; QListWidget's built-in item drag only
+    carries an internal model index, so startDrag is overridden to hand the
+    canvas the object id as plain text instead.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+
+    def startDrag(self, supportedActions: Qt.DropAction) -> None:  # noqa: N802
+        item = self.currentItem()
+        if item is None:
+            return
+        mime = QMimeData()
+        mime.setText(item.text())
+        drag = QDrag(self)
+        drag.setMimeData(mime)
+        drag.exec(Qt.DropAction.CopyAction)
 
 
 # ----------------------------------------------------------------------
@@ -845,6 +894,18 @@ class SceneEditorWidget(QWidget):
             self._current_index = ids.index(scene_id)
             self._load_current_into_form()
             self._history.reset(self._snapshot())
+
+    def refresh_object_catalog(self) -> None:
+        """Re-scan `objects/Objects/*.json` for the "add object" combo.
+
+        Cheap, non-destructive counterpart to `refresh()`: it doesn't touch
+        `_scenes`/undo history, so it's safe to call whenever this tab
+        regains focus, picking up objects created/removed from the Object
+        Editor tab in the same session without reloading the whole scene.
+        """
+        row = self._current_row()
+        palette_rel = str(row.get("palette", "")) if row is not None else ""
+        self._refresh_object_combo(palette_rel)
 
     # ------------------------------------------------------------------
     # UI construction
@@ -979,6 +1040,7 @@ class SceneEditorWidget(QWidget):
         self.canvas.object_drag_started.connect(self._on_object_drag_started)
         self.canvas.object_drag_moved.connect(self._on_object_drag_moved)
         self.canvas.object_drag_finished.connect(self._on_object_drag_finished)
+        self.canvas.object_dropped.connect(self._on_object_dropped)
         self.canvas.tool_context_menu_requested.connect(self._on_canvas_context_menu)
         self.spin_zoom.valueChanged.connect(self.canvas.set_zoom)
         canvas_scroll = QScrollArea()
@@ -1237,9 +1299,19 @@ class SceneEditorWidget(QWidget):
         self.list_objects.currentRowChanged.connect(self._on_object_selected)
         layout.addWidget(self.list_objects)
 
+        layout.addWidget(QLabel(tr("scene.object_catalog_label")))
+        self.edit_object_filter = QLineEdit()
+        self.edit_object_filter.setPlaceholderText(tr("scene.object_filter_placeholder"))
+        self.edit_object_filter.textChanged.connect(self._apply_object_filter)
+        layout.addWidget(self.edit_object_filter)
+
+        self._object_catalog_ids: list[str] = []
+        self.list_object_catalog = _ObjectCatalogList()
+        self.list_object_catalog.setMaximumHeight(96)
+        self.list_object_catalog.setToolTip(tr("scene.object_catalog_drag_hint"))
+        layout.addWidget(self.list_object_catalog)
+
         add_row = QHBoxLayout()
-        self.combo_add_object = QComboBox()
-        add_row.addWidget(self.combo_add_object, stretch=1)
         self.btn_add_object = QPushButton(tr("scene.add_object"))
         self.btn_add_object.clicked.connect(self._action_add_object)
         add_row.addWidget(self.btn_add_object)
@@ -1494,10 +1566,16 @@ class SceneEditorWidget(QWidget):
         self.combo_collision_layer.blockSignals(False)
 
     def _refresh_object_combo(self, palette_rel: str) -> None:
-        self.combo_add_object.blockSignals(True)
-        self.combo_add_object.clear()
-        self.combo_add_object.addItems(list_object_ids_for_scene_palette(self.project_root, palette_rel))
-        self.combo_add_object.blockSignals(False)
+        self._object_catalog_ids = list_object_ids_for_scene_palette(self.project_root, palette_rel)
+        self._apply_object_filter()
+
+    def _apply_object_filter(self) -> None:
+        needle = self.edit_object_filter.text().strip().lower()
+        ids = [oid for oid in self._object_catalog_ids if needle in oid.lower()] if needle else self._object_catalog_ids
+        self.list_object_catalog.blockSignals(True)
+        self.list_object_catalog.clear()
+        self.list_object_catalog.addItems(ids)
+        self.list_object_catalog.blockSignals(False)
 
     def _load_objects(self, row: dict[str, Any]) -> None:
         self.list_objects.blockSignals(True)
@@ -2176,17 +2254,30 @@ class SceneEditorWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _action_add_object(self) -> None:
+        item = self.list_object_catalog.currentItem()
+        oid = item.text().strip() if item is not None else ""
+        if not oid:
+            return
+        self._add_object_at(oid, self._viewport_w // 2, self._viewport_h // 2)
+
+    def _on_object_dropped(self, oid: str, x: int, y: int) -> None:
+        row = self._current_row()
+        if row is None or oid not in self._object_catalog_ids:
+            return
+        ws_x = int(row.get("world_steps_x", 1))
+        ws_y = int(row.get("world_steps_y", 1))
+        ww, wh = scene_world_pixel_size(ws_x, ws_y, base_w=self._viewport_w, base_h=self._viewport_h)
+        self._add_object_at(oid, max(0, min(ww - 1, x)), max(0, min(wh - 1, y)))
+
+    def _add_object_at(self, oid: str, x: int, y: int) -> None:
         row = self._current_row()
         if row is None:
-            return
-        oid = self.combo_add_object.currentText().strip()
-        if not oid:
             return
         objs = row.get("objects")
         if not isinstance(objs, list):
             objs = []
             row["objects"] = objs
-        objs.append({"id": oid, "x": self._viewport_w // 2, "y": self._viewport_h // 2})
+        objs.append({"id": oid, "x": x, "y": y})
         self._mark_dirty()
         self._load_objects(row)
         self._refresh_canvas()

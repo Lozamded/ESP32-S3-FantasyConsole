@@ -1,7 +1,0 @@
-# Opcional: mismas deps que pyproject. Para instalar todo el proyecto + CLI
-# (crea .venv/bin/turtlestudio), desde la carpeta que contiene pyproject.toml:
-#   cd .../tools/turtlestudio
-#   pip install -e .
-# No uses src/turtlestudio como cwd: ahi no hay pyproject.toml.
-#
-dearpygui>=1.10.0
