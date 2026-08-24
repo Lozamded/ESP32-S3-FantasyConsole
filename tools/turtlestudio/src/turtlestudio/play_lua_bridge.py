@@ -4,7 +4,9 @@ vendorizado en firmware/libraries/lua54 (ver tools/turtlestudio/README.md, secci
 
 Unico modulo de play_runtime/play_lua_bridge/play_widget que importa lupa: play_widget.py
 atrapa ImportError al construirlo y desactiva el tab en vez de romper el arranque de la
-app; play_runtime.py no depende de esto y es testeable sin lupa instalado.
+app; play_runtime.py no depende de esto y es testeable sin lupa instalado. (lua_bytecode.py
+tambien importa lupa, con el mismo criterio de guardia, para compilar bytecode en `build`
+-- ver ese modulo; no comparte runtime con este, ver el comentario ahi del porque.)
 
 Reproduce fielmente firmware/TurtleReader/turtle_actor_lua.cpp: UN solo lua_State
 compartido por todos los actores con script de la escena (no un runtime por actor) --

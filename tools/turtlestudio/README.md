@@ -85,6 +85,13 @@ en memoria del proyecto, sin build/flash/SD ni emulador. No requiere instalarlo 
 usar el resto de TurtleStudio; si `lupa` no esta disponible el tab se deshabilita
 mostrando por que, en vez de romper el arranque de la app.
 
+El mismo build de `lupa` de abajo tambien habilita, en `build` (CLI o GUI), exportar los
+scripts de actor/escena de `scripts/*.lua` como bytecode Lua 5.4 precompilado en vez de
+texto plano (ver `lua_bytecode.py`) -- mas chico y no legible a simple vista, sin cambios
+en el firmware (`luaL_loadbuffer` ya acepta texto o binario indistintamente). Si `lupa`
+no esta disponible, `build` sigue funcionando y exporta los scripts como texto, igual que
+siempre.
+
 **`pip install lupa` a secas NO sirve**: el wheel de PyPI trae Lua 5.5, una version
 distinta a la vendorizada en `firmware/libraries/lua54` (5.4.6) contra la que estan
 escritos los scripts de actor. Hay que compilar `lupa` a mano contra esos mismos

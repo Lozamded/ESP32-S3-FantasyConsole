@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include <stdlib.h>
 #include <string.h>
 
 extern "C" {
@@ -200,14 +201,31 @@ static bool load_script_update_ref(int actor_index, const char* stem) {
     return false;
   }
 
-  String src;
-  while (f.available()) {
-    src += static_cast<char>(f.read());
+  // Lectura de un solo golpe a un buffer propio (no un String): scripts/<stem>.lua puede
+  // ser texto Lua o bytecode Lua 5.4 precompilado (TurtleStudio exporta bytecode cuando
+  // puede, ver tools/turtlestudio/lua_bytecode.py) -- el bytecode trae bytes arbitrarios,
+  // incluido \0, que un String armado caracter a caracter no esta pensado para cargar.
+  // luaL_loadbuffer ya toma un largo explicito, no depende de terminador nulo.
+  const size_t len = f.size();
+  uint8_t* buf = static_cast<uint8_t*>(malloc(len > 0 ? len : 1));
+  if (!buf) {
+    Serial.printf("turtle_actor_lua: sin RAM para %s (%u bytes)\n", path,
+                  static_cast<unsigned>(len));
+    f.close();
+    return false;
   }
+  const size_t got = f.read(buf, len);
   f.close();
+  if (got != len) {
+    Serial.printf("turtle_actor_lua: lectura incompleta %s (%u/%u bytes)\n", path,
+                  static_cast<unsigned>(got), static_cast<unsigned>(len));
+    free(buf);
+    return false;
+  }
 
   const char* chunk_name = path;
-  int st = luaL_loadbuffer(s_L, src.c_str(), src.length(), chunk_name);
+  int st = luaL_loadbuffer(s_L, reinterpret_cast<const char*>(buf), len, chunk_name);
+  free(buf);
   if (st != LUA_OK) {
     Serial.printf("turtle_actor_lua: carga %s: %s\n", path, lua_tostring(s_L, -1));
     lua_pop(s_L, 1);

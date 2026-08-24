@@ -518,14 +518,23 @@ def append_lua_scripts_sidecar(
     Anade scripts/*.lua al sidecar: ENTRY, un Lua por escena (stem) y por objeto con campo script.
     Devuelve avisos (p. ej. archivo grande o referenciado pero ausente).
     """
+    from turtlestudio.lua_bytecode import (
+        LuaCompileError,
+        compile_lua_to_bytecode,
+        lua_bytecode_available,
+        lua_bytecode_unavailable_reason,
+    )
     from turtlestudio.objects import parse_object_script, read_object_file
     from turtlestudio.project import object_lua_relpath, scene_lua_relpath, validate_scene_script_stem
 
     root = project_root.expanduser().resolve()
     notes: list[str] = []
     script_seen: set[str] = set()
+    bytecode_ok = lua_bytecode_available()
+    warned_no_bytecode = False
 
-    def add_script(rel: str, *, required: bool = False) -> None:
+    def add_script(rel: str, *, required: bool = False, compile_script: bool = True) -> None:
+        nonlocal warned_no_bytecode
         rel = _normalize_entry_path(rel)
         if rel in script_seen:
             return
@@ -535,8 +544,22 @@ def append_lua_scripts_sidecar(
                 notes.append(f"  Falta {rel} (requerido para export)")
             return
         script_seen.add(rel)
-        sidecar.append((rel, body))
-        nbytes = len(body.encode("utf-8"))
+        payload: str | bytes = body
+        if compile_script and bytecode_ok:
+            try:
+                payload = compile_lua_to_bytecode(body, f"/{rel}")
+            except LuaCompileError as exc:
+                notes.append(f"  Error de sintaxis en {rel} (se exporta como texto): {exc}")
+                payload = body
+        elif compile_script and not bytecode_ok and not warned_no_bytecode:
+            warned_no_bytecode = True
+            notes.append(
+                "  Aviso: scripts exportados como texto Lua plano (lupa no disponible: "
+                f"{lua_bytecode_unavailable_reason()}); ver README seccion \"Play\" para "
+                "compilar lupa contra el Lua 5.4.6 vendorizado y habilitar bytecode."
+            )
+        sidecar.append((rel, payload))
+        nbytes = len(payload) if isinstance(payload, bytes) else len(payload.encode("utf-8"))
         if nbytes > LUA_SCRIPT_EXPORT_WARN_BYTES:
             notes.append(
                 f"  Aviso: {rel} es grande ({nbytes} bytes; umbral "
@@ -546,7 +569,10 @@ def append_lua_scripts_sidecar(
     entry = _normalize_entry_path(entry_relpath)
     if not entry.lower().endswith(".lua"):
         entry = f"{entry}.lua"
-    add_script(entry, required=False)
+    # ENTRY va embebido como texto en main.turtlecart (fuera de este sidecar por completo,
+    # ver merge_entry_lua_into_sidecar); esta copia en scripts/ es solo de referencia --
+    # nunca la lee el firmware -- asi que se deja como texto legible a proposito.
+    add_script(entry, required=False, compile_script=False)
 
     for row in scenes:
         if not isinstance(row, dict):
