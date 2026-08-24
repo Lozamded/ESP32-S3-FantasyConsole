@@ -932,6 +932,26 @@ def _ensure_example_palette(root: Path) -> None:
     pal_path.write_text(text, encoding="utf-8", newline="\n")
 
 
+def _ensure_default_font(root: Path) -> None:
+    """Crea `objects/Fonts/default.json` (fuente basica embebida, ver
+    turtlestudio.default_font) si aun no existe, para que un proyecto nuevo pueda
+    usar text()/text_width() sin disenar una fuente propia primero. Los devs pueden
+    agregar mas fuentes con el editor de fuentes normal (Fonts > New)."""
+    from turtlestudio.default_font import default_font_glyphs
+    from turtlestudio.fonts import font_json_path, save_font_json
+
+    if font_json_path(root, "default").is_file():
+        return
+    save_font_json(
+        root,
+        "default",
+        palette_rel=DEFAULT_EXAMPLE_PALETTE_REL,
+        glyph_px=8,
+        glyphs=default_font_glyphs(8),
+        fill_index=DEFAULT_TRANSPARENT_INDEX,
+    )
+
+
 def create_project(
     project_root: Path,
     *,
@@ -958,6 +978,7 @@ def create_project(
     root.mkdir(parents=True, exist_ok=True)
     _mkdir_layout(root)
     _ensure_example_palette(root)
+    _ensure_default_font(root)
 
     name = (display_name or root.name or "untitled").strip() or "untitled"
     data = _default_manifest_dict(name, board)
