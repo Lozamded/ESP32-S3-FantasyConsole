@@ -28,6 +28,23 @@ constexpr char kCharset[] =
     "0123456789"
     ".,!?:;'-";
 
+/** indice-en-kCharset por byte (-1 = fuera del charset v0), construido una sola vez en el
+ * primer uso -- evita un strchr() sobre kCharset (~71 chars) por CADA caracter de CADA linea
+ * de texto medida/dibujada (turtle_font_measure corre en cada frame para texto con overlay
+ * activo). Ver turtle_font_charset_index. */
+int8_t s_charset_lut[256];
+bool s_charset_lut_ready = false;
+
+void build_charset_lut() {
+  for (int i = 0; i < 256; ++i) {
+    s_charset_lut[i] = -1;
+  }
+  for (int i = 0; kCharset[i] != '\0'; ++i) {
+    s_charset_lut[static_cast<unsigned char>(kCharset[i])] = static_cast<int8_t>(i);
+  }
+  s_charset_lut_ready = true;
+}
+
 static uint16_t read_u16_le(const uint8_t* p) {
   return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
@@ -173,8 +190,10 @@ int turtle_font_charset_index(char ch) {
   if (ch == '\0') {
     return -1;
   }
-  const char* p = strchr(kCharset, ch);
-  return p ? static_cast<int>(p - kCharset) : -1;
+  if (!s_charset_lut_ready) {
+    build_charset_lut();
+  }
+  return s_charset_lut[static_cast<unsigned char>(ch)];
 }
 
 int turtle_font_measure(const TurtleFont* f, const char* str) {
@@ -226,19 +245,8 @@ int turtle_font_draw_scene_tint(const TurtleFont* f, int sx, int sy, const char*
     }
     const uint8_t* pixels = turtle_font_glyph_pixels(f, idx);
     if (pixels) {
-      // Sin blit indexado con tint en turtle_gpu: se pinta pixel a pixel via el
-      // primitivo publico existente (fill_rect_scene de 1x1), misma formula fila->y
-      // de escena que turtle_gpu_blit_indexed_scene (fila 0 = arriba del glifo).
-      for (int gy = 0; gy < f->glyph_px; ++gy) {
-        const uint8_t* row = pixels + static_cast<size_t>(gy) * static_cast<size_t>(f->glyph_px);
-        const int scene_y = sy + (f->glyph_px - 1 - gy);
-        for (int gx = 0; gx < f->glyph_px; ++gx) {
-          if (row[gx] == transparent_index) {
-            continue;
-          }
-          turtle_gpu_fill_rect_scene(x + gx, scene_y, 1, 1, tint_color_index);
-        }
-      }
+      turtle_gpu_blit_indexed_scene_tint(x, sy, f->glyph_px, f->glyph_px, pixels, f->glyph_px,
+                                         transparent_index, tint_color_index);
     }
     x += turtle_font_glyph_advance(f, idx);
   }

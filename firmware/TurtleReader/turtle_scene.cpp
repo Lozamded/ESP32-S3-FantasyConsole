@@ -158,16 +158,11 @@ struct SceneActor {
   bool text_has_prev_blit;
 };
 
+/** Scratch de un solo uso para draw_sprite_for_object (dibujo inmediato desde la VM ENTRY,
+ * no per-actor). Los actores YA NO comparten este buffer -- cada uno tiene el suyo propio en
+ * ActorDrawCache::pixels (ver ensure_actor_pixel_capacity/draw_actor_runtime) precisamente
+ * para evitar que un actor pise los pixeles decodificados de otro entre frames. */
 TURTLE_BSS_PSRAM static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
-/** Indice del actor cuyos pixeles decodificados ocupan s_sprite_pixels ahora mismo (-1 =
- * ninguno). s_sprite_pixels es un solo buffer compartido por TODOS los actores; el "cache"
- * por actor en ActorDrawCache solo dice si ESE actor decodifico su sprite alguna vez, no si
- * sigue siendo el ultimo en escribir el buffer compartido. Sin este dueno, un actor con sprite
- * sin cambios se salta la recarga y blittea los pixeles de OTRO actor que escribio el buffer
- * despues (bug real: con 1 solo actor en escena era invisible porque nadie mas tocaba el
- * buffer; al agregar mas objetos el actor que no se dibuja ultimo en el loop por frame termina
- * mostrando basura/negro). Ver draw_actor_runtime. */
-static int s_sprite_pixels_owner = -1;
 /** Decode temporal (fondos <= 1 pantalla); mundos grandes usan s_world_bg en PSRAM. */
 TURTLE_BSS_PSRAM static uint8_t s_scene_pixels[kSceneW * kSceneH];
 /** Scratch para bake_indexed_background_into_world (ver comentario en kMaxBgAssetW/H). */
@@ -234,7 +229,10 @@ static BgImageLayer s_bg_image_layers[kMaxBgImageLayers];
 static int s_bg_image_layer_count = 0;
 
 static void coll_tileset_cache_clear(void);
+static void live_tileset_cache_clear(void);
 static void font_cache_clear_all(void);
+static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram);
+static void free_scene_pixel_buffer(uint8_t* p);
 static const ParallaxBand* find_parallax_band(int scene_y);
 static const ParallaxBand* find_band_in(const ParallaxBand* arr, int count, int scene_y);
 static const TurtleFont* font_cache_get(const char* json, const char* json_end,
@@ -246,6 +244,25 @@ struct ActorDrawCache {
   char sprite_id[48];
   uint8_t frame_index;
   bool pixels_valid;
+  /** Buffer de pixeles decodificados propio de ESTE actor (no compartido). Nace en nullptr,
+   * se reserva en el primer uso via ensure_actor_pixel_capacity y se conserva entre escenas
+   * (nunca se libera) para evitar reservas/liberaciones repetidas en cada carga de escena. */
+  uint8_t* pixels;
+  size_t pixels_cap;
+  /** Posicion/orientacion en el ultimo frame realmente dibujado (ver draw_actor_runtime).
+   * Junto con has_prev_blit y el sprite_id/frame_index de arriba, permite a draw_all_actors
+   * (camara fija) detectar actores "quietos" (nada cambio desde el frame anterior) y saltar
+   * su marcado/redibujado -- ver skip_draw. */
+  int last_x;
+  int last_y;
+  bool last_flip_h;
+  /** Scratch de UN frame: decidido en draw_all_actors (camara fija), consumido por el loop
+   * de dibujo del mismo frame. No tiene significado fuera de esa funcion. */
+  bool skip_draw;
+  /** Scratch de UN frame: true si este actor ya fue procesado (marcado + dirty) en la Fase 1
+   * de draw_all_actors (camara fija) -- ver ese comentario. false = quedo pendiente para la
+   * Fase 2 (candidato a "quieto", puede terminar saltandose por completo). */
+  bool active_this_frame;
 };
 
 static ActorDrawCache s_actor_draw_cache[kMaxPlacements];
@@ -428,6 +445,7 @@ static void sprite_cache_clear_all(void) {
   s_sprite_cache_count = 0;
   object_cache_clear_all();
   coll_tileset_cache_clear();
+  live_tileset_cache_clear();
   font_cache_clear_all();
   scene_asset_buffers_release();
 }
@@ -928,6 +946,42 @@ static const TurtleTileset* coll_tileset_cache_get(const char* json, const char*
   }
   snprintf(s_tileset_coll_active_id, sizeof s_tileset_coll_active_id, "%s", tileset_id);
   return &s_tileset_coll;
+}
+
+static AssetSdLoad s_tileset_live_sd;
+
+/** Tileset residente para draw_tile_layers_live() (el unico llamador por-fotograma de las
+ * tres funciones que usan resolve_tileset_tts -- ver su comentario). Buffer propio, separado
+ * de s_tileset_draw (que usan las funciones de horneado, corren una sola vez al comenzar la
+ * escena) para no pisarse entre si; mismo patron que s_tileset_coll de arriba. Sin esto,
+ * draw_tile_layers_live libera/recarga y re-decodifica TODO el tileset (heap_caps_malloc +
+ * un turtle_asset_bin_decode_indexed por tile, hasta 256) en cada fotograma, aunque sea el
+ * mismo tileset que el fotograma anterior. */
+TURTLE_BSS_PSRAM static TurtleTileset s_tileset_live;
+static char s_tileset_live_active_id[48];
+
+static void live_tileset_cache_clear(void) {
+  turtle_tileset_free(&s_tileset_live);
+  s_tileset_live_active_id[0] = '\0';
+}
+
+/** true si tras esta llamada s_tileset_live contiene tileset_id (ya lo tenia, o se cargo
+ * ahora). false si tileset_id es invalido o la carga fallo (s_tileset_live queda vacio). */
+static bool live_tileset_cache_ensure(const char* json, const char* json_end,
+                                      const char* tileset_id) {
+  if (!tileset_id || !tileset_id[0]) {
+    return false;
+  }
+  if (strcmp(s_tileset_live_active_id, tileset_id) == 0 && s_tileset_live.pixels) {
+    return true;
+  }
+  turtle_tileset_free(&s_tileset_live);
+  s_tileset_live_active_id[0] = '\0';
+  if (!resolve_tileset_tts(json, json_end, tileset_id, &s_tileset_live_sd, &s_tileset_live)) {
+    return false;
+  }
+  snprintf(s_tileset_live_active_id, sizeof s_tileset_live_active_id, "%s", tileset_id);
+  return true;
 }
 
 static void coll_tileset_cache_prewarm(const char* json, const char* json_end) {
@@ -1685,7 +1739,8 @@ static bool draw_background_for_scene(const char* json, const char* json_end,
 }
 
 static bool load_sprite_pixels_by_id(const char* json, const char* json_end, const char* sprite_id,
-                                     int frame_index, int* out_pw, int* out_ph) {
+                                     int frame_index, uint8_t* out_pixels, size_t out_pixels_cap,
+                                     int* out_pw, int* out_ph) {
   AssetSdLoad sd;
   const char* asset_inner = nullptr;
   const char* asset_inner_end = nullptr;
@@ -1705,13 +1760,17 @@ static bool load_sprite_pixels_by_id(const char* json, const char* json_end, con
   if (pw > kMaxSpriteW || ph > kMaxSpriteH) {
     return false;
   }
+  const size_t need = static_cast<size_t>(pw) * static_cast<size_t>(ph);
+  if (need > out_pixels_cap) {
+    return false;
+  }
 
   if (render_mode_is_indexed_pixels(asset_inner, asset_inner_end) ||
       buffer_is_turtle_asset_bin(asset_inner, static_cast<size_t>(asset_inner_end - asset_inner))) {
-    memset(s_sprite_pixels, 0, sizeof s_sprite_pixels);
+    memset(out_pixels, 0, need);
     const size_t blob_len =
         (asset_inner_end > asset_inner) ? static_cast<size_t>(asset_inner_end - asset_inner) : 0;
-    if (!fill_pixels_from_asset_buffer(asset_inner, blob_len, pw, ph, s_sprite_pixels, pw,
+    if (!fill_pixels_from_asset_buffer(asset_inner, blob_len, pw, ph, out_pixels, pw,
                                        frame_index)) {
       return false;
     }
@@ -1779,7 +1838,8 @@ static bool draw_sprite_for_object(const char* json, const char* json_end, const
 
   int pw = 0;
   int ph = 0;
-  if (load_sprite_pixels_by_id(json, json_end, sprite_id, frame_index, &pw, &ph)) {
+  if (load_sprite_pixels_by_id(json, json_end, sprite_id, frame_index, s_sprite_pixels,
+                               sizeof s_sprite_pixels, &pw, &ph)) {
     int origin_x = 0;
     int origin_y = 0;
     extract_sprite_origin(meta_inner, meta_inner_end, asset_inner, asset_inner_end, pw, ph,
@@ -1847,6 +1907,27 @@ static bool actor_text_scene_bounds(const SceneActor* a, int* out_x0, int* out_y
   return true;
 }
 
+/** Reserva (una sola vez, se conserva entre escenas) el buffer de pixeles propio de un actor.
+ * kMaxSpriteW*kMaxSpriteH es el tope ya validado por load_sprite_pixels_by_id, asi que una
+ * unica reserva a ese tamano cubre cualquier sprite valido sin necesidad de conocer pw/ph de
+ * antemano (evitaria una segunda resolucion del asset solo para consultar dimensiones). */
+static bool ensure_actor_pixel_capacity(ActorDrawCache* cache) {
+  constexpr size_t kNeed = static_cast<size_t>(kMaxSpriteW) * static_cast<size_t>(kMaxSpriteH);
+  if (cache->pixels && cache->pixels_cap >= kNeed) {
+    return true;
+  }
+  uint8_t* buf = alloc_scene_pixel_buffer(kNeed, nullptr);
+  if (!buf) {
+    Serial.printf("turtle_scene: sin RAM para buffer de sprite de actor (%u bytes)\n",
+                  static_cast<unsigned>(kNeed));
+    return false;
+  }
+  free_scene_pixel_buffer(cache->pixels);
+  cache->pixels = buf;
+  cache->pixels_cap = kNeed;
+  return true;
+}
+
 static bool draw_actor_runtime(int actor_index) {
   if (!s_runtime_json || !s_runtime_json_end || actor_index < 0 || actor_index >= s_actor_count) {
     return false;
@@ -1855,24 +1936,28 @@ static bool draw_actor_runtime(int actor_index) {
   ActorDrawCache* cache = &s_actor_draw_cache[actor_index];
 
   const bool need_reload = !cache->pixels_valid || strcmp(cache->sprite_id, a->sprite_id) != 0 ||
-                           cache->frame_index != a->frame_index ||
-                           s_sprite_pixels_owner != actor_index;
+                           cache->frame_index != a->frame_index;
   if (need_reload) {
+    if (!ensure_actor_pixel_capacity(cache)) {
+      return false;
+    }
     if (!load_sprite_pixels_by_id(s_runtime_json, s_runtime_json_end, a->sprite_id, a->frame_index,
-                                 &a->pw, &a->ph)) {
+                                 cache->pixels, cache->pixels_cap, &a->pw, &a->ph)) {
       return false;
     }
     snprintf(cache->sprite_id, sizeof cache->sprite_id, "%s", a->sprite_id);
     cache->frame_index = a->frame_index;
     cache->pixels_valid = true;
-    s_sprite_pixels_owner = actor_index;
   }
 
-  turtle_gpu_blit_indexed_scene_anchor(a->x, a->y, a->pw, a->ph, s_sprite_pixels, a->pw,
+  turtle_gpu_blit_indexed_scene_anchor(a->x, a->y, a->pw, a->ph, cache->pixels, a->pw,
                                        s_runtime_transp, a->origin_x, a->origin_y, a->flip_h);
 
   actor_sprite_scene_bounds(a, &a->prev_blit_x, &a->prev_blit_y, &a->prev_blit_w, &a->prev_blit_h);
   a->has_prev_blit = true;
+  cache->last_x = a->x;
+  cache->last_y = a->y;
+  cache->last_flip_h = a->flip_h;
 
   int tx0 = 0, ty0 = 0, tw = 0, th = 0;
   if (actor_text_scene_bounds(a, &tx0, &ty0, &tw, &th)) {
@@ -2678,6 +2763,17 @@ static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram) {
   return nullptr;
 }
 
+static void free_scene_pixel_buffer(uint8_t* p) {
+  if (!p) {
+    return;
+  }
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  heap_caps_free(p);
+#else
+  free(p);
+#endif
+}
+
 static bool ensure_world_buffer_filled(uint8_t fill_ci) {
   // Ventana residente, no el mundo autorado entero -- acotada al tamano real del
   // mundo si este es mas chico que la ventana (para no reservar de mas ni desalinear
@@ -3250,24 +3346,17 @@ static void draw_tile_layers_live(uint8_t transparent_index) {
     return;
   }
 
-  char last_id[48] = "";
-  turtle_tileset_free(&s_tileset_draw);
-  AssetSdLoad sd;
-
+  // s_tileset_live se conserva entre llamadas (fotogramas) -- live_tileset_cache_ensure solo
+  // libera/recarga/redecodifica cuando el tileset pedido cambia de verdad, no en cada frame.
   for (int li = 0; li < nl; ++li) {
     const TileLayer* ly = &s_tile_layers[li];
     if (!ly->enabled || !ly->tileset[0]) {
       continue;
     }
-    if (strcmp(last_id, ly->tileset) != 0) {
-      turtle_tileset_free(&s_tileset_draw);
-      if (!resolve_tileset_tts(s_runtime_json, s_runtime_json_end, ly->tileset, &sd, &s_tileset_draw)) {
-        last_id[0] = '\0';
-        continue;
-      }
-      snprintf(last_id, sizeof last_id, "%s", ly->tileset);
+    if (!live_tileset_cache_ensure(s_runtime_json, s_runtime_json_end, ly->tileset)) {
+      continue;
     }
-    if (s_tileset_draw.tile_px != static_cast<uint8_t>(px)) {
+    if (s_tileset_live.tile_px != static_cast<uint8_t>(px)) {
       continue;
     }
     if (ly->rows < rows || ly->cols < cols) {
@@ -3280,7 +3369,7 @@ static void draw_tile_layers_live(uint8_t transparent_index) {
         if (ti == static_cast<int>(transparent_index) || ti < 0) {
           continue;
         }
-        const uint8_t* tile = turtle_tileset_tile(&s_tileset_draw, ti);
+        const uint8_t* tile = turtle_tileset_tile(&s_tileset_live, ti);
         if (!tile) {
           continue;
         }
@@ -3288,7 +3377,6 @@ static void draw_tile_layers_live(uint8_t transparent_index) {
       }
     }
   }
-  turtle_tileset_free(&s_tileset_draw);
 }
 
 static bool parse_placements(const char* scene_start, const char* scene_end, Placement* out,
@@ -3982,6 +4070,14 @@ static void paint_scene_static_layers(void) {
   draw_tile_layers_live(s_runtime_transp);
 }
 
+/** Rect en espacio escena, usado por draw_all_actors (camara fija) para saber que zonas de
+ * pantalla se van a repintar este frame -- ver comentario de "Fase 1/Fase 2" mas abajo. */
+struct ActiveRect {
+  int x0, y0, x1, y1;
+};
+constexpr int kMaxActiveRects = kMaxPlacements * 4;
+static ActiveRect s_active_rects[kMaxActiveRects];
+
 static void draw_all_actors(void) {
   if (!s_runtime_json || !s_runtime_json_end) {
     return;
@@ -4019,31 +4115,143 @@ static void draw_all_actors(void) {
   turtle_gpu_set_camera(0, 0);
 
   turtle_gpu_dirty_reset();
+
+  // Fase 1: un actor esta "quieto" si desde el ultimo frame que realmente se dibujo no
+  // cambio ni posicion, ni flip_h, ni sprite/frame, no tiene texto activo, y sigue dentro
+  // de camara -- ya esta bien en pantalla, en principio no hace falta tocarlo. Los que NO
+  // estan quietos (se movieron, cambiaron de sprite, tienen texto, o entraron/salieron de
+  // camara) se procesan como siempre (marcar prev/actual, decidir si se ven) y su rect
+  // entra en s_active_rects. Los quietos quedan pendientes para la Fase 2.
+  int active_rect_count = 0;
   for (int i = 0; i < s_actor_count; ++i) {
     SceneActor* a = &s_actors[i];
+    ActorDrawCache* cache = &s_actor_draw_cache[i];
+    cache->skip_draw = false;
+    cache->active_this_frame = false;
+
+    int cx0 = 0, cy0 = 0, cw = 0, ch = 0;
+    actor_sprite_scene_bounds(a, &cx0, &cy0, &cw, &ch);
+    const bool in_view = rects_overlap(cx0, cy0, cx0 + cw - 1, cy0 + ch - 1, 0, 0, kSceneW - 1,
+                                       kSceneH - 1);
+    const bool sprite_dirty = !cache->pixels_valid || strcmp(cache->sprite_id, a->sprite_id) != 0 ||
+                              cache->frame_index != a->frame_index;
+    const bool moved = a->x != cache->last_x || a->y != cache->last_y;
+    const bool flipped = a->flip_h != cache->last_flip_h;
+    const bool idle_candidate = a->has_prev_blit && in_view && !a->has_text && !sprite_dirty &&
+                                !moved && !flipped;
+    if (idle_candidate) {
+      continue;  // se decide en la Fase 2
+    }
+    cache->active_this_frame = true;
+
     if (a->has_prev_blit) {
       turtle_gpu_dirty_mark_scene_rect(a->prev_blit_x, a->prev_blit_y, a->prev_blit_w,
                                        a->prev_blit_h);
+      if (active_rect_count < kMaxActiveRects) {
+        s_active_rects[active_rect_count++] = {
+            a->prev_blit_x, a->prev_blit_y, a->prev_blit_x + a->prev_blit_w - 1,
+            a->prev_blit_y + a->prev_blit_h - 1};
+      }
     }
-    int cx0 = 0, cy0 = 0, cw = 0, ch = 0;
-    actor_sprite_scene_bounds(a, &cx0, &cy0, &cw, &ch);
-    turtle_gpu_dirty_mark_scene_rect(cx0, cy0, cw, ch);
-
-    // Overlay de texto: rect independiente del sprite (union con su propio prev_blit_*,
-    // ver draw_actor_runtime). Mismo motivo que arriba: borra donde estaba, pinta donde va.
     if (a->text_has_prev_blit) {
       turtle_gpu_dirty_mark_scene_rect(a->text_prev_blit_x, a->text_prev_blit_y,
                                        a->text_prev_blit_w, a->text_prev_blit_h);
+      if (active_rect_count < kMaxActiveRects) {
+        s_active_rects[active_rect_count++] = {
+            a->text_prev_blit_x, a->text_prev_blit_y,
+            a->text_prev_blit_x + a->text_prev_blit_w - 1,
+            a->text_prev_blit_y + a->text_prev_blit_h - 1};
+      }
     }
+
+    // Fuera del viewport (0,0)-(kSceneW-1,kSceneH-1): ya se borro arriba donde estaba
+    // (prev_blit/text_prev_blit); no vale la pena decodificar/blittear este frame. Limpiar
+    // has_prev_blit/text_has_prev_blit para no re-marcar el mismo rect ya borrado en frames
+    // siguientes mientras siga fuera de camara.
+    if (!in_view) {
+      a->has_prev_blit = false;
+      a->text_has_prev_blit = false;
+      cache->skip_draw = true;
+      continue;
+    }
+    turtle_gpu_dirty_mark_scene_rect(cx0, cy0, cw, ch);
+    if (active_rect_count < kMaxActiveRects) {
+      s_active_rects[active_rect_count++] = {cx0, cy0, cx0 + cw - 1, cy0 + ch - 1};
+    }
+
+    // Overlay de texto: rect independiente del sprite (union con su propio prev_blit_*,
+    // ver draw_actor_runtime). Mismo motivo que arriba: borra donde estaba, pinta donde va.
     int tx0 = 0, ty0 = 0, tw = 0, th = 0;
     if (actor_text_scene_bounds(a, &tx0, &ty0, &tw, &th)) {
       turtle_gpu_dirty_mark_scene_rect(tx0, ty0, tw, th);
+      if (active_rect_count < kMaxActiveRects) {
+        s_active_rects[active_rect_count++] = {tx0, ty0, tx0 + tw - 1, ty0 + th - 1};
+      }
     }
   }
+
+  // Fase 2: actores quietos pendientes de la Fase 1. Si ningun rect activo de este frame los
+  // toca, de verdad no hace falta redibujarlos. Si SI se solapan (un actor activo vecino va a
+  // restaurar el fondo estatico ahi), hay que marcarlos/redibujarlos igual (promoverlos a
+  // "activos"), o quedaria un hueco en su sprite donde se solapa. Se repite un numero acotado
+  // de pasadas porque una promocion puede a su vez cubrir a OTRO quieto (cadena de sprites
+  // superpuestos, ej. A activo -> tapa a B quieto -> B recien promovido tapa a C quieto). Un
+  // solapamiento de mas de kMaxIdlePromotionPasses de profundidad es un caso de escena muy
+  // raro (muchos sprites apilados); en el peor caso deja un hueco de un frame que se autocorrige
+  // en cuanto cualquiera de esos actores vuelva a cambiar.
+  constexpr int kMaxIdlePromotionPasses = 4;
+  for (int pass = 0; pass < kMaxIdlePromotionPasses; ++pass) {
+    bool promoted_any = false;
+    for (int i = 0; i < s_actor_count; ++i) {
+      SceneActor* a = &s_actors[i];
+      ActorDrawCache* cache = &s_actor_draw_cache[i];
+      if (cache->active_this_frame) {
+        continue;  // ya resuelto (Fase 1 o una pasada anterior de esta Fase 2)
+      }
+      // idle_candidate implica has_prev_blit && in_view && rect actual == prev_blit_* (nada
+      // cambio), asi que alcanza con chequear prev_blit_* contra los rects activos.
+      bool covered = false;
+      for (int j = 0; j < active_rect_count; ++j) {
+        const ActiveRect& r = s_active_rects[j];
+        if (rects_overlap(a->prev_blit_x, a->prev_blit_y, a->prev_blit_x + a->prev_blit_w - 1,
+                          a->prev_blit_y + a->prev_blit_h - 1, r.x0, r.y0, r.x1, r.y1)) {
+          covered = true;
+          break;
+        }
+      }
+      if (!covered) {
+        continue;
+      }
+      cache->active_this_frame = true;
+      promoted_any = true;
+      turtle_gpu_dirty_mark_scene_rect(a->prev_blit_x, a->prev_blit_y, a->prev_blit_w,
+                                       a->prev_blit_h);
+      if (active_rect_count < kMaxActiveRects) {
+        s_active_rects[active_rect_count++] = {
+            a->prev_blit_x, a->prev_blit_y, a->prev_blit_x + a->prev_blit_w - 1,
+            a->prev_blit_y + a->prev_blit_h - 1};
+      }
+    }
+    if (!promoted_any) {
+      break;
+    }
+  }
+  // Lo que sigue sin promover tras las pasadas de arriba de verdad no hace falta redibujarlo.
+  for (int i = 0; i < s_actor_count; ++i) {
+    ActorDrawCache* cache = &s_actor_draw_cache[i];
+    if (!cache->active_this_frame) {
+      cache->skip_draw = true;
+    }
+  }
+
   turtle_gpu_dirty_slack_for_scale();
   turtle_gpu_restore_static_dirty();
 
   for (int i = 0; i < s_actor_count; ++i) {
+    ActorDrawCache* cache = &s_actor_draw_cache[i];
+    if (cache->skip_draw) {
+      continue;
+    }
     if (!draw_actor_runtime(i)) {
       Serial.printf("turtle_scene: no sprite para \"%s\"\n", s_actors[i].obj_id);
     }
@@ -4262,7 +4470,6 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     turtle_gpu_snapshot_static();
   }
   s_actor_count = 0;
-  s_sprite_pixels_owner = -1;
   for (int i = 0; i < kMaxPlacements; ++i) {
     s_actor_draw_cache[i].sprite_id[0] = '\0';
     s_actor_draw_cache[i].frame_index = 0;

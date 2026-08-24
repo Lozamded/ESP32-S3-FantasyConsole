@@ -586,6 +586,35 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
   }
 }
 
+void turtle_gpu_blit_indexed_scene_tint(int x0, int y0, int w, int h,
+                                        const uint8_t* rows_top_first, int row_stride,
+                                        uint8_t transparent_index, uint8_t tint_color_index) {
+  if (w <= 0 || h <= 0 || !rows_top_first || row_stride <= 0) {
+    return;
+  }
+  const uint8_t tr = clamp_color_index(transparent_index);
+  const uint8_t tint = clamp_color_index(tint_color_index);
+  for (int py = 0; py < h; ++py) {
+    const int sy = y0 + (h - 1 - py);
+    const int vy = sy - s_cam_y;
+    const int yfb = (kH - 1) - vy;
+    if (yfb < 0 || yfb >= kH) {
+      continue;
+    }
+    const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
+    for (int lx = 0; lx < w; ++lx) {
+      if (row[lx] == tr) {
+        continue;
+      }
+      const int vx = x0 + lx - s_cam_x;
+      if (vx < 0 || vx >= kW) {
+        continue;
+      }
+      plot_fb(vx, yfb, tint);
+    }
+  }
+}
+
 void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
                                         int sample_row_len, int x_offset, bool wrap_x,
                                         uint8_t transparent_index) {

@@ -69,6 +69,14 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
  */
 void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h, const uint8_t* rows_top_first,
                                    int row_stride, uint8_t transparent_index);
+/**
+ * Igual que blit_indexed_scene pero en vez de usar el color propio de cada pixel fuente,
+ * pinta todo pixel no-transparente con `tint_color_index` fijo (glifos de texto con tinte,
+ * ver turtle_font_draw_scene_tint). Evita el costo de un fill_rect_scene(1,1) por pixel.
+ */
+void turtle_gpu_blit_indexed_scene_tint(int x0, int y0, int w, int h,
+                                        const uint8_t* rows_top_first, int row_stride,
+                                        uint8_t transparent_index, uint8_t tint_color_index);
 /** Igual que blit_indexed_scene pero espejo horizontal alrededor del ancla (origin_x, origin_y). */
 void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
                                           const uint8_t* rows_top_first, int row_stride,
