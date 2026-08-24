@@ -54,8 +54,17 @@ from turtlestudio.backgrounds import (
 from turtlestudio.build import load_palette_rgb01_for_preview
 from turtlestudio.collapsible import CollapsibleSection
 from turtlestudio.edit_history import SnapshotHistory
+from turtlestudio.fonts import (
+    blit_text_scene,
+    font_metrics_from_data,
+    list_font_json_stems,
+    parse_font_advances,
+    parse_font_glyphs,
+    read_font_file,
+)
 from turtlestudio.i18n import tr
 from turtlestudio.objects import list_object_ids_for_scene_palette, read_object_file
+from turtlestudio.palette_editor import PaletteGridWidget
 from turtlestudio.palette_policy import (
     PALETTE_SIZE,
     TRANSPARENT_PALETTE_INDEX,
@@ -67,16 +76,21 @@ from turtlestudio.project import (
     MANIFEST_NAME,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
+    TEXT_LABEL_BLINK_MS_MAX,
+    TEXT_LABEL_TEXT_MAX_LEN,
     WORLD_STEPS_MAX,
     WORLD_STEPS_MIN,
     background_layers_to_json_list,
     clamp_world_steps,
+    ensure_scene_script_file,
     manifest_path,
     parse_background_layers,
     parse_scene_objects_raw,
+    parse_scene_text_labels_raw,
     parse_viewport_from_manifest,
     save_project,
     scene_world_pixel_size,
+    validate_text_label_id,
 )
 from turtlestudio.scene_camera import (
     CAMERA_MODE_FIXED,
@@ -350,6 +364,94 @@ def _object_drag_preview_pixmap(project_root: Path, object_id: str) -> tuple[QPi
     return QPixmap.fromImage(img), int(info["origin_x"]), int(info["origin_y"])
 
 
+def _resolve_label_font_render_data(project_root: Path, font_id: str) -> dict[str, Any] | None:
+    """spec/scene-text-labels-v0.md: mismos datos que PlaySession.get_font_data usa para el
+    overlay de texto de actor -- glifos + advances + rgbs de la paleta propia de la fuente."""
+    try:
+        data = read_font_file(project_root, font_id)
+    except ValueError:
+        return None
+    glyphs = parse_font_glyphs(data)
+    advances = parse_font_advances(data)
+    px, _lh, _bl = font_metrics_from_data(data)
+    font_pal_rel = str(data.get("palette", "")).strip()
+    font_pal_path = (project_root / normalize_palette_rel(font_pal_rel)).resolve() if font_pal_rel else None
+    font_rgbs, _ = load_palette_rgb01_for_preview(font_pal_path if font_pal_path and font_pal_path.is_file() else None)
+    return {"glyphs": glyphs, "advances": advances, "glyph_px": px, "rgbs": font_rgbs}
+
+
+def _label_scene_bounds(project_root: Path, lbl: dict[str, Any]) -> tuple[int, int, int, int] | None:
+    """Bounding box (x0, y0, w, h) en espacio escena del texto de una etiqueta, o None si su
+    fuente no resuelve -- usado tanto para pintar como para el hit-test de seleccion."""
+    text = str(lbl.get("text", ""))
+    font_id = str(lbl.get("font", "")).strip()
+    if not text or not font_id:
+        return None
+    render = _resolve_label_font_render_data(project_root, font_id)
+    if render is None:
+        return None
+    px = int(render["glyph_px"])
+    advances = render["advances"]
+    w = sum(advances.get(ch, px) for ch in text)
+    x0 = int(lbl.get("x", 0))
+    y0 = int(lbl.get("y", 0))
+    return x0, y0, max(1, w), px
+
+
+def _paint_scene_text_labels(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    project_root: Path,
+    labels: list[dict[str, Any]],
+    scene_rgbs: list[tuple[float, float, float]],
+    *,
+    selected_index: int | None = None,
+) -> None:
+    """spec/scene-text-labels-v0.md "Orden de pintado": mismo lugar relativo que el firmware
+    (turtle_scene_begin_runtime/paint_scene_static_layers) -- despues de tiles, antes de los
+    sprites de objetos.
+
+    color_index >= 0 se resuelve contra `scene_rgbs` (paleta ACTIVA de la escena), no contra
+    la paleta propia de la fuente -- en el firmware solo existe una paleta activa a la vez
+    (`.tfn` no lleva paleta embebida, ver turtle_font.cpp), asi que un color_index elegido en
+    el selector de color de TurtleStudio (que muestra los colores de la escena, no los de la
+    fuente) tiene que verse igual aca. Sin tinte (-1) sigue usando la paleta propia de la
+    fuente para los glifos "de fabrica", igual que el overlay de texto de actor."""
+    for i, lbl in enumerate(labels):
+        if not isinstance(lbl, dict):
+            continue
+        text = str(lbl.get("text", ""))
+        font_id = str(lbl.get("font", "")).strip()
+        if not text or not font_id:
+            continue
+        render = _resolve_label_font_render_data(project_root, font_id)
+        if render is None:
+            continue
+        try:
+            color_index = int(lbl.get("color_index", -1))
+        except (TypeError, ValueError):
+            color_index = -1
+        blit_text_scene(
+            rgba,
+            fw,
+            fh,
+            int(lbl.get("x", 0)),
+            int(lbl.get("y", 0)),
+            text,
+            glyphs=render["glyphs"],
+            advances=render["advances"],
+            glyph_px=render["glyph_px"],
+            rgbs=scene_rgbs if color_index >= 0 else render["rgbs"],
+            tint_index=color_index,
+        )
+        if selected_index == i:
+            bounds = _label_scene_bounds(project_root, lbl)
+            if bounds is not None:
+                bx, by, bw, bh = bounds
+                _draw_rect_outline_on_rgba(rgba, fw, fh, bx, by, bw, bh, *_SELECTION_FRAME_RGB)
+
+
 def _paint_scene_objects(
     rgba: list[float], fw: int, fh: int, project_root: Path, placements: list[dict[str, Any]]
 ) -> None:
@@ -387,6 +489,7 @@ def render_scene_rgba(
     hover_cell: tuple[int, int] | None = None,
     selected_parallax_band_index: int | None = None,
     selected_object_index: int | None = None,
+    selected_text_label_index: int | None = None,
     tile_block_cache: dict[tuple[int, int], tuple[list[float], int, int]] | None = None,
 ) -> tuple[list[float], int, int]:
     wsx = clamp_world_steps(row.get("world_steps_x", 1))
@@ -430,6 +533,13 @@ def render_scene_rgba(
     layers = parse_tile_layers(row.get("tile_layers"), tile_px=tile_px, world_w=fw, world_h=fh)
     paint_tile_layers_on_rgba_blocked(
         rgba, fw, fh, layers, project_root, rgbs, tile_px=tile_px, block_cache=tile_block_cache
+    )
+
+    # spec/scene-text-labels-v0.md "Orden de pintado": encima de fondo/tiles, debajo de
+    # objetos/actores -- mismo lugar relativo que el firmware.
+    text_labels = row.get("text_labels") or []
+    _paint_scene_text_labels(
+        rgba, fw, fh, project_root, text_labels, rgbs, selected_index=selected_text_label_index
     )
 
     placements = row.get("objects") or []
@@ -865,6 +975,7 @@ def _new_scene_row(sid: str, palette_rel: str, tile_px: int) -> dict[str, Any]:
         "background_layers": background_layers_to_json_list(parse_background_layers(None, legacy_flat_index=1, n_colors=PALETTE_SIZE)),
         "script": sid,
         "objects": [],
+        "text_labels": [],
         "tile_layers": tile_layers_to_json_list(parse_tile_layers(None, tile_px=tile_px)),
         "world_steps_x": 1,
         "world_steps_y": 1,
@@ -902,6 +1013,19 @@ def _normalize_row(
     r["tile_layers"] = tile_layers_to_json_list(tile_layers)
     placements = parse_scene_objects_raw(r.get("objects"), world_w=ww, world_h=wh)
     r["objects"] = [{"id": p.id, "x": p.x, "y": p.y} for p in placements]
+    labels = parse_scene_text_labels_raw(r.get("text_labels"), world_w=ww, world_h=wh)
+    r["text_labels"] = [
+        {
+            "id": lbl.id,
+            "text": lbl.text,
+            "x": lbl.x,
+            "y": lbl.y,
+            "font": lbl.font,
+            "color_index": lbl.color_index,
+            "blink_ms": lbl.blink_ms,
+        }
+        for lbl in labels
+    ]
     cam = parse_scene_camera_from_row(r)
     r["camera"] = scene_camera_to_json(cam)
     r["script"] = str(r.get("script", r.get("id", DEFAULT_INITIAL_SCENE_ID)) or r.get("id", DEFAULT_INITIAL_SCENE_ID))
@@ -1036,6 +1160,7 @@ class SceneEditorWidget(QWidget):
         left_layout.addWidget(self._build_background_group())
         left_layout.addWidget(self._build_tile_layers_group())
         left_layout.addWidget(self._build_objects_group())
+        left_layout.addWidget(self._build_text_labels_group())
         left_layout.addWidget(self._build_camera_group())
         left_layout.addStretch()
 
@@ -1146,9 +1271,14 @@ class SceneEditorWidget(QWidget):
         self.combo_palette = QComboBox()
         self.combo_palette.currentTextChanged.connect(self._on_palette_changed)
         form.addRow(tr("scene.palette_label"), self.combo_palette)
+        script_row = QHBoxLayout()
         self.edit_script = QLineEdit()
         self.edit_script.editingFinished.connect(self._on_script_edited)
-        form.addRow(tr("scene.script_label"), self.edit_script)
+        script_row.addWidget(self.edit_script)
+        self.btn_create_script = QPushButton(tr("scene.create_script_button"))
+        self.btn_create_script.clicked.connect(self._action_create_scene_script)
+        script_row.addWidget(self.btn_create_script)
+        form.addRow(tr("scene.script_label"), script_row)
         self.spin_world_x = QSpinBox()
         self.spin_world_x.setRange(WORLD_STEPS_MIN, WORLD_STEPS_MAX)
         self.spin_world_x.valueChanged.connect(self._on_world_steps_changed)
@@ -1419,6 +1549,70 @@ class SceneEditorWidget(QWidget):
         layout.addLayout(pos_row)
         return section
 
+    def _build_text_labels_group(self) -> CollapsibleSection:
+        """spec/scene-text-labels-v0.md: texto estatico de escena. Edicion por lista +
+        spinbox (sin arrastre en canvas, a diferencia de _build_objects_group -- no hace
+        falta un sprite/catalogo que arrastrar, y el texto/fuente/color ya necesitan sus
+        propios campos, asi que el flujo de lista es mas directo aca)."""
+        section = CollapsibleSection(tr("scene.text_labels_group"))
+        layout = section.content_layout()
+        self.list_labels = QListWidget()
+        self.list_labels.currentRowChanged.connect(self._on_label_selected)
+        layout.addWidget(self.list_labels)
+
+        add_row = QHBoxLayout()
+        self.btn_add_label = QPushButton(tr("scene.add_label"))
+        self.btn_add_label.clicked.connect(self._action_add_label)
+        add_row.addWidget(self.btn_add_label)
+        self.btn_remove_label = QPushButton(tr("scene.remove_label"))
+        self.btn_remove_label.clicked.connect(self._action_remove_label)
+        add_row.addWidget(self.btn_remove_label)
+        layout.addLayout(add_row)
+
+        form = QFormLayout()
+        self.edit_label_id = QLineEdit()
+        self.edit_label_id.editingFinished.connect(self._on_label_fields_changed)
+        form.addRow(tr("scene.label_id_label"), self.edit_label_id)
+        self.edit_label_text = QLineEdit()
+        self.edit_label_text.setMaxLength(TEXT_LABEL_TEXT_MAX_LEN)
+        self.edit_label_text.textChanged.connect(self._on_label_fields_changed)
+        form.addRow(tr("scene.label_text_label"), self.edit_label_text)
+        self.combo_label_font = QComboBox()
+        self.combo_label_font.currentTextChanged.connect(self._on_label_fields_changed)
+        form.addRow(tr("scene.label_font_label"), self.combo_label_font)
+        layout.addLayout(form)
+
+        layout.addWidget(QLabel(tr("scene.label_color_label")))
+        self.chk_label_color_auto = QCheckBox(tr("scene.label_color_auto"))
+        self.chk_label_color_auto.toggled.connect(self._on_label_color_auto_toggled)
+        layout.addWidget(self.chk_label_color_auto)
+        self.grid_label_color = PaletteGridWidget()
+        self.grid_label_color.slot_selected.connect(self._on_label_fields_changed)
+        layout.addWidget(self.grid_label_color)
+
+        pos_row = QHBoxLayout()
+        pos_row.addWidget(QLabel(tr("scene.x_label")))
+        self.spin_label_x = QSpinBox()
+        self.spin_label_x.setRange(0, SCENE_PIXEL_W * WORLD_STEPS_MAX)
+        self.spin_label_x.valueChanged.connect(self._on_label_fields_changed)
+        pos_row.addWidget(self.spin_label_x)
+        pos_row.addWidget(QLabel(tr("scene.y_label")))
+        self.spin_label_y = QSpinBox()
+        self.spin_label_y.setRange(0, SCENE_PIXEL_H * WORLD_STEPS_MAX)
+        self.spin_label_y.valueChanged.connect(self._on_label_fields_changed)
+        pos_row.addWidget(self.spin_label_y)
+        layout.addLayout(pos_row)
+
+        blink_form = QFormLayout()
+        self.spin_label_blink_ms = QSpinBox()
+        self.spin_label_blink_ms.setRange(0, TEXT_LABEL_BLINK_MS_MAX)
+        self.spin_label_blink_ms.setSpecialValueText(tr("scene.label_blink_off"))
+        self.spin_label_blink_ms.setSuffix(" ms")
+        self.spin_label_blink_ms.valueChanged.connect(self._on_label_fields_changed)
+        blink_form.addRow(tr("scene.label_blink_label"), self.spin_label_blink_ms)
+        layout.addLayout(blink_form)
+        return section
+
     def _build_camera_group(self) -> CollapsibleSection:
         section = CollapsibleSection(tr("scene.camera_group"))
         form = QFormLayout()
@@ -1539,10 +1733,13 @@ class SceneEditorWidget(QWidget):
             if row is None:
                 self.lbl_scene_id.setText("—")
                 self.list_objects.clear()
+                self.list_labels.clear()
                 self.canvas.set_frame(QImage(), 0, 0)
+                self.btn_create_script.setVisible(False)
                 return
             self.lbl_scene_id.setText(row["id"])
             self.edit_script.setText(str(row.get("script", "")))
+            self._refresh_script_button_state()
             self.spin_world_x.setValue(int(row.get("world_steps_x", 1)))
             self.spin_world_y.setValue(int(row.get("world_steps_y", 1)))
 
@@ -1552,6 +1749,9 @@ class SceneEditorWidget(QWidget):
             self._load_tile_layers(row)
             self._refresh_object_combo(palette_rel)
             self._load_objects(row)
+            self._refresh_label_font_combo()
+            self._refresh_label_color_grid(palette_rel)
+            self._load_text_labels(row)
             self._load_camera(row)
             self._load_parallax_bands(row)
         finally:
@@ -1670,6 +1870,42 @@ class SceneEditorWidget(QWidget):
                 continue
             self.list_objects.addItem(f"{p.get('id', '')}  ({p.get('x', 0)}, {p.get('y', 0)})")
         self.list_objects.blockSignals(False)
+
+    def _refresh_label_font_combo(self) -> None:
+        current = self.combo_label_font.currentText()
+        self.combo_label_font.blockSignals(True)
+        self.combo_label_font.clear()
+        self.combo_label_font.addItems(list_font_json_stems(self.project_root))
+        idx = self.combo_label_font.findText(current)
+        self.combo_label_font.setCurrentIndex(max(0, idx))
+        self.combo_label_font.blockSignals(False)
+
+    def _refresh_label_color_grid(self, palette_rel: str) -> None:
+        """spec/scene-text-labels-v0.md: color_index de una etiqueta se resuelve contra la
+        paleta ACTIVA de la escena en tiempo de ejecucion (igual que color_index de capas de
+        fondo/tiles), no contra la paleta propia de la fuente -- por eso el grid usa los
+        colores de la escena, no los de fonts.read_font_file(...)['palette']."""
+        pal_path = (self.project_root / palette_rel).resolve() if palette_rel else None
+        rgbs, _ = load_palette_rgb01_for_preview(pal_path if pal_path and pal_path.is_file() else None)
+        colors = [(round(r * 255), round(g * 255), round(b * 255)) for r, g, b in rgbs]
+        if len(colors) < PALETTE_SIZE:
+            colors += [(0, 0, 0)] * (PALETTE_SIZE - len(colors))
+        self.grid_label_color.set_colors(colors[:PALETTE_SIZE])
+
+    @staticmethod
+    def _label_list_item_text(lbl: dict[str, Any]) -> str:
+        blink_ms = int(lbl.get("blink_ms", 0) or 0)
+        blink_suffix = f"  [blink {blink_ms}ms]" if blink_ms > 0 else ""
+        return f"{lbl.get('id', '')}  \"{lbl.get('text', '')}\"  ({lbl.get('x', 0)}, {lbl.get('y', 0)}){blink_suffix}"
+
+    def _load_text_labels(self, row: dict[str, Any]) -> None:
+        self.list_labels.blockSignals(True)
+        self.list_labels.clear()
+        for lbl in row.get("text_labels") or []:
+            if not isinstance(lbl, dict):
+                continue
+            self.list_labels.addItem(self._label_list_item_text(lbl))
+        self.list_labels.blockSignals(False)
 
     def _load_camera(self, row: dict[str, Any]) -> None:
         cam = row.get("camera") or {}
@@ -1806,6 +2042,7 @@ class SceneEditorWidget(QWidget):
             self._tile_cache_signature_value = sig
         selected_band = self.list_parallax_bands.currentRow()
         selected_object = self.list_objects.currentRow()
+        selected_label = self.list_labels.currentRow()
         rgba, fw, fh = render_scene_rgba(
             self.project_root,
             row,
@@ -1816,6 +2053,7 @@ class SceneEditorWidget(QWidget):
             hover_cell=self._hover_cell,
             selected_parallax_band_index=selected_band if selected_band >= 0 else None,
             selected_object_index=selected_object if selected_object >= 0 else None,
+            selected_text_label_index=selected_label if selected_label >= 0 else None,
             tile_block_cache=self._tile_block_cache,
         )
         img = _rgba_floats_to_qimage(rgba, fw, fh)
@@ -1946,6 +2184,7 @@ class SceneEditorWidget(QWidget):
         self._refresh_bg_layer_combos(text)
         self._refresh_tileset_combos(text)
         self._refresh_object_combo(text)
+        self._refresh_label_color_grid(text)
         self._refresh_tile_picker()
         self._refresh_canvas()
 
@@ -1955,6 +2194,32 @@ class SceneEditorWidget(QWidget):
             return
         row["script"] = self.edit_script.text().strip() or row["id"]
         self._mark_dirty()
+        self._refresh_script_button_state()
+
+    def _refresh_script_button_state(self) -> None:
+        """spec/lua/object-script-v0.md: scripts/<stem>.lua es un archivo aparte del manifest
+        (creado/editado fuera de TurtleStudio, o con este boton) -- el boton "Crear" solo se
+        muestra cuando el archivo todavia no existe."""
+        row = self._current_row()
+        if row is None:
+            self.btn_create_script.setVisible(False)
+            return
+        stem = self.edit_script.text().strip() or str(row.get("id", ""))
+        exists = bool(stem) and (self.project_root / "scripts" / f"{stem}.lua").is_file()
+        self.btn_create_script.setVisible(not exists)
+        self.btn_create_script.setEnabled(bool(stem))
+
+    def _action_create_scene_script(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        stem = self.edit_script.text().strip() or str(row.get("id", ""))
+        try:
+            ensure_scene_script_file(self.project_root, stem)
+        except ValueError as e:
+            QMessageBox.warning(self, tr("common.error"), str(e))
+            return
+        self._refresh_script_button_state()
 
     def _on_world_steps_changed(self, _value: int) -> None:
         if self._suspend:
@@ -2415,6 +2680,116 @@ class SceneEditorWidget(QWidget):
         self.list_objects.blockSignals(True)
         self.list_objects.item(idx).setText(f"{objs[idx]['id']}  ({objs[idx]['x']}, {objs[idx]['y']})")
         self.list_objects.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    # ------------------------------------------------------------------
+    # Slots — text labels (spec/scene-text-labels-v0.md)
+    # ------------------------------------------------------------------
+
+    def _action_add_label(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        labels = row.get("text_labels")
+        if not isinstance(labels, list):
+            labels = []
+            row["text_labels"] = labels
+        existing_ids = {str(lbl.get("id", "")) for lbl in labels if isinstance(lbl, dict)}
+        n = 1
+        while f"label{n}" in existing_ids:
+            n += 1
+        font_id = self.combo_label_font.itemText(0) if self.combo_label_font.count() else ""
+        labels.append(
+            {
+                "id": f"label{n}",
+                "text": "TEXT",
+                "x": 0,
+                "y": 0,
+                "font": font_id,
+                "color_index": -1,
+                "blink_ms": 0,
+            }
+        )
+        self._mark_dirty()
+        self._load_text_labels(row)
+        self.list_labels.setCurrentRow(len(labels) - 1)
+        self._refresh_canvas()
+
+    def _action_remove_label(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_labels.currentRow()
+        labels = row.get("text_labels") or []
+        if 0 <= idx < len(labels):
+            del labels[idx]
+            self._mark_dirty()
+            self._load_text_labels(row)
+            self._refresh_canvas()
+
+    def _on_label_selected(self, index: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        labels = row.get("text_labels") or []
+        widgets = (
+            self.edit_label_id,
+            self.edit_label_text,
+            self.combo_label_font,
+            self.chk_label_color_auto,
+            self.grid_label_color,
+            self.spin_label_x,
+            self.spin_label_y,
+            self.spin_label_blink_ms,
+        )
+        for w in widgets:
+            w.blockSignals(True)
+        if 0 <= index < len(labels):
+            lbl = labels[index]
+            self.edit_label_id.setText(str(lbl.get("id", "")))
+            self.edit_label_text.setText(str(lbl.get("text", "")))
+            font_idx = self.combo_label_font.findText(str(lbl.get("font", "")))
+            self.combo_label_font.setCurrentIndex(max(0, font_idx))
+            ci = int(lbl.get("color_index", -1))
+            self.chk_label_color_auto.setChecked(ci < 0)
+            self.grid_label_color.set_selected(ci if ci >= 0 else 0)
+            self.grid_label_color.setEnabled(ci >= 0)
+            self.spin_label_x.setValue(int(lbl.get("x", 0)))
+            self.spin_label_y.setValue(int(lbl.get("y", 0)))
+            self.spin_label_blink_ms.setValue(int(lbl.get("blink_ms", 0) or 0))
+        for w in widgets:
+            w.blockSignals(False)
+        self._refresh_canvas()
+
+    def _on_label_color_auto_toggled(self, checked: bool) -> None:
+        self.grid_label_color.setEnabled(not checked)
+        self._on_label_fields_changed()
+
+    def _on_label_fields_changed(self, *_args: Any) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_labels.currentRow()
+        labels = row.get("text_labels") or []
+        if not (0 <= idx < len(labels)):
+            return
+        lbl = labels[idx]
+        raw_id = self.edit_label_id.text().strip()
+        if raw_id:
+            try:
+                lbl["id"] = validate_text_label_id(raw_id)
+            except ValueError:
+                pass  # id invalido: se ignora el cambio, el resto de los campos siguen editables
+        lbl["text"] = self.edit_label_text.text()[:TEXT_LABEL_TEXT_MAX_LEN]
+        lbl["font"] = self.combo_label_font.currentText()
+        lbl["color_index"] = -1 if self.chk_label_color_auto.isChecked() else self.grid_label_color.selected()
+        lbl["x"] = self.spin_label_x.value()
+        lbl["y"] = self.spin_label_y.value()
+        lbl["blink_ms"] = self.spin_label_blink_ms.value()
+        self.list_labels.blockSignals(True)
+        self.list_labels.item(idx).setText(self._label_list_item_text(lbl))
+        self.list_labels.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
 

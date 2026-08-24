@@ -24,6 +24,20 @@ void turtle_scene_runtime_tick(uint32_t delta_ms);
 bool turtle_scene_runtime_active(void);
 int turtle_scene_target_fps(void);
 
+/**
+ * spec/lua/object-script-v0.md "Cambio de escena": un actor Lua pide el cambio via el
+ * binding goto_scene(id) (turtle_actor_lua.cpp) -> turtle_scene_request_switch. El cambio
+ * real NO se aplica aca ni dentro de turtle_actor_lua_tick_all -- reconstruir s_actors/
+ * rebindear Lua mientras esa misma lista se esta iterando la corromperia. Se aplica una vez
+ * por fotograma en TurtleReader.ino::loop(), despues de turtle_scene_runtime_tick, via
+ * turtle_scene_consume_pending_switch.
+ */
+void turtle_scene_request_switch(const char* scene_id);
+
+/** true + copia el id pendiente a out (y limpia el pedido) si turtle_scene_request_switch se
+ *  llamo en el fotograma que acaba de terminar. Llamar una vez por iteracion de loop(). */
+bool turtle_scene_consume_pending_switch(char* out, size_t out_cap);
+
 /** Actores en runtime (para scripts Lua por objeto). */
 int turtle_scene_actor_count(void);
 bool turtle_scene_actor_script_stem(int index, char* out, size_t out_cap);

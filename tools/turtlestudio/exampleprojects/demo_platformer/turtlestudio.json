@@ -23,9 +23,9 @@
         },
         {
           "enabled": false,
-          "color_index": 1,
+          "color_index": 0,
           "opacity": 255,
-          "background": "",
+          "background": "intro_bg",
           "parallax_x": 1.0,
           "fixed": false,
           "repeat_x": false
@@ -41,7 +41,7 @@
         },
         {
           "enabled": false,
-          "color_index": 1,
+          "color_index": 5,
           "opacity": 255,
           "background": "",
           "parallax_x": 1.0,
@@ -50,7 +50,24 @@
         }
       ],
       "script": "intro",
-      "objects": [],
+      "objects": [
+        {
+          "id": "scene_controller",
+          "x": 0,
+          "y": 0
+        }
+      ],
+      "text_labels": [
+        {
+          "id": "startlabel",
+          "text": "Press to Start",
+          "x": 25,
+          "y": 11,
+          "font": "default",
+          "color_index": -1,
+          "blink_ms": 200
+        }
+      ],
       "tile_layers": [
         {
           "enabled": false,
@@ -234,7 +251,7 @@
         },
         {
           "enabled": false,
-          "tileset": "",
+          "tileset": "greenfield",
           "cells": [
             [
               31,
@@ -584,6 +601,7 @@
           "y": 42
         }
       ],
+      "text_labels": [],
       "tile_layers": [
         {
           "enabled": true,
@@ -2413,7 +2431,7 @@
       "camera_target": "player"
     }
   ],
-  "active_scene": "Lvl_1",
+  "active_scene": "intro",
   "transparent_index": 31,
   "target_fps": 30,
   "default_anim_fps": 8,

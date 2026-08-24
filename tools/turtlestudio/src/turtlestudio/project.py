@@ -297,6 +297,102 @@ def normalize_scene_objects_for_save(
     return out
 
 
+_TEXT_LABEL_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+# spec/scene-text-labels-v0.md: buffer firmware es char text[64] (63 chars + NUL).
+TEXT_LABEL_TEXT_MAX_LEN = 63
+
+
+def validate_text_label_id(raw: str) -> str:
+    s = str(raw).strip()
+    if not _TEXT_LABEL_ID_RE.match(s):
+        raise ValueError(
+            f"id de etiqueta invalido {s!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
+        )
+    return s
+
+
+# spec/scene-text-blink-v0.md: tope de autoria para blink_ms -- el firmware no impone un
+# maximo (cualquier int >= 0 vale), esto es solo para que el spinbox del editor no permita
+# valores absurdos. 0 = sin parpadeo.
+TEXT_LABEL_BLINK_MS_MAX = 60000
+
+
+@dataclass(frozen=True)
+class SceneTextLabelPlacement:
+    """spec/scene-text-labels-v0.md: texto estatico de escena, sin actor/script.
+    x,y en espacio escena (origen abajo-izquierda, Y hacia arriba), igual que
+    SceneObjectPlacement. color_index -1 = colores propios del glifo (sin tinte).
+    spec/scene-text-blink-v0.md: blink_ms 0 = siempre visible; > 0 = alterna visible/oculto
+    cada blink_ms milisegundos de escena."""
+
+    id: str
+    text: str
+    x: int
+    y: int
+    font: str
+    color_index: int = -1
+    blink_ms: int = 0
+
+
+def _parse_one_scene_text_label(
+    raw: Any,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> SceneTextLabelPlacement | None:
+    if not isinstance(raw, dict):
+        return None
+    rid = raw.get("id")
+    if not isinstance(rid, str) or not rid.strip():
+        return None
+    try:
+        lid = validate_text_label_id(rid)
+    except ValueError:
+        return None
+    text = str(raw.get("text", "")).strip()
+    if not text:
+        return None
+    text = text[:TEXT_LABEL_TEXT_MAX_LEN]
+    font = str(raw.get("font", "")).strip()
+    if not font:
+        return None
+    try:
+        xi = int(raw.get("x", 0))
+        yi = int(raw.get("y", 0))
+    except (TypeError, ValueError):
+        xi, yi = 0, 0
+    xi, yi = _clamp_scene_xy(xi, yi, world_w=world_w, world_h=world_h)
+    try:
+        ci = int(raw.get("color_index", -1))
+    except (TypeError, ValueError):
+        ci = -1
+    ci = max(-1, min(PALETTE_SIZE - 1, ci))
+    try:
+        blink_ms = int(raw.get("blink_ms", 0))
+    except (TypeError, ValueError):
+        blink_ms = 0
+    blink_ms = max(0, min(TEXT_LABEL_BLINK_MS_MAX, blink_ms))
+    return SceneTextLabelPlacement(
+        id=lid, text=text, x=xi, y=yi, font=font, color_index=ci, blink_ms=blink_ms
+    )
+
+
+def parse_scene_text_labels_raw(
+    raw: Any,
+    *,
+    world_w: int = SCENE_PIXEL_W,
+    world_h: int = SCENE_PIXEL_H,
+) -> tuple[SceneTextLabelPlacement, ...]:
+    if not isinstance(raw, list):
+        return ()
+    out: list[SceneTextLabelPlacement] = []
+    for item in raw:
+        lbl = _parse_one_scene_text_label(item, world_w=world_w, world_h=world_h)
+        if lbl is not None:
+            out.append(lbl)
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class SceneEntry:
     id: str
@@ -417,6 +513,40 @@ def ensure_object_script_file(
     oid = (object_id or s).strip() or s
     body = _STARTER_OBJECT_LUA.format(stem=s, object_id=oid, object_label=oid)
     path.write_text(body, encoding="utf-8", newline="\n")
+    return path, True
+
+
+_STARTER_SCENE_LUA = """-- Script de escena (scripts/{stem}.lua)
+-- Solo corre si algun actor de la escena lo referencia con "script": "{stem}" en su JSON
+-- (objects/Objects/<id>.json) -- un actor con sprite totalmente transparente (indice 31 en
+-- todos sus pixeles) sirve de "controlador" sin dibujar nada. Ver spec/lua/object-script-v0.md
+-- "Cambio de escena" (goto_scene) para un ejemplo completo.
+
+function _update(dt)
+  -- Logica de la escena (dt en segundos). Input: btn(i), btnp(i).
+end
+"""
+
+
+def ensure_scene_script_file(
+    project_root: Path,
+    stem: str,
+    *,
+    overwrite: bool = False,
+) -> tuple[Path, bool]:
+    """
+    Crea scripts/<stem>.lua si no existe (salvo overwrite=True). Mismo shape que
+    ensure_object_script_file, plantilla distinta (no asume que el script pertenece a un
+    "objeto" con id propio -- ver _STARTER_SCENE_LUA).
+    Devuelve (ruta absoluta, creado_nuevo).
+    """
+    s = validate_lua_script_stem(stem)
+    rel = scene_lua_relpath(s)
+    path = _safe_lua_write_relpath(project_root, rel)
+    if path.is_file() and not overwrite:
+        return path, False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_STARTER_SCENE_LUA.format(stem=s), encoding="utf-8", newline="\n")
     return path, True
 
 
@@ -845,6 +975,7 @@ def _write_mirror_scene_json_files(
             if isinstance(row.get("background_layers"), list)
             else background_layers_to_json_list(_DEFAULT_SCENE_BACKGROUND_LAYERS),
             "objects": list(row["objects"]) if isinstance(row.get("objects"), list) else [],
+            "text_labels": list(row["text_labels"]) if isinstance(row.get("text_labels"), list) else [],
             "tile_layers": list(row["tile_layers"])
             if isinstance(row.get("tile_layers"), list)
             else [],
@@ -1133,6 +1264,21 @@ def _normalize_scenes_for_save(
             )
         except ValueError as e:
             raise ValueError(f"Escena {sid!r}: {e}") from e
+        raw_labels = item.get("text_labels", [])
+        if not isinstance(raw_labels, list):
+            raw_labels = []
+        labels_ok = [
+            {
+                "id": lbl.id,
+                "text": lbl.text,
+                "x": lbl.x,
+                "y": lbl.y,
+                "font": lbl.font,
+                "color_index": lbl.color_index,
+                "blink_ms": lbl.blink_ms,
+            }
+            for lbl in parse_scene_text_labels_raw(raw_labels, world_w=ww, world_h=wh)
+        ]
         row_out: dict[str, Any] = {
             "id": sid,
             "palette": pal,
@@ -1140,6 +1286,7 @@ def _normalize_scenes_for_save(
             "background_layers": background_layers_to_json_list(layers),
             "script": stem,
             "objects": objs_ok,
+            "text_labels": labels_ok,
             "tile_layers": tile_saved,
             "collision_tile_layer": normalize_collision_tile_layer(item.get("collision_tile_layer", 0)),
             "world_steps_x": wsx,

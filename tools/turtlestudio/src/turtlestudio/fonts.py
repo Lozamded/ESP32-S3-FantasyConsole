@@ -334,6 +334,62 @@ def parse_font_advances(data: dict[str, Any]) -> dict[str, int]:
     return out
 
 
+def blit_text_scene(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    sx: int,
+    sy: int,
+    text: str,
+    *,
+    glyphs: dict[str, list[list[int]]],
+    advances: dict[str, int],
+    glyph_px: int,
+    rgbs: list[tuple[float, float, float]],
+    tint_index: int = -1,
+    cam_x: int = 0,
+    cam_y: int = 0,
+) -> int:
+    """Blits `text` onto a scene-space RGBA buffer (origin bottom-left, Y up -- same
+    convention as turtle_font_draw_scene[_tint] in firmware). Shared by play_runtime.py
+    (actor text overlays) and scene_editor.py (static scene text labels) so both preview
+    paths match the firmware pixel-for-pixel. cam_x/cam_y: default (0, 0) preserves the
+    "rgba = whole world" case; pass the camera to blit against a viewport-sized buffer."""
+    from turtlestudio.palette_policy import is_transparent_palette_index, resolve_palette_color
+
+    x = sx
+    for ch in text:
+        rows = glyphs.get(ch)
+        adv = advances.get(ch, glyph_px)
+        if rows is not None:
+            for gy in range(glyph_px):
+                row = rows[gy] if gy < len(rows) else []
+                scene_y = sy + (glyph_px - 1 - gy) - cam_y
+                ty = (fh - 1) - scene_y
+                if ty < 0 or ty >= fh:
+                    continue
+                row_base = ty * fw * 4
+                for gx in range(min(glyph_px, len(row))):
+                    idx = row[gx]
+                    if is_transparent_palette_index(idx):
+                        continue
+                    use_idx = tint_index if tint_index >= 0 else idx
+                    col = resolve_palette_color(use_idx, rgbs)
+                    if col is None:
+                        continue
+                    sxp = x + gx - cam_x
+                    if sxp < 0 or sxp >= fw:
+                        continue
+                    i = row_base + sxp * 4
+                    r, g, b = col
+                    rgba[i] = r
+                    rgba[i + 1] = g
+                    rgba[i + 2] = b
+                    rgba[i + 3] = 1.0
+        x += adv
+    return x - sx
+
+
 def shrink_font_json_for_export(data: dict[str, Any]) -> dict[str, Any]:
     fid = str(data.get("id", "")).strip()
     px, lh, bl = font_metrics_from_data(data)

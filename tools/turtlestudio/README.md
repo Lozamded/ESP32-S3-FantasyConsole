@@ -102,9 +102,17 @@ cd tools/turtlestudio
 source .venv/bin/activate
 
 # 1. Compilar el Lua 5.4.6 vendorizado como libreria estatica de host.
+#    -DESP_PLATFORM es OBLIGATORIO: activa LUA_32BITS en luaconf.h (enteros/floats de
+#    32 bits), igual que el firmware real (ver firmware/libraries/lua54/src/luaconf.h).
+#    Sin este flag el host compila Lua de 64 bits: Play sigue "funcionando" (corre scripts
+#    localmente sin tocar el firmware), pero el bytecode que exporta `build` para
+#    scripts/*.lua (ver lua_bytecode.py) NO pasa el checkHeader del firmware (lundump.c) y
+#    el script simplemente no carga en el dispositivo -- turtlestudio detecta este
+#    desajuste y cae de vuelta a exportar texto plano con un aviso, pero es mas facil
+#    evitarlo de entrada con el flag correcto.
 LUA_SRC=../../firmware/libraries/lua54/src
 mkdir -p /tmp/liblua54 && cd /tmp/liblua54
-gcc -std=c99 -O1 -c "$LUA_SRC"/*.c
+gcc -std=c99 -O1 -DESP_PLATFORM -c "$LUA_SRC"/*.c
 ar rcs liblua54.a *.o
 cd -
 
@@ -117,10 +125,16 @@ python3 setup.py build_ext \
   install
 ```
 
-Verificacion rapida (debe decir `Lua 5.4`, no `5.5`):
+Verificacion rapida (debe decir `Lua 5.4`, no `5.5`, y `LUA_32BITS: True` -- si dice
+`False` faltó `-DESP_PLATFORM` en el paso 1 y hay que recompilar `liblua54.a`):
 
 ```bash
-python3 -c "import lupa; print(lupa.LuaRuntime().lua_implementation)"
+python3 -c "
+import lupa
+rt = lupa.LuaRuntime()
+print(rt.lua_implementation)
+print('LUA_32BITS:', rt.eval('math.maxinteger') == 2**31 - 1)
+"
 ```
 
 Luego `pip install -e ".[play]"` queda como referencia de la dependencia opcional en

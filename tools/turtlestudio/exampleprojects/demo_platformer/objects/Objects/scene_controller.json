@@ -1,0 +1,8 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "scene_controller",
+  "name": "scene_controller",
+  "sprite_id": "invisible",
+  "script": "intro"
+}

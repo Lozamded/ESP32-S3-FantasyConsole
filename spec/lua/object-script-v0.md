@@ -111,6 +111,27 @@ move(dx * speed * dt, dy * speed * dt)
 
 Gravedad vertical (Y escena hacia arriba): ver ejemplo en **`spec/lua/physics-v0.md`**.
 
+### Cambio de escena
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `goto_scene(scene_id)` | Pide cambiar la escena activa a `scene_id`. **Diferido**: no se aplica de inmediato -- el resto de los actores de la escena vieja siguen recibiendo `_update(dt)` hasta que termina el fotograma actual, y el cambio real (destruir actores viejos, cargar la nueva escena, rebindear scripts) ocurre despues, fuera del tick. Llamarlo mas de una vez en el mismo fotograma solo deja el ultimo pedido. |
+
+No hace falta un actor visible para esto: un objeto con un sprite totalmente transparente
+(indice de paleta 31 en todos sus pixeles) y `"script"` apuntando al archivo deseado sirve como
+"controlador" de la escena sin dibujar nada en pantalla — ver
+`tools/turtlestudio/exampleprojects/demo_platformer/objects/Objects/scene_controller.json` y
+`objects/Sprites/invisible.json` para un ejemplo (escena `intro`, salta a `Lvl_1` con
+cualquier boton que no sea de direccion).
+
+Implementacion (firmware): `turtle_scene_request_switch`/`turtle_scene_consume_pending_switch`
+(`turtle_scene.h`/`.cpp`) mas el binding `l_goto_scene` en `turtle_actor_lua.cpp`;
+`TurtleReader.ino::loop()` aplica el cambio pendiente (si lo hay) justo despues de
+`turtle_scene_runtime_tick()`, llamando de nuevo a `turtle_scene_begin_runtime()` con el mismo
+bundle ya en RAM — funcion ya preparada para eso (`turtle_actor_lua_bind_actors_from_scene`
+libera las referencias Lua previas antes de rebindear). La VM de **ENTRY** (`spec/lua/entry-v0.md`)
+**no** se vuelve a ejecutar en un cambio de escena — corre una sola vez, al arrancar el cartucho.
+
 ### Depuracion
 
 | Funcion | Descripcion |
@@ -121,7 +142,11 @@ Gravedad vertical (Y escena hacia arriba): ver ejemplo en **`spec/lua/physics-v0
 
 - `cls`, `pix`, `spix`, `flip` (reservados al ENTRY / futuro bucle global).
 - Colision entre actores; slide en rampas (`move_and_slide`).
-- Scripts por escena (`scene.script` en manifest): reservado; misma carpeta `scripts/` cuando se implemente.
+- Scripts por escena **sin actor** (`scene.script` en manifest usado directamente, sin un objeto
+  colocado que lo referencie via `"script"`): sigue reservado. `goto_scene` de arriba no cambia
+  esto — sigue haciendo falta un actor (aunque sea invisible) para correr cualquier Lua en una
+  escena, el `"script"` de nivel de escena en el manifest sigue siendo solo una convencion de
+  nombre de archivo.
 
 ## Ejemplo plataformero
 

@@ -25,14 +25,6 @@ else:
     _IMPORT_ERROR = None
 
 
-def lua_bytecode_available() -> bool:
-    return lupa is not None
-
-
-def lua_bytecode_unavailable_reason() -> str:
-    return str(_IMPORT_ERROR) if _IMPORT_ERROR is not None else ""
-
-
 class LuaCompileError(Exception):
     """Error de sintaxis Lua al compilar un script a bytecode (mensaje propio de load())."""
 
@@ -43,6 +35,18 @@ class LuaCompileError(Exception):
 # para EJECUTAR scripts de verdad con strings de texto) intentaria decodificar ese binario
 # como UTF-8 y romperia. Se construye una sola vez y se reutiliza entre compilaciones.
 _compiler_lua = None
+# None hasta el primer chequeo; despues, "" si todo OK o el motivo si no esta disponible
+# (import fallido O build de 32/64 bits desajustado -- ver _ensure_compiler_lua).
+_unavailable_reason: str | None = None
+
+# lua_Integer/lua_Number de 32 bits en el firmware real (LUA_32BITS, ver
+# firmware/libraries/lua54/src/luaconf.h: activo solo bajo ARDUINO/ESP_PLATFORM). Si
+# liblua54.a se compilo sin -DESP_PLATFORM (ver README, seccion "Play", paso 1) el host
+# queda con Lua de 64 bits y el bytecode que produce NO pasa el checkHeader del firmware
+# (lundump.c) -- el script simplemente no carga ahi (load_script_update_ref falla, sin
+# _update nunca se llama, ej. un personaje que no se mueve). math.maxinteger es la forma
+# mas simple de distinguir los dos builds desde Python.
+_EXPECTED_MAXINTEGER = 2**31 - 1
 
 # Expresion Lua (funcion anonima): compila `src` con nombre de chunk `chunk_name` y
 # devuelve su bytecode via string.dump. level=0 en error() porque el mensaje de load() ya
@@ -58,13 +62,34 @@ end
 """
 
 
-def _get_compiler_lua():
-    global _compiler_lua
-    if _compiler_lua is None:
-        if lupa is None:
-            raise RuntimeError(f"lupa no disponible: {lua_bytecode_unavailable_reason()}")
-        _compiler_lua = lupa.LuaRuntime(encoding=None)
-    return _compiler_lua
+def _ensure_compiler_lua() -> None:
+    global _compiler_lua, _unavailable_reason
+    if _compiler_lua is not None or _unavailable_reason is not None:
+        return
+    if lupa is None:
+        _unavailable_reason = f"lupa no disponible: {str(_IMPORT_ERROR) if _IMPORT_ERROR else ''}"
+        return
+    lua = lupa.LuaRuntime(encoding=None)
+    maxint = lua.eval(b"math.maxinteger")
+    if maxint != _EXPECTED_MAXINTEGER:
+        _unavailable_reason = (
+            f"lupa esta compilado con Lua de 64 bits (math.maxinteger={maxint}); el "
+            "firmware usa LUA_32BITS (ver firmware/libraries/lua54/src/luaconf.h) y el "
+            "bytecode no seria compatible -- recompila liblua54.a con -DESP_PLATFORM "
+            '(ver README, seccion "Play", paso 1)'
+        )
+        return
+    _compiler_lua = lua
+
+
+def lua_bytecode_available() -> bool:
+    _ensure_compiler_lua()
+    return _compiler_lua is not None
+
+
+def lua_bytecode_unavailable_reason() -> str:
+    _ensure_compiler_lua()
+    return _unavailable_reason or ""
 
 
 def compile_lua_to_bytecode(source: str, chunk_name: str, *, strip: bool = False) -> bytes:
@@ -75,10 +100,13 @@ def compile_lua_to_bytecode(source: str, chunk_name: str, *, strip: bool = False
     tiempo de ejecucion en el firmware sigan reportando "chunk_name:linea:" via
     Serial.printf(lua_tostring(...)) igual que hoy con texto plano.
 
-    Lanza LuaCompileError con el mensaje de Lua si `source` tiene un error de sintaxis.
+    Lanza LuaCompileError con el mensaje de Lua si `source` tiene un error de sintaxis, o
+    si lua_bytecode_available() es False (llamar solo despues de comprobarlo).
     """
-    lua = _get_compiler_lua()
-    dump_fn = lua.eval(_DUMP_CHUNK)
+    _ensure_compiler_lua()
+    if _compiler_lua is None:
+        raise LuaCompileError(lua_bytecode_unavailable_reason())
+    dump_fn = _compiler_lua.eval(_DUMP_CHUNK)
     try:
         result = dump_fn(source.encode("utf-8"), chunk_name.encode("utf-8"), strip)
     except Exception as exc:  # lupa.LuaError -- error de sintaxis propagado desde load()

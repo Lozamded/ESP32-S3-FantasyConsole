@@ -17,9 +17,9 @@
     },
     {
       "enabled": false,
-      "color_index": 1,
+      "color_index": 0,
       "opacity": 255,
-      "background": "",
+      "background": "intro_bg",
       "parallax_x": 1.0,
       "fixed": false,
       "repeat_x": false
@@ -35,7 +35,7 @@
     },
     {
       "enabled": false,
-      "color_index": 1,
+      "color_index": 5,
       "opacity": 255,
       "background": "",
       "parallax_x": 1.0,
@@ -43,7 +43,24 @@
       "repeat_x": false
     }
   ],
-  "objects": [],
+  "objects": [
+    {
+      "id": "scene_controller",
+      "x": 0,
+      "y": 0
+    }
+  ],
+  "text_labels": [
+    {
+      "id": "startlabel",
+      "text": "Press to Start",
+      "x": 25,
+      "y": 11,
+      "font": "default",
+      "color_index": -1,
+      "blink_ms": 200
+    }
+  ],
   "tile_layers": [
     {
       "enabled": false,
@@ -227,7 +244,7 @@
     },
     {
       "enabled": false,
-      "tileset": "",
+      "tileset": "greenfield",
       "cells": [
         [
           31,

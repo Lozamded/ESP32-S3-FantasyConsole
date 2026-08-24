@@ -283,7 +283,7 @@ class RenderRgbaViewportCropTests(unittest.TestCase):
         rgbs = [(0.0, 0.0, 0.0)] * 32
         rgbs[7] = (0.2, 0.9, 0.9)
         self._assert_reorder_matches(
-            lambda rgba, fw, fh, **k: pr._blit_text_scene(
+            lambda rgba, fw, fh, **k: pr.blit_text_scene(
                 rgba, fw, fh, 13, 9, "A", glyphs=glyphs, advances=advances, glyph_px=2, rgbs=rgbs, **k
             )
         )

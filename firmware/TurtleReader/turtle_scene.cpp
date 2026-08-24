@@ -81,6 +81,26 @@ struct Placement {
   int y;
 };
 
+constexpr int kMaxTextLabels = 16;
+
+/** spec/scene-text-labels-v0.md: texto estatico declarado en la escena (sin actor/script).
+ *  Se pinta como parte de la capa horneada de fondo/tiles -- ver draw_scene_text_labels.
+ *  blink_ms > 0 la saca de ese horneado unico (ver draw_scene_text_labels/draw_all_actors):
+ *  necesita redibujarse cuando cambia de visible, asi que no puede quedar fija para siempre
+ *  en el snapshot estatico. */
+struct SceneTextLabel {
+  char id[40];
+  char text[64];
+  int x;
+  int y;
+  char font_id[48];
+  int color_index;  // -1 = colores propios del glifo (sin tinte)
+  int blink_ms;      // 0 = sin parpadeo (siempre visible, comportamiento de hoy)
+  // Estado de runtime (no viene del JSON, se resetea en cada parse_scene_text_labels):
+  bool blink_visible;
+  uint32_t blink_accum_ms;
+};
+
 /** spec/scene-v0.md: rango Y (escena, inclusive) con su propio factor de scroll
  *  horizontal sobre el mismo s_world_bg. Filas fuera de todas las bandas usan
  *  el comportamiento de hoy (parallax_x=1, fixed=false, repeat_x=false). */
@@ -194,6 +214,8 @@ static bool s_world_static_ready = false;
 static bool s_tiles_baked_into_world = false;
 /** Fuera del stack de loopTask (ESP32 ~8 KB); parse_placements + tile_layers juntos overflow. */
 TURTLE_BSS_PSRAM static Placement s_placements[kMaxPlacements];
+TURTLE_BSS_PSRAM static SceneTextLabel s_text_labels[kMaxTextLabels];
+static int s_text_label_count = 0;
 TURTLE_BSS_PSRAM static TileLayer s_tile_layers[kMaxTileLayers];
 TURTLE_BSS_PSRAM static TurtleTileset s_tileset_draw;
 TURTLE_BSS_PSRAM static SceneActor s_actors[kMaxPlacements];
@@ -209,6 +231,11 @@ static bool s_runtime_active = false;
 static int s_target_fps = 30;
 static int s_default_anim_fps = 8;
 static int s_runtime_tile_px = 16;
+// spec/lua/object-script-v0.md "Cambio de escena": pedido pendiente de goto_scene(id), aplicado
+// una vez por fotograma fuera del tick de actores -- ver turtle_scene_request_switch/
+// turtle_scene_consume_pending_switch.
+static char s_pending_scene_switch[64] = "";
+static bool s_pending_scene_switch_valid = false;
 static int s_runtime_tile_layer_count = 0;
 /** spec/scene-v0.md "Capa de colision": unica capa de tiles cuyos tiles solidos
  *  bloquean actores; las otras 3 son puramente decorativas sin importar su propio
@@ -3436,6 +3463,131 @@ static bool parse_placements(const char* scene_start, const char* scene_end, Pla
   return true;
 }
 
+/** spec/scene-text-labels-v0.md: mismo shape que parse_placements, pero una entrada
+ *  invalida (sin "text"/"font" resoluble) se salta en vez de abortar toda la escena --
+ *  el resto de las etiquetas y de la escena cargan igual. */
+static void parse_scene_text_labels(const char* scene_start, const char* scene_end) {
+  s_text_label_count = 0;
+  const char* ok = strstr_bounded(scene_start, scene_end, "\"text_labels\"");
+  if (!ok) {
+    return;
+  }
+  const char* p = ok + 13;
+  while (p < scene_end && *p != ':') {
+    ++p;
+  }
+  if (p >= scene_end) {
+    return;
+  }
+  ++p;
+  while (p < scene_end && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= scene_end || *p != '[') {
+    return;
+  }
+  ++p;
+  int n = 0;
+  while (p < scene_end && *p != ']') {
+    while (p < scene_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= scene_end || *p == ']') {
+      break;
+    }
+    if (*p != '{') {
+      break;
+    }
+    const char* ob = p;
+    const char* oe = json_object_end(ob);
+    if (!oe) {
+      break;
+    }
+    p = oe;
+    if (n >= kMaxTextLabels) {
+      continue;
+    }
+    SceneTextLabel* lbl = &s_text_labels[n];
+    if (!json_extract_string_for_key(ob, oe, "text", lbl->text, sizeof(lbl->text)) ||
+        !lbl->text[0]) {
+      continue;
+    }
+    if (!json_extract_string_for_key(ob, oe, "font", lbl->font_id, sizeof(lbl->font_id)) ||
+        !lbl->font_id[0]) {
+      continue;
+    }
+    if (!json_extract_int_for_key(ob, oe, "x", &lbl->x) ||
+        !json_extract_int_for_key(ob, oe, "y", &lbl->y)) {
+      continue;
+    }
+    json_extract_string_for_key(ob, oe, "id", lbl->id, sizeof(lbl->id));
+    if (!json_extract_int_for_key(ob, oe, "color_index", &lbl->color_index)) {
+      lbl->color_index = -1;
+    }
+    if (!json_extract_int_for_key(ob, oe, "blink_ms", &lbl->blink_ms) || lbl->blink_ms < 0) {
+      lbl->blink_ms = 0;
+    }
+    lbl->blink_visible = true;
+    lbl->blink_accum_ms = 0;
+    ++n;
+  }
+  s_text_label_count = n;
+}
+
+/** Dibuja una sola etiqueta (sin mirar blink_ms/blink_visible) -- comun a
+ *  draw_scene_text_labels y al camino de parpadeo de draw_all_actors (camara fija). Misma
+ *  pareja de llamadas que draw_actor_runtime ya usa para el overlay de texto de actor. */
+static void draw_one_text_label(const SceneTextLabel* lbl, uint8_t transparent_index) {
+  const TurtleFont* font = font_cache_get(s_runtime_json, s_runtime_json_end, lbl->font_id);
+  if (!font) {
+    return;
+  }
+  if (lbl->color_index >= 0) {
+    turtle_font_draw_scene_tint(font, lbl->x, lbl->y, lbl->text, transparent_index,
+                                static_cast<uint8_t>(lbl->color_index));
+  } else {
+    turtle_font_draw_scene(font, lbl->x, lbl->y, lbl->text, transparent_index);
+  }
+}
+
+/** Bounds en escena del texto de una etiqueta (ignora blink_ms) -- usado por el camino de
+ *  dirty-rect de parpadeo en draw_all_actors (camara fija), igual que actor_text_scene_bounds
+ *  para el overlay de texto de actor. */
+static bool text_label_scene_bounds(const SceneTextLabel* lbl, int* out_x0, int* out_y0,
+                                    int* out_w, int* out_h) {
+  if (!lbl->text[0] || !lbl->font_id[0]) {
+    return false;
+  }
+  const TurtleFont* font = font_cache_get(s_runtime_json, s_runtime_json_end, lbl->font_id);
+  if (!font) {
+    return false;
+  }
+  *out_x0 = lbl->x;
+  *out_y0 = lbl->y;
+  *out_w = turtle_font_measure(font, lbl->text);
+  *out_h = font->glyph_px;
+  return true;
+}
+
+/** spec/scene-text-labels-v0.md "Orden de pintado": las etiquetas se pintan como parte de
+ *  la capa horneada de fondo/tiles -- encima de ambos, debajo de actores/sprites.
+ *  spec/scene-text-blink-v0.md: con include_blinking=false (camino de horneado unico, camara
+ *  fija) las etiquetas con blink_ms > 0 se saltan por completo -- las maneja en cambio el
+ *  camino de dirty-rect de draw_all_actors, ver ahi. Con include_blinking=true (repintado
+ *  full-frame de paint_scene_static_layers, escena con scroll) se evalua blink_visible cada
+ *  vez, que ya alcanza porque esa funcion se llama entera cada fotograma de todos modos. */
+static void draw_scene_text_labels(uint8_t transparent_index, bool include_blinking) {
+  for (int i = 0; i < s_text_label_count; ++i) {
+    const SceneTextLabel* lbl = &s_text_labels[i];
+    if (lbl->blink_ms > 0) {
+      if (!include_blinking || !lbl->blink_visible) {
+        continue;
+      }
+    }
+    draw_one_text_label(lbl, transparent_index);
+  }
+}
+
 static bool scene_block_is_scene_layer(const char* block_start, const char* block_end) {
   return strstr_bounded(block_start, block_end, "\"background_index\"") != nullptr;
 }
@@ -4053,6 +4205,7 @@ static void paint_scene_static_layers(void) {
     if (!s_tiles_baked_into_world) {
       draw_tile_layers_live(s_runtime_transp);
     }
+    draw_scene_text_labels(s_runtime_transp, /*include_blinking=*/true);
     return;
   }
   if (s_world_bg) {
@@ -4068,6 +4221,7 @@ static void paint_scene_static_layers(void) {
   // s_runtime_tile_layer_count ya quedaron frescos, no hace falta re-parsear cada
   // fotograma aca tampoco.
   draw_tile_layers_live(s_runtime_transp);
+  draw_scene_text_labels(s_runtime_transp, /*include_blinking=*/true);
 }
 
 /** Rect en espacio escena, usado por draw_all_actors (camara fija) para saber que zonas de
@@ -4190,6 +4344,28 @@ static void draw_all_actors(void) {
     }
   }
 
+  // spec/scene-text-blink-v0.md: etiquetas con blink_ms > 0 no se hornearon en el snapshot
+  // estatico (ver draw_scene_text_labels), asi que se tratan aca como "siempre activas" --
+  // no tienen concepto de quieto/idle porque su contenido visible cambia con el tiempo aunque
+  // no se muevan. Se marca su rect dirty TODOS los fotogramas (no solo en el fotograma en que
+  // cambia blink_visible): mas simple que rastrear transiciones, y necesario para que un actor
+  // que pasa por encima la restaure/tape bien (mismo motivo que la Fase 2 de abajo existe para
+  // actores quietos). Entran a s_active_rects para que esa Fase 2 tambien las considere.
+  for (int i = 0; i < s_text_label_count; ++i) {
+    const SceneTextLabel* lbl = &s_text_labels[i];
+    if (lbl->blink_ms <= 0) {
+      continue;
+    }
+    int lx0 = 0, ly0 = 0, lw = 0, lh = 0;
+    if (!text_label_scene_bounds(lbl, &lx0, &ly0, &lw, &lh)) {
+      continue;
+    }
+    turtle_gpu_dirty_mark_scene_rect(lx0, ly0, lw, lh);
+    if (active_rect_count < kMaxActiveRects) {
+      s_active_rects[active_rect_count++] = {lx0, ly0, lx0 + lw - 1, ly0 + lh - 1};
+    }
+  }
+
   // Fase 2: actores quietos pendientes de la Fase 1. Si ningun rect activo de este frame los
   // toca, de verdad no hace falta redibujarlos. Si SI se solapan (un actor activo vecino va a
   // restaurar el fondo estatico ahi), hay que marcarlos/redibujarlos igual (promoverlos a
@@ -4256,6 +4432,16 @@ static void draw_all_actors(void) {
       Serial.printf("turtle_scene: no sprite para \"%s\"\n", s_actors[i].obj_id);
     }
   }
+
+  // El restore de arriba ya dejo el fondo/tiles limpios bajo cada etiqueta parpadeante
+  // (estaban excluidas del snapshot estatico); solo falta redibujar las que corresponde
+  // mostrar este fotograma segun blink_visible (tick_text_labels ya lo actualizo).
+  for (int i = 0; i < s_text_label_count; ++i) {
+    const SceneTextLabel* lbl = &s_text_labels[i];
+    if (lbl->blink_ms > 0 && lbl->blink_visible) {
+      draw_one_text_label(lbl, s_runtime_transp);
+    }
+  }
 }
 
 static void clamp_actor_pos(SceneActor* a) {
@@ -4308,6 +4494,26 @@ static void tick_actors(uint32_t delta_ms) {
       } else {
         a->frame_index = static_cast<uint8_t>(a->frame_index + 1);
       }
+    }
+  }
+}
+
+/** spec/scene-text-blink-v0.md: togglea blink_visible cada blink_ms de escena transcurridos,
+ *  mismo patron acumulador que tick_actors usa para avanzar frames de animacion. El `while`
+ *  (en vez de un solo `if`) resuelve correctamente un delta_ms grande (frame lento/lag): si
+ *  cruza varios periodos de parpadeo en un solo tick, termina en el estado que corresponde en
+ *  vez de quedar atrasado. */
+static void tick_text_labels(uint32_t delta_ms) {
+  for (int i = 0; i < s_text_label_count; ++i) {
+    SceneTextLabel* lbl = &s_text_labels[i];
+    if (lbl->blink_ms <= 0) {
+      continue;
+    }
+    lbl->blink_accum_ms += delta_ms;
+    const uint32_t period = static_cast<uint32_t>(lbl->blink_ms);
+    while (lbl->blink_accum_ms >= period) {
+      lbl->blink_accum_ms -= period;
+      lbl->blink_visible = !lbl->blink_visible;
     }
   }
 }
@@ -4407,6 +4613,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   parse_scene_camera(sc_start, sc_end);
   parse_scene_parallax_bands(sc_start, sc_end);
   parse_scene_bg_image_layers(sc_start, sc_end);
+  parse_scene_text_labels(sc_start, sc_end);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -4467,6 +4674,10 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
       Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
     }
     draw_tile_layers_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp);
+    // include_blinking=false: las etiquetas con blink_ms > 0 NO se hornean aca -- quedarian
+    // fijas para siempre en el snapshot estatico. Las maneja el camino de dirty-rect de
+    // draw_all_actors (camara fija) en cada fotograma, ver ahi.
+    draw_scene_text_labels(s_runtime_transp, /*include_blinking=*/false);
     turtle_gpu_snapshot_static();
   }
   s_actor_count = 0;
@@ -4516,11 +4727,31 @@ void turtle_scene_runtime_tick(uint32_t delta_ms) {
   }
   turtle_actor_lua_tick_all(delta_ms);
   tick_actors(delta_ms);
+  tick_text_labels(delta_ms);
   draw_all_actors();
 }
 
 bool turtle_scene_runtime_active(void) {
   return s_runtime_active;
+}
+
+void turtle_scene_request_switch(const char* scene_id) {
+  if (!scene_id || !scene_id[0]) {
+    return;
+  }
+  snprintf(s_pending_scene_switch, sizeof s_pending_scene_switch, "%s", scene_id);
+  s_pending_scene_switch_valid = true;
+}
+
+bool turtle_scene_consume_pending_switch(char* out, size_t out_cap) {
+  if (!s_pending_scene_switch_valid) {
+    return false;
+  }
+  s_pending_scene_switch_valid = false;
+  if (out && out_cap > 0) {
+    snprintf(out, out_cap, "%s", s_pending_scene_switch);
+  }
+  return true;
 }
 
 int turtle_scene_target_fps(void) {

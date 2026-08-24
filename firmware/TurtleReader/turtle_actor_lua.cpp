@@ -118,6 +118,15 @@ static int l_flip_h(lua_State* L) {
   return 0;
 }
 
+/** spec/lua/object-script-v0.md "Cambio de escena": pide el cambio a `scene_id` -- no se
+ *  aplica de inmediato (ver turtle_scene_request_switch), asi que el resto de los actores
+ *  siguen recibiendo _update(dt) de la escena VIEJA hasta que termine este fotograma. */
+static int l_goto_scene(lua_State* L) {
+  const char* scene_id = luaL_checkstring(L, 1);
+  turtle_scene_request_switch(scene_id);
+  return 0;
+}
+
 /**
  * text(str, font_id [, dx, dy, color_index]) — overlay de texto del actor actual,
  * persistente hasta el siguiente text(). text("") lo borra. (dx, dy) offset opcional
@@ -180,6 +189,9 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_text_width);
   lua_setglobal(L, "text_width");
+
+  lua_pushcfunction(L, l_goto_scene);
+  lua_setglobal(L, "goto_scene");
 }
 
 static bool load_script_update_ref(int actor_index, const char* stem) {

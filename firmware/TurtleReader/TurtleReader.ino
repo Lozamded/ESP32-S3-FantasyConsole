@@ -303,6 +303,31 @@ static void drawInitialSceneFromBundle(void) {
   g_last_tick_ms = millis();
 }
 
+/**
+ * spec/lua/object-script-v0.md "Cambio de escena": aplica un goto_scene(id) pedido por algun
+ * actor durante turtle_scene_runtime_tick() de este fotograma. Reusa g_bundle (ya en RAM, sin
+ * releer la SD) -- turtle_scene_begin_runtime() ya es seguro de llamar de nuevo para otra
+ * escena (rebindea Lua limpiando las referencias previas, ver turtle_actor_lua_bind_actors_
+ * from_scene). Se llama DESPUES de turtle_scene_runtime_tick, nunca durante -- ver el
+ * comentario en turtle_scene_request_switch.
+ */
+static void handlePendingSceneSwitch(void) {
+  char target[64];
+  if (!turtle_scene_consume_pending_switch(target, sizeof target)) {
+    return;
+  }
+  if (!g_bundle.data || g_bundle.len == 0) {
+    return;
+  }
+  if (turtle_scene_begin_runtime(g_bundle.data, g_bundle.len, target)) {
+    g_runtime_active = turtle_scene_runtime_active();
+    Serial.printf("turtle_scene: cambio de escena a \"%s\"\n", target);
+  } else {
+    Serial.printf("turtle_scene: fallo el cambio de escena a \"%s\"\n", target);
+  }
+  g_last_tick_ms = millis();
+}
+
 void setup() {
   Serial.begin(115200);
   delay(1000);
@@ -383,5 +408,6 @@ void loop() {
 
   turtle_input_poll();
   turtle_scene_runtime_tick(frame_ms);
+  handlePendingSceneSwitch();
   turtle_gpu_flip();
 }

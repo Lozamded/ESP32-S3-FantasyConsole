@@ -25,6 +25,7 @@ from turtlestudio import objects as objects_mod
 from turtlestudio import tile_collision as tile_collision_mod
 from turtlestudio.build import load_palette_rgb01_for_preview
 from turtlestudio.fonts import (
+    blit_text_scene,
     font_metrics_from_data,
     parse_font_advances,
     parse_font_glyphs,
@@ -576,57 +577,6 @@ def _blit_actor_sprite(
             rgba[i + 3] = 1.0
 
 
-def _blit_text_scene(
-    rgba: list[float],
-    fw: int,
-    fh: int,
-    sx: int,
-    sy: int,
-    text: str,
-    *,
-    glyphs: dict[str, list[list[int]]],
-    advances: dict[str, int],
-    glyph_px: int,
-    rgbs: list[tuple[float, float, float]],
-    tint_index: int = -1,
-    cam_x: int = 0,
-    cam_y: int = 0,
-) -> int:
-    """cam_x/cam_y: ver _blit_actor_sprite -- default (0, 0) preserva el comportamiento
-    de siempre (rgba = mundo entero); con la camara, rgba puede ser solo el viewport."""
-    x = sx
-    for ch in text:
-        rows = glyphs.get(ch)
-        adv = advances.get(ch, glyph_px)
-        if rows is not None:
-            for gy in range(glyph_px):
-                row = rows[gy] if gy < len(rows) else []
-                scene_y = sy + (glyph_px - 1 - gy) - cam_y
-                ty = (fh - 1) - scene_y
-                if ty < 0 or ty >= fh:
-                    continue
-                row_base = ty * fw * 4
-                for gx in range(min(glyph_px, len(row))):
-                    idx = row[gx]
-                    if is_transparent_palette_index(idx):
-                        continue
-                    use_idx = tint_index if tint_index >= 0 else idx
-                    col = resolve_palette_color(use_idx, rgbs)
-                    if col is None:
-                        continue
-                    sxp = x + gx - cam_x
-                    if sxp < 0 or sxp >= fw:
-                        continue
-                    i = row_base + sxp * 4
-                    r, g, b = col
-                    rgba[i] = r
-                    rgba[i + 1] = g
-                    rgba[i + 2] = b
-                    rgba[i + 3] = 1.0
-        x += adv
-    return x - sx
-
-
 def _crop_world_rgba_to_viewport(
     rgba: list[float], fw: int, fh: int, cam_x: int, cam_y: int, *, viewport_w: int = VIEWPORT_PIXEL_W, viewport_h: int = VIEWPORT_PIXEL_H
 ) -> list[float]:
@@ -682,8 +632,21 @@ class PlaySession:
         self._rgbs: list[tuple[float, float, float]] = []
         self._sprite_cache: dict[str, dict[str, Any] | None] = {}
         self._font_cache: dict[str, dict[str, Any] | None] = {}
+        # spec/scene-text-blink-v0.md: etiquetas con blink_ms > 0, excluidas de _static_rgba
+        # (ver begin()) porque necesitan alternar visible/oculto con el tiempo -- cada entrada
+        # es {"lbl": dict original, "visible": bool, "accum_ms": float}.
+        self._blinking_labels: list[dict[str, Any]] = []
+        # spec/lua/object-script-v0.md "Cambio de escena": id pedido por goto_scene(id) desde
+        # un actor (ver play_lua_bridge.py), o None si no hay ninguno pendiente. Igual que en
+        # el firmware (turtle_scene_request_switch), aplicarlo es responsabilidad del que
+        # orquesta el tick (play_widget.py) -- este modulo solo guarda el pedido.
+        self.pending_scene_switch: str | None = None
         self.log: list[str] = []
         self._active = False
+
+    def request_scene_switch(self, scene_id: str) -> None:
+        if scene_id:
+            self.pending_scene_switch = scene_id
 
     # -- lifecycle --------------------------------------------------
 
@@ -726,12 +689,32 @@ class PlaySession:
         pal_path = (self.project_root / palette_rel).resolve() if palette_rel else None
         self._rgbs, _ = load_palette_rgb01_for_preview(pal_path if pal_path and pal_path.is_file() else None)
 
-        # Capa estatica (fondo+tiles+parallax): igual que render_scene_rgba, pero sin
-        # objects[] -- los actores se pintan en vivo cada frame en render_rgba(), no
-        # horneados aca (a diferencia del firmware, esto no se re-hornea nunca, se
-        # copia una vez por frame -- barato en desktop, no vale la pena el dirty-rect).
+        # spec/scene-text-blink-v0.md: etiquetas con blink_ms > 0 no pueden ir horneadas en
+        # _static_rgba (quedarian fijas para siempre, igual que el snapshot estatico del
+        # firmware) -- se sacan de la lista que se hornea y se dibujan en vivo cada frame en
+        # render_rgba(), igual que los actores.
+        text_labels = row.get("text_labels") or []
+        static_labels: list[Any] = []
+        self._blinking_labels = []
+        for lbl in text_labels:
+            if not isinstance(lbl, dict):
+                continue
+            try:
+                blink_ms = int(lbl.get("blink_ms", 0))
+            except (TypeError, ValueError):
+                blink_ms = 0
+            if blink_ms > 0:
+                self._blinking_labels.append({"lbl": lbl, "visible": True, "accum_ms": 0.0})
+            else:
+                static_labels.append(lbl)
+
+        # Capa estatica (fondo+tiles+parallax+etiquetas sin blink): igual que render_scene_rgba,
+        # pero sin objects[] -- los actores se pintan en vivo cada frame en render_rgba(), no
+        # horneados aca (a diferencia del firmware, esto no se re-hornea nunca, se copia una vez
+        # por frame -- barato en desktop, no vale la pena el dirty-rect).
         static_row = dict(row)
         static_row["objects"] = []
+        static_row["text_labels"] = static_labels
         self._static_rgba, _sfw, _sfh = render_scene_rgba(
             self.project_root, static_row, tile_px, viewport_w=viewport_w, viewport_h=viewport_h
         )
@@ -741,6 +724,7 @@ class PlaySession:
         self.cam_x, self.cam_y = self.camera.x, self.camera.y
         self._update_camera()
         self.log = []
+        self.pending_scene_switch = None
         self._active = True
 
     def stop(self) -> None:
@@ -892,6 +876,17 @@ class PlaySession:
         delta_ms = dt_seconds * 1000.0
         for a in self.actors:
             tick_actor_animation(a, delta_ms, self.default_anim_fps)
+        # spec/scene-text-blink-v0.md: mismo patron acumulador que tick_text_labels en
+        # turtle_scene.cpp (firmware) -- el `while` cubre un dt_seconds grande sin quedar
+        # atrasado respecto al estado que corresponde.
+        for state in self._blinking_labels:
+            period = float(state["lbl"].get("blink_ms", 0) or 0)
+            if period <= 0:
+                continue
+            state["accum_ms"] += delta_ms
+            while state["accum_ms"] >= period:
+                state["accum_ms"] -= period
+                state["visible"] = not state["visible"]
         self._update_camera()
 
     # -- render --------------------------------------------------------
@@ -911,6 +906,53 @@ class PlaySession:
             rgba = [0.0] * (vw * vh * 4)
             for i in range(3, len(rgba), 4):
                 rgba[i] = 1.0
+
+        # spec/scene-text-blink-v0.md: etiquetas con blink_ms > 0, dibujadas en vivo (no
+        # estan en _static_rgba, ver begin()) antes de los actores para quedar en el mismo
+        # orden relativo que el firmware (encima de fondo/tiles, debajo de actores).
+        for state in self._blinking_labels:
+            if not state["visible"]:
+                continue
+            lbl = state["lbl"]
+            text = str(lbl.get("text", ""))
+            font_id = str(lbl.get("font", "")).strip()
+            if not text or not font_id:
+                continue
+            font_data = self.get_font_data(font_id)
+            if font_data is None:
+                continue
+            try:
+                color_index = int(lbl.get("color_index", -1))
+            except (TypeError, ValueError):
+                color_index = -1
+            glyphs = parse_font_glyphs(font_data)
+            advances = parse_font_advances(font_data)
+            px, _lh, _bl = font_metrics_from_data(font_data)
+            # color_index >= 0 se resuelve contra self._rgbs (paleta ACTIVA de la escena, no
+            # la propia de la fuente) -- mismo motivo que _paint_scene_text_labels en
+            # scene_editor.py, ver el comentario ahi.
+            if color_index >= 0:
+                label_rgbs = self._rgbs
+            else:
+                font_pal_rel = str(font_data.get("palette", "")).strip()
+                font_pal_path = (self.project_root / normalize_palette_rel(font_pal_rel)).resolve() if font_pal_rel else None
+                label_rgbs, _ = load_palette_rgb01_for_preview(font_pal_path if font_pal_path and font_pal_path.is_file() else None)
+            blit_text_scene(
+                rgba,
+                vw,
+                vh,
+                int(lbl.get("x", 0)),
+                int(lbl.get("y", 0)),
+                text,
+                glyphs=glyphs,
+                advances=advances,
+                glyph_px=px,
+                rgbs=label_rgbs,
+                tint_index=color_index,
+                cam_x=self.cam_x,
+                cam_y=self.cam_y,
+            )
+
         for a in self.actors:
             data = self.get_sprite_data(a.sprite_id)
             if data is None:
@@ -927,7 +969,7 @@ class PlaySession:
                     font_pal_rel = str(font_data.get("palette", "")).strip()
                     font_pal_path = (self.project_root / normalize_palette_rel(font_pal_rel)).resolve() if font_pal_rel else None
                     font_rgbs, _ = load_palette_rgb01_for_preview(font_pal_path if font_pal_path and font_pal_path.is_file() else None)
-                    _blit_text_scene(
+                    blit_text_scene(
                         rgba,
                         vw,
                         vh,

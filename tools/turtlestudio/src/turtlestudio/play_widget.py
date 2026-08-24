@@ -238,15 +238,20 @@ class PlayWidget(QWidget):
             return
         self._begin_session()
 
-    def _begin_session(self) -> None:
-        sid = self.scene_combo.currentText().strip()
+    def _resolve_scene_row(self, sid: str) -> dict[str, Any] | None:
         row_raw = next((s for s in self._scenes if s.get("id") == sid), None)
         if row_raw is None:
-            return
+            return None
+        return _normalize_row(row_raw, self._tile_px, viewport_w=self._viewport_w, viewport_h=self._viewport_h)
+
+    def _begin_session(self) -> None:
+        sid = self.scene_combo.currentText().strip()
         try:
-            row = _normalize_row(row_raw, self._tile_px, viewport_w=self._viewport_w, viewport_h=self._viewport_h)
+            row = self._resolve_scene_row(sid)
         except Exception as e:  # noqa: BLE001
             QMessageBox.critical(self, tr("common.error"), str(e))
+            return
+        if row is None:
             return
 
         self.session = pr.PlaySession(self.project_root)
@@ -298,6 +303,34 @@ class PlayWidget(QWidget):
         self.stop_button.setEnabled(False)
         self.scene_combo.setEnabled(True)
 
+    def _apply_pending_scene_switch(self, sid: str) -> None:
+        """spec/lua/object-script-v0.md "Cambio de escena": aplica un goto_scene(id) pedido
+        durante el tick que acaba de terminar. Reusa la MISMA PlaySession/ActorLuaBridge (mismo
+        lua runtime) y NO vuelve a correr la VM de ENTRY -- esa corre una sola vez, al Play
+        inicial, igual que turtle_scene_begin_runtime() en firmware no re-ejecuta el ENTRY del
+        cartucho al cambiar de escena (solo TurtleReader.ino::setup() lo hace, una vez)."""
+        if self.session is None:
+            return
+        row = self._resolve_scene_row(sid)
+        if row is None:
+            self.session.log.append(f'goto_scene: escena "{sid}" no encontrada')
+            return
+        self.session.begin(
+            row,
+            self._tile_px,
+            project_target_fps=self._project_target_fps,
+            project_anim_fps=self._project_anim_fps,
+            viewport_w=self._viewport_w,
+            viewport_h=self._viewport_h,
+        )
+        if self._actor_bridge is not None:
+            self._actor_bridge.bind_actors(self.session.actors)
+        self.scene_combo.blockSignals(True)
+        idx = self.scene_combo.findText(sid)
+        if idx >= 0:
+            self.scene_combo.setCurrentIndex(idx)
+        self.scene_combo.blockSignals(False)
+
     def _on_tick(self) -> None:
         if self.session is None or not self.session.active:
             self._timer.stop()
@@ -306,6 +339,10 @@ class PlayWidget(QWidget):
         try:
             self.session.input.set_held_indices(self.canvas.held_indices)
             self.session.tick(dt, self._run_actor_scripts)
+            pending = self.session.pending_scene_switch
+            if pending is not None:
+                self.session.pending_scene_switch = None
+                self._apply_pending_scene_switch(pending)
             rgba, w, h = self.session.render_rgba()
         except Exception as e:  # noqa: BLE001
             self._timer.stop()

@@ -82,6 +82,7 @@ scene.properties_group,Propiedades de la escena,Scene properties
 scene.id_label,Id:,Id:
 scene.palette_label,Paleta:,Palette:
 scene.script_label,Script (stem):,Script (stem):
+scene.create_script_button,Crear,Create
 scene.world_steps_x,Pasos de mundo X:,World steps X:
 scene.world_steps_y,Pasos de mundo Y:,World steps Y:
 scene.background_group,Fondo,Background
@@ -103,6 +104,16 @@ scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove
 scene.x_label,X:,X:
 scene.y_label,Y:,Y:
+scene.text_labels_group,Etiquetas de texto,Text labels
+scene.add_label,Añadir,Add
+scene.remove_label,Quitar,Remove
+scene.label_id_label,Id:,Id:
+scene.label_text_label,Texto:,Text:
+scene.label_font_label,Fuente:,Font:
+scene.label_color_label,Color:,Color:
+scene.label_color_auto,Auto (colores de la fuente),Auto (font's own colors)
+scene.label_blink_label,Parpadeo:,Blink:
+scene.label_blink_off,Sin parpadeo,No blink
 scene.camera_group,Camara,Camera
 scene.mode_label,Modo:,Mode:
 scene.camera_target_placeholder,id de objeto (vacio = auto),object id (empty = auto)

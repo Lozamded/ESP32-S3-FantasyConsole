@@ -84,6 +84,7 @@ class ActorLuaBridge:
         g.flip_h = self._l_flip_h
         g.text = self._l_text
         g.text_width = self._l_text_width
+        g.goto_scene = self._l_goto_scene
 
     # -- puente, firmas verificadas contra turtle_actor_lua.cpp -----------
 
@@ -146,6 +147,12 @@ class ActorLuaBridge:
 
     def _l_text_width(self, s: Any, font_id: Any) -> int:
         return self.session.measure_text(str(font_id), str(s))
+
+    def _l_goto_scene(self, scene_id: Any) -> None:
+        """spec/lua/object-script-v0.md "Cambio de escena": mismo diferido que
+        turtle_scene_request_switch en firmware -- solo guarda el pedido, play_widget.py lo
+        aplica despues de terminar el tick de este fotograma."""
+        self.session.request_scene_switch(str(scene_id))
 
     # -- bind / tick --------------------------------------------------
 
