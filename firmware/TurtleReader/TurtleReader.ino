@@ -7,6 +7,7 @@
 #include <esp_heap_caps.h>
 #endif
 
+#include "turtle_boot_font.h"
 #include "turtle_cart.h"
 #include "turtle_gpu.h"
 #include "turtle_input.h"
@@ -53,6 +54,19 @@ static void log_heap_caps(const char* tag) {
   Serial.println();
 }
 #endif
+
+// Viewport canonico (spec/scene-v0.md); duplicado aqui (no expuesto por turtle_gpu.h)
+// solo para centrar los mensajes de arranque de turtle_boot_font.
+static const int kViewportW = 164;
+static const int kViewportH = 124;
+
+/** Limpia pantalla y dibuja `text` (fuente embebida de arranque) centrado. */
+static void showBootMessage(const char* text) {
+  turtle_gpu_cls(0);
+  turtle_boot_text_draw_centered(kViewportW / 2, kViewportH / 2, text, /*color_index=*/7,
+                                 /*scale=*/2);
+  turtle_gpu_flip();
+}
 
 static bool mountSd(uint32_t frequencyHz) {
   sdSPI.begin(SD_SCK_PIN, SD_MISO_PIN, SD_MOSI_PIN, SD_CS_PIN);
@@ -306,8 +320,11 @@ void setup() {
   Serial.println("Pantalla: desactivada (TURTLE_USE_DISPLAY=0). cls/pix/flip solo en RAM.");
 #endif
 
+  showBootMessage("READING\nSD CARD...");
+
   if (!mountSdWithRetries()) {
     Serial.println("Error: no se pudo montar microSD");
+    showBootMessage("CANNOT READ\nTHE CARTRIDGE\nPLEASE RESET\nTHE CONSOLE");
     return;
   }
 
@@ -335,6 +352,7 @@ void setup() {
   }
 
   Serial.println("Error: ningun cartucho valido en la SD.");
+  showBootMessage("CANNOT READ\nTHE CARTRIDGE\nPLEASE RESET\nTHE CONSOLE");
 }
 
 void loop() {

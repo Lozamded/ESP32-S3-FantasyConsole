@@ -325,6 +325,31 @@ def _resolve_object_sprite_preview(project_root: Path, object_id: str) -> dict[s
     return {"mode": "solid", "pw": pw, "ph": ph, "rgb": (r, g, b), "origin_x": ox, "origin_y": oy}
 
 
+def _object_drag_preview_pixmap(project_root: Path, object_id: str) -> tuple[QPixmap, int, int] | None:
+    """Standalone sprite render for the live drag-and-drop ghost (see SceneCanvas
+    dragMoveEvent/paintEvent): without this, the drop point had zero visual feedback
+    even though it lands as the sprite's bottom-left anchor, not its visual center --
+    users would systematically drop objects floating above where they meant them to sit
+    (reported: placeholders resting on floor tiles in editor showed a full tile above the
+    floor once played, because the anchor, not the sprite's look, was what got aimed)."""
+    info = _resolve_object_sprite_preview(project_root, object_id)
+    pw, ph = int(info["pw"]), int(info["ph"])
+    if pw <= 0 or ph <= 0:
+        return None
+    rgba = [0.0] * (pw * ph * 4)
+    if info["mode"] == "indexed":
+        _blit_indexed_rows_scene(rgba, pw, ph, 0, 0, info["rows"], info["rgbs"])
+    else:
+        r, g, b = info["rgb"]
+        for i in range(0, len(rgba), 4):
+            rgba[i] = r
+            rgba[i + 1] = g
+            rgba[i + 2] = b
+            rgba[i + 3] = 1.0
+    img = _rgba_floats_to_qimage(rgba, pw, ph)
+    return QPixmap.fromImage(img), int(info["origin_x"]), int(info["origin_y"])
+
+
 def _paint_scene_objects(
     rgba: list[float], fw: int, fh: int, project_root: Path, placements: list[dict[str, Any]]
 ) -> None:
@@ -624,6 +649,7 @@ class SceneCanvas(QWidget):
     object_drag_moved = pyqtSignal(int, int)
     object_drag_finished = pyqtSignal()
     object_dropped = pyqtSignal(str, int, int)  # object id, scene-space x, y
+    object_drag_enter = pyqtSignal(str)  # object id, so the owner can resolve a preview sprite
     tool_context_menu_requested = pyqtSignal(object)  # QPoint (global), avoids importing QPoint just for the hint
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -638,19 +664,35 @@ class SceneCanvas(QWidget):
         # el unico modo en que se aceptan drops desde el catalogo (ver dropEvent).
         self.object_mode = False
         self._drawing = False
+        # Ghost del objeto arrastrado desde el catalogo (ver dragEnterEvent/dropEvent):
+        # sin esto el punto de drop no tenia ninguna senal visual pese a caer como el
+        # ancla inferior-izquierda del sprite (no su centro visual) -- causaba que los
+        # objetos quedaran flotando por encima de donde el usuario apuntaba con el mouse.
+        self._drag_preview_pixmap: QPixmap | None = None
+        self._drag_preview_origin = (0, 0)
+        self._drag_preview_pos: tuple[int, int] | None = None
         self.setMouseTracking(True)
         self.setAcceptDrops(True)
+
+    def set_drag_preview_sprite(self, pixmap: QPixmap | None, origin_x: int, origin_y: int) -> None:
+        self._drag_preview_pixmap = pixmap
+        self._drag_preview_origin = (origin_x, origin_y)
+        self.update()
 
     def set_frame(self, image: QImage, fw: int, fh: int) -> None:
         self._image = image
         self._fw = fw
         self._fh = fh
-        self.setMinimumSize(max(1, fw) * self.zoom, max(1, fh) * self.zoom)
+        # setFixedSize (not setMinimumSize): the containing QScrollArea has
+        # widgetResizable(True), which stretches a widget that only has a
+        # minimum size to fill the whole viewport -- pinning the drawn image
+        # in its top-left corner instead of letting AlignCenter center it.
+        self.setFixedSize(max(1, fw) * self.zoom, max(1, fh) * self.zoom)
         self.update()
 
     def set_zoom(self, zoom: int) -> None:
         self.zoom = max(1, min(6, zoom))
-        self.setMinimumSize(max(1, self._fw) * self.zoom, max(1, self._fh) * self.zoom)
+        self.setFixedSize(max(1, self._fw) * self.zoom, max(1, self._fh) * self.zoom)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -665,7 +707,33 @@ class SceneCanvas(QWidget):
                 Qt.TransformationMode.FastTransformation,
             )
             painter.drawImage(0, 0, target)
+        if self._drag_preview_pixmap is not None and self._drag_preview_pos is not None:
+            self._paint_drag_preview(painter)
         painter.end()
+
+    def _paint_drag_preview(self, painter: QPainter) -> None:
+        assert self._drag_preview_pixmap is not None and self._drag_preview_pos is not None
+        sx, sy = self._drag_preview_pos
+        ox, oy = self._drag_preview_origin
+        pw, ph = self._drag_preview_pixmap.width(), self._drag_preview_pixmap.height()
+        # Bottom-left of the sprite bbox in scene space (same anchor math as the drop
+        # itself, see sprite_blit_bottom_left) -> top-left row in image space (row 0 = top).
+        bx, by = sx - ox, sy - oy
+        img_x = bx * self.zoom
+        img_y = (self._fh - ph - by) * self.zoom
+        painter.setOpacity(0.6)
+        painter.drawPixmap(img_x, img_y, pw * self.zoom, ph * self.zoom, self._drag_preview_pixmap)
+        painter.setOpacity(1.0)
+        # Ancla real (donde realmente cae x,y) -- el ghost del sprite ya la muestra
+        # implicitamente, pero la cruz deja explicito el punto exacto que se esta apuntando.
+        ty = (self._fh - 1) - sy
+        ax = sx * self.zoom + self.zoom // 2
+        ay = ty * self.zoom + self.zoom // 2
+        pen = QPen(QColor(255, 140, 40))
+        pen.setWidth(1)
+        painter.setPen(pen)
+        painter.drawLine(ax - 5, ay, ax + 5, ay)
+        painter.drawLine(ax, ay - 5, ax, ay + 5)
 
     def _scene_xy_at(self, pos) -> tuple[int, int] | None:
         if self._fw <= 0 or self._fh <= 0:
@@ -722,12 +790,27 @@ class SceneCanvas(QWidget):
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if self.object_mode and event.mimeData().hasText():
             event.acceptProposedAction()
+            oid = event.mimeData().text().strip()
+            if oid:
+                # El dueno (SceneEditorWidget) resuelve el sprite y llama a
+                # set_drag_preview_sprite -- una sola vez por drag, no en cada dragMoveEvent.
+                self.object_drag_enter.emit(oid)
 
     def dragMoveEvent(self, event) -> None:  # noqa: N802
         if self.object_mode and event.mimeData().hasText():
             event.acceptProposedAction()
+            self._drag_preview_pos = self._scene_xy_at(event.position())
+            self.update()
+
+    def dragLeaveEvent(self, event) -> None:  # noqa: N802
+        self._drag_preview_pixmap = None
+        self._drag_preview_pos = None
+        self.update()
 
     def dropEvent(self, event) -> None:  # noqa: N802
+        self._drag_preview_pixmap = None
+        self._drag_preview_pos = None
+        self.update()
         if not self.object_mode:
             return
         oid = event.mimeData().text().strip()
@@ -1041,10 +1124,12 @@ class SceneEditorWidget(QWidget):
         self.canvas.object_drag_moved.connect(self._on_object_drag_moved)
         self.canvas.object_drag_finished.connect(self._on_object_drag_finished)
         self.canvas.object_dropped.connect(self._on_object_dropped)
+        self.canvas.object_drag_enter.connect(self._on_object_drag_enter)
         self.canvas.tool_context_menu_requested.connect(self._on_canvas_context_menu)
         self.spin_zoom.valueChanged.connect(self.canvas.set_zoom)
         canvas_scroll = QScrollArea()
         canvas_scroll.setWidgetResizable(True)
+        canvas_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         canvas_scroll.setWidget(self.canvas)
         right_layout.addWidget(canvas_scroll, stretch=1)
 
@@ -2259,6 +2344,14 @@ class SceneEditorWidget(QWidget):
         if not oid:
             return
         self._add_object_at(oid, self._viewport_w // 2, self._viewport_h // 2)
+
+    def _on_object_drag_enter(self, oid: str) -> None:
+        preview = _object_drag_preview_pixmap(self.project_root, oid)
+        if preview is None:
+            self.canvas.set_drag_preview_sprite(None, 0, 0)
+            return
+        pixmap, ox, oy = preview
+        self.canvas.set_drag_preview_sprite(pixmap, ox, oy)
 
     def _on_object_dropped(self, oid: str, x: int, y: int) -> None:
         row = self._current_row()

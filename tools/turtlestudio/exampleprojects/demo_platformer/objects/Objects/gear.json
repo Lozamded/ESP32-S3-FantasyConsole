@@ -1,0 +1,14 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "gear",
+  "name": "gear",
+  "sprite_id": "gear",
+  "collision": {
+    "mode": "aabb",
+    "x0": -6,
+    "y0": -6,
+    "x1": 6,
+    "y1": 6
+  }
+}

@@ -636,6 +636,11 @@ def paint_tile_layers_on_rgba_blocked(
     cols, rows = scene_tile_grid_dimensions(px, world_w=fw, world_h=fh)
     if cols <= 0 or rows <= 0:
         return
+    # La rejilla se ancla abajo (ver paint_tile_layers_on_rgba: sy0=0 para la fila
+    # inferior); si fh no es multiplo exacto de px, el resto queda como margen arriba
+    # del todo -- hay que sumarlo al offset de cada bloque o la rejilla entera queda
+    # corrida hacia arriba respecto a paint_tile_layers_on_rgba (usado sin cache por Play).
+    margin_top = fh - rows * px
     nbx = (cols + block_cells - 1) // block_cells
     nby = (rows + block_cells - 1) // block_cells
     tcache = tile_cache if tile_cache is not None else {}
@@ -665,4 +670,4 @@ def paint_tile_layers_on_rgba_blocked(
                 cached = (block_rgba, bw, bh)
                 block_cache[key] = cached
             block_rgba, bw, bh = cached
-            _composite_block_into_rgba(rgba, fw, fh, block_rgba, bw, bh, gx0 * px, gy0 * px)
+            _composite_block_into_rgba(rgba, fw, fh, block_rgba, bw, bh, gx0 * px, margin_top + gy0 * px)

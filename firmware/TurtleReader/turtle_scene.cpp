@@ -159,6 +159,15 @@ struct SceneActor {
 };
 
 TURTLE_BSS_PSRAM static uint8_t s_sprite_pixels[kMaxSpriteW * kMaxSpriteH];
+/** Indice del actor cuyos pixeles decodificados ocupan s_sprite_pixels ahora mismo (-1 =
+ * ninguno). s_sprite_pixels es un solo buffer compartido por TODOS los actores; el "cache"
+ * por actor en ActorDrawCache solo dice si ESE actor decodifico su sprite alguna vez, no si
+ * sigue siendo el ultimo en escribir el buffer compartido. Sin este dueno, un actor con sprite
+ * sin cambios se salta la recarga y blittea los pixeles de OTRO actor que escribio el buffer
+ * despues (bug real: con 1 solo actor en escena era invisible porque nadie mas tocaba el
+ * buffer; al agregar mas objetos el actor que no se dibuja ultimo en el loop por frame termina
+ * mostrando basura/negro). Ver draw_actor_runtime. */
+static int s_sprite_pixels_owner = -1;
 /** Decode temporal (fondos <= 1 pantalla); mundos grandes usan s_world_bg en PSRAM. */
 TURTLE_BSS_PSRAM static uint8_t s_scene_pixels[kSceneW * kSceneH];
 /** Scratch para bake_indexed_background_into_world (ver comentario en kMaxBgAssetW/H). */
@@ -1846,7 +1855,8 @@ static bool draw_actor_runtime(int actor_index) {
   ActorDrawCache* cache = &s_actor_draw_cache[actor_index];
 
   const bool need_reload = !cache->pixels_valid || strcmp(cache->sprite_id, a->sprite_id) != 0 ||
-                           cache->frame_index != a->frame_index;
+                           cache->frame_index != a->frame_index ||
+                           s_sprite_pixels_owner != actor_index;
   if (need_reload) {
     if (!load_sprite_pixels_by_id(s_runtime_json, s_runtime_json_end, a->sprite_id, a->frame_index,
                                  &a->pw, &a->ph)) {
@@ -1855,6 +1865,7 @@ static bool draw_actor_runtime(int actor_index) {
     snprintf(cache->sprite_id, sizeof cache->sprite_id, "%s", a->sprite_id);
     cache->frame_index = a->frame_index;
     cache->pixels_valid = true;
+    s_sprite_pixels_owner = actor_index;
   }
 
   turtle_gpu_blit_indexed_scene_anchor(a->x, a->y, a->pw, a->ph, s_sprite_pixels, a->pw,
@@ -4251,6 +4262,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     turtle_gpu_snapshot_static();
   }
   s_actor_count = 0;
+  s_sprite_pixels_owner = -1;
   for (int i = 0; i < kMaxPlacements; ++i) {
     s_actor_draw_cache[i].sprite_id[0] = '\0';
     s_actor_draw_cache[i].frame_index = 0;

@@ -448,7 +448,7 @@
           "color_index": 0,
           "opacity": 255,
           "background": "sky",
-          "parallax_x": 1.0,
+          "parallax_x": 0.95,
           "fixed": false,
           "repeat_x": false
         },
@@ -475,48 +475,73 @@
       "objects": [
         {
           "id": "player",
-          "x": 23,
-          "y": 29
+          "x": 17,
+          "y": 19
         },
         {
           "id": "eneny_snake",
           "x": 118,
-          "y": 27
+          "y": 16
         },
         {
           "id": "eneny_snake",
           "x": 263,
-          "y": 43
+          "y": 16
         },
         {
           "id": "eneny_snake",
           "x": 400,
-          "y": 27
+          "y": 16
         },
         {
           "id": "directional_block",
           "x": 176,
-          "y": 29
+          "y": 16
         },
         {
           "id": "directional_block",
           "x": 49,
-          "y": 28
+          "y": 16
         },
         {
           "id": "directional_block",
           "x": 608,
-          "y": 44
+          "y": 32
         },
         {
           "id": "directional_block",
           "x": 736,
-          "y": 44
+          "y": 32
         },
         {
           "id": "eneny_snake",
           "x": 656,
-          "y": 44
+          "y": 32
+        },
+        {
+          "id": "gear",
+          "x": 82,
+          "y": 62
+        },
+        {
+          "id": "gear",
+          "x": 123,
+          "y": 92
+        },
+        {
+          "id": "gear",
+          "x": 144,
+          "y": 93
+        },
+        {
+          "id": "gear",
+          "x": 165,
+          "y": 93
+        },
+        {
+          "id": "gear",
+          "x": 255,
+          "y": 46
         }
       ],
       "tile_layers": [
@@ -903,7 +928,6 @@
               0
             ],
             [
-              0,
               1,
               1,
               1,
@@ -912,18 +936,19 @@
               1,
               1,
               1,
-              1,
-              1,
-              2,
-              31,
-              31,
-              0,
               1,
               1,
               1,
               2,
               31,
               31,
+              0,
+              1,
+              1,
+              1,
+              2,
+              1,
+              1,
               31,
               0,
               1,
@@ -2316,8 +2341,8 @@
         "mode": "follow",
         "x": 0,
         "y": 0,
-        "margin_x": 64,
-        "margin_y": 48,
+        "margin_x": 81,
+        "margin_y": 61,
         "target": "player"
       },
       "parallax_bands": [
@@ -2343,8 +2368,8 @@
       "camera_mode": "follow",
       "camera_x": 0,
       "camera_y": 0,
-      "camera_margin_x": 64,
-      "camera_margin_y": 48,
+      "camera_margin_x": 81,
+      "camera_margin_y": 61,
       "camera_target": "player"
     }
   ],
