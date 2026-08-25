@@ -43,6 +43,20 @@ int turtle_scene_actor_count(void);
 bool turtle_scene_actor_script_stem(int index, char* out, size_t out_cap);
 void turtle_scene_actor_set_lua_target(int index);
 bool turtle_scene_actor_pos(int* x, int* y);
+
+/**
+ * spec/scene-object-identity-v0.md: buscar/consultar otros actores por id/tag unico de
+ * instancia. `index` (para *_at) es 0-based, el mismo indice de s_actors que devuelve
+ * turtle_scene_find_actor_by_id -- turtle_actor_lua.cpp suma/resta 1 al exponerlo a Lua como
+ * find_by_id/find_by_tag/obj_posx/obj_posy/obj_id/obj_has_tag (convencion Lua 1-based). Los
+ * indices son estables mientras no cambie la escena activa (goto_scene la reconstruye).
+ */
+bool turtle_scene_actor_id(char* out, size_t out_cap);
+bool turtle_scene_find_actor_by_id(const char* id, int* out_index);
+int turtle_scene_find_actors_by_tag(const char* tag, int* out_indices, int max_out);
+bool turtle_scene_actor_pos_at(int index, int* x, int* y);
+bool turtle_scene_actor_id_at(int index, char* out, size_t out_cap);
+bool turtle_scene_actor_has_tag_at(int index, const char* tag);
 /** Mueve el actor Lua; si out_dx/out_dy no son null, devuelve pixeles realmente movidos. */
 void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy);
 /** true si el actor Lua actual apoya sobre tile solido o el borde inferior de escena. */

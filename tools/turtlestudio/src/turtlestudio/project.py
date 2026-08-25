@@ -206,11 +206,20 @@ _DEFAULT_SCENE_BACKGROUND_LAYERS: tuple[BackgroundLayer, ...] = (
 
 @dataclass(frozen=True)
 class SceneObjectPlacement:
-    """Instancia en escena; x,y en espacio escena (origen abajo-izquierda, Y hacia arriba)."""
+    """Instancia en escena; x,y en espacio escena (origen abajo-izquierda, Y hacia arriba).
+    `object_id` referencia el catalogo (objects/Objects/<object_id>.json, define sprite/script) --
+    varias instancias pueden compartir el mismo `object_id` (ej. varios "gear"). `id` es el
+    identificador UNICO de esta instancia dentro de la escena (editable, usado por camera.target
+    y por find_by_id/find_by_tag en Lua -- spec/lua/object-script-v0.md). `tags` es una lista
+    libre para find_by_tag. `visible` (default True) controla si el actor se dibuja al arrancar
+    la escena -- sigue recibiendo _update(dt) igual que uno visible (spec/scene-object-visibility-v0.md)."""
 
+    object_id: str
     id: str
     x: int
     y: int
+    tags: tuple[str, ...] = ()
+    visible: bool = True
 
 
 def _clamp_scene_xy(
@@ -228,12 +237,83 @@ def _clamp_scene_xy(
     )
 
 
+_PLACEMENT_ID_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,63}$")
+
+
+def validate_placement_instance_id(raw: str) -> str:
+    """Mismo criterio que otros ids de escena (letra inicial, luego letras/digitos/_/-,
+    max 64 chars) -- ver validate_text_label_id, validate_object_id."""
+    s = str(raw).strip()
+    if not _PLACEMENT_ID_RE.match(s):
+        raise ValueError(
+            f"id de objeto invalido {s!r}: letra inicial, luego letras, digitos, _ o - (max 64 chars)."
+        )
+    return s
+
+
+# spec/scene-object-identity-v0.md: buffer firmware es char tags[128] csv -- estos topes de
+# autoria dejan margen de sobra (6 * (20+1) = 126) y evitan tags absurdamente largos/numerosos.
+TAG_MAX_LEN = 20
+MAX_TAGS_PER_PLACEMENT = 6
+_TAG_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9_-]{0,19}$")
+
+
+def validate_object_tag(raw: str) -> str:
+    s = str(raw).strip()
+    if not _TAG_RE.match(s):
+        raise ValueError(f"tag invalido {s!r}: letra inicial, luego letras, digitos, _ o - (max 20 chars).")
+    return s
+
+
+def validate_object_tags(raw: Any) -> tuple[str, ...]:
+    """Tolerante: tags invalidos o repetidos se descartan en vez de abortar -- consistente
+    con el resto de la edicion de escena (ver _on_label_fields_changed en scene_editor.py)."""
+    if not isinstance(raw, list):
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        try:
+            t = validate_object_tag(item)
+        except ValueError:
+            continue
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+        if len(out) >= MAX_TAGS_PER_PLACEMENT:
+            break
+    return tuple(out)
+
+
+def next_unique_placement_id(object_id: str, existing_ids: set[str]) -> str:
+    """object_id si esta libre (caso comun: una sola instancia -- ademas preserva el fallback
+    de camera.target vacio a un actor de id literal "player"/"character", ver
+    resolve_follow_target_xy/turtle_scene.cpp resolve_player_actor_index), si no
+    object_id_2, object_id_3, ... -- primer candidato no usado en `existing_ids`."""
+    if object_id not in existing_ids:
+        return object_id
+    n = 2
+    while True:
+        cand = f"{object_id}_{n}"
+        if cand not in existing_ids:
+            return cand
+        n += 1
+
+
 def _parse_one_scene_object(
     raw: Any,
     *,
     world_w: int = SCENE_PIXEL_W,
     world_h: int = SCENE_PIXEL_H,
-) -> SceneObjectPlacement | None:
+) -> tuple[str, str | None, int, int, tuple[str, ...], bool] | None:
+    """(object_id, id_pedido_o_None, x, y, tags, visible) o None si no se puede parsear.
+    id_pedido es None cuando falta/es invalido/es una escena legado (solo tenia "id" =
+    referencia de catalogo, sin identidad propia por instancia) -- parse_scene_objects_raw le
+    asigna un id unico despues, ya que la deduplicacion necesita ver TODAS las instancias de
+    la escena."""
     from turtlestudio.objects import validate_object_id
 
     if isinstance(raw, str):
@@ -241,19 +321,31 @@ def _parse_one_scene_object(
         if not s:
             return None
         oid = validate_object_id(s)
-        return SceneObjectPlacement(id=oid, x=0, y=0)
+        return oid, None, 0, 0, (), True
     if isinstance(raw, dict):
-        rid = raw.get("id")
-        if not isinstance(rid, str) or not rid.strip():
+        robj = raw.get("object")
+        legacy = not isinstance(robj, str) or not robj.strip()
+        oid_raw = raw.get("id") if legacy else robj
+        if not isinstance(oid_raw, str) or not oid_raw.strip():
             return None
-        oid = validate_object_id(rid.strip())
+        oid = validate_object_id(oid_raw.strip())
+        requested_id: str | None = None
+        if not legacy:
+            rid = raw.get("id")
+            if isinstance(rid, str) and rid.strip():
+                try:
+                    requested_id = validate_placement_instance_id(rid.strip())
+                except ValueError:
+                    requested_id = None
+        tags = validate_object_tags(raw.get("tags"))
+        visible = bool(raw.get("visible", True))
         try:
             xi = int(raw.get("x", 0))
             yi = int(raw.get("y", 0))
         except (TypeError, ValueError):
             xi, yi = 0, 0
         xi, yi = _clamp_scene_xy(xi, yi, world_w=world_w, world_h=world_h)
-        return SceneObjectPlacement(id=oid, x=xi, y=yi)
+        return oid, requested_id, xi, yi, tags, visible
     return None
 
 
@@ -265,11 +357,19 @@ def parse_scene_objects_raw(
 ) -> tuple[SceneObjectPlacement, ...]:
     if not isinstance(raw, list):
         return ()
-    out: list[SceneObjectPlacement] = []
+    parsed: list[tuple[str, str | None, int, int, tuple[str, ...], bool]] = []
     for item in raw:
         p = _parse_one_scene_object(item, world_w=world_w, world_h=world_h)
         if p is not None:
-            out.append(p)
+            parsed.append(p)
+    used: set[str] = set()
+    out: list[SceneObjectPlacement] = []
+    for object_id, requested_id, x, y, tags, visible in parsed:
+        iid = requested_id if requested_id is not None and requested_id not in used else None
+        if iid is None:
+            iid = next_unique_placement_id(object_id, used)
+        used.add(iid)
+        out.append(SceneObjectPlacement(object_id=object_id, id=iid, x=x, y=y, tags=tags, visible=visible))
     return tuple(out)
 
 
@@ -289,11 +389,13 @@ def normalize_scene_objects_for_save(
     sp = normpal(scene_palette_rel)
     out: list[dict[str, Any]] = []
     for p in placements:
-        if p.id not in allowed:
+        if p.object_id not in allowed:
             raise ValueError(
-                f"Objeto {p.id!r}: no existe o su sprite no usa la paleta de esta escena ({sp})."
+                f"Objeto {p.object_id!r}: no existe o su sprite no usa la paleta de esta escena ({sp})."
             )
-        out.append({"id": p.id, "x": p.x, "y": p.y})
+        out.append(
+            {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible}
+        )
     return out
 
 

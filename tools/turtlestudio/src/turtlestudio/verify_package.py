@@ -85,7 +85,10 @@ def verify_package_dir(package_dir: Path) -> list[str]:
                     continue
                 for ob in sc.get("objects") or []:
                     if isinstance(ob, dict):
-                        oid = str(ob.get("id", "")).strip()
+                        # "object" = referencia de catalogo (spec/scene-object-identity-v0.md);
+                        # fallback a "id" para bundles legado sin migrar.
+                        robj = ob.get("object")
+                        oid = str(robj).strip() if isinstance(robj, str) and robj.strip() else str(ob.get("id", "")).strip()
                         if oid:
                             oids.add(oid)
             if oids:

@@ -104,6 +104,11 @@ scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove
 scene.x_label,X:,X:
 scene.y_label,Y:,Y:
+scene.object_id_label,Id:,Id:
+scene.object_id_tooltip,Identificador unico de esta instancia en la escena (find_by_id en scripts). Letra inicial luego letras/digitos/_/- (max 64).,Unique identifier for this instance in the scene (find_by_id in scripts). Leading letter then letters/digits/_/- (max 64).
+scene.object_tags_label,Tags:,Tags:
+scene.object_tags_placeholder,separados por coma,comma-separated
+scene.object_tags_tooltip,Tags separados por coma para find_by_tag en scripts (hasta 6 tags de hasta 20 caracteres cada uno).,Comma-separated tags for find_by_tag in scripts (up to 6 tags of up to 20 characters each).
 scene.text_labels_group,Etiquetas de texto,Text labels
 scene.add_label,Añadir,Add
 scene.remove_label,Quitar,Remove
@@ -191,6 +196,8 @@ background.import_file_filter,Imagenes (*.png *.jpg *.jpeg *.webp *.bmp),Images 
 background.import_alpha_cutoff_label,Umbral alfa (%):,Alpha cutoff (%):
 background.import_no_background_open,Abre o crea un fondo primero.,Open or create a background first.
 background.import_load_error,No se pudo cargar la imagen: {e},Could not load the image: {e}
+mainwindow.show_asset_tree,Mostrar assets ▸,Show assets ▸
+mainwindow.hide_asset_tree,Ocultar assets ▾,Hide assets ▾
 mainwindow.section_sprites,Sprites,Sprites
 mainwindow.section_objects,Objetos,Objects
 mainwindow.section_fonts,Fuentes,Fonts

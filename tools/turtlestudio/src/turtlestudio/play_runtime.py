@@ -112,6 +112,9 @@ class ActorRuntimeState:
     col_y1: int
     sprite_id: str
     frame_count: int
+    object_id: str = ""
+    tags: tuple[str, ...] = ()
+    visible: bool = True
     animations: dict[str, str] = field(default_factory=dict)
     script_stem: str | None = None
     grounded: bool = False
@@ -138,9 +141,15 @@ def build_actor_states(
     for p in placements:
         if not isinstance(p, dict):
             continue
-        oid = str(p.get("id", "")).strip()
+        # "object" = referencia al catalogo (objects/Objects/<object>.json); fallback a "id"
+        # para escenas legado (pre spec/scene-object-identity-v0.md) donde "id" cumplia ese rol.
+        robj = p.get("object")
+        oid = str(robj).strip() if isinstance(robj, str) and robj.strip() else str(p.get("id", "")).strip()
         if not oid:
             continue
+        instance_id = str(p.get("id", "")).strip() or oid
+        tags = tuple(str(t) for t in (p.get("tags") or []) if isinstance(t, str))
+        visible = bool(p.get("visible", True))
         try:
             od = objects_mod.read_object_file(project_root, oid)
         except ValueError:
@@ -178,7 +187,10 @@ def build_actor_states(
 
         out.append(
             ActorRuntimeState(
-                id=oid,
+                id=instance_id,
+                object_id=oid,
+                tags=tags,
+                visible=visible,
                 x=x,
                 y=y,
                 pw=pw,
@@ -954,6 +966,8 @@ class PlaySession:
             )
 
         for a in self.actors:
+            if not a.visible:
+                continue
             data = self.get_sprite_data(a.sprite_id)
             if data is None:
                 continue

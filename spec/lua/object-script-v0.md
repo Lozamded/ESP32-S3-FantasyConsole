@@ -132,6 +132,38 @@ bundle ya en RAM — funcion ya preparada para eso (`turtle_actor_lua_bind_actor
 libera las referencias Lua previas antes de rebindear). La VM de **ENTRY** (`spec/lua/entry-v0.md`)
 **no** se vuelve a ejecutar en un cambio de escena — corre una sola vez, al arrancar el cartucho.
 
+### Buscar y consultar otros actores
+
+`spec/scene-object-identity-v0.md`: cada instancia de `objects[]` tiene un `id` unico (default =
+la referencia de catalogo `object` si no se edito) y una lista opcional de `tags`. Las funciones
+de abajo son de **solo lectura** — no hay forma en v0 de mover/animar a un actor distinto al que
+esta corriendo su propio `_update` (ver "Fuera de alcance" mas abajo).
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `self_id()` | Id de instancia del actor **actual** (el que esta corriendo este script). |
+| `find_by_id(id)` | Handle (entero) del actor con ese `id` de instancia, o `nil` si no existe en la escena activa. |
+| `find_by_tag(tag)` | Tabla (array, 1-based) de handles de todos los actores que tengan `tag`; vacia si ninguno matchea. |
+| `obj_posx(handle)` | X del actor en `handle`, o `nil` si el handle no es valido. |
+| `obj_posy(handle)` | Y del actor en `handle`, o `nil` si el handle no es valido. |
+| `obj_id(handle)` | Id de instancia del actor en `handle`, o `nil` si el handle no es valido. |
+| `obj_has_tag(handle, tag)` | `true` si el actor en `handle` tiene `tag`. |
+
+Ejemplo (encontrar y acercarse al jugador desde un enemigo con tag `"enemy"`):
+
+```lua
+function _update(dt)
+  local player = find_by_id("player")
+  if player then
+    local dx = obj_posx(player) - posx()
+    move((dx > 0 and 1 or -1) * 20 * dt, 0)
+  end
+end
+```
+
+Un `handle` es estable mientras la escena activa no cambie (`goto_scene` reconstruye todos los
+actores, invalida cualquier handle guardado de la escena anterior).
+
 ### Depuracion
 
 | Funcion | Descripcion |
@@ -142,6 +174,9 @@ libera las referencias Lua previas antes de rebindear). La VM de **ENTRY** (`spe
 
 - `cls`, `pix`, `spix`, `flip` (reservados al ENTRY / futuro bucle global).
 - Colision entre actores; slide en rampas (`move_and_slide`).
+- Control remoto de otro actor (mover/animar/cambiar estado vía un `handle` de
+  `find_by_id`/`find_by_tag`) — esas funciones son de solo lectura en v0, ver
+  `spec/scene-object-identity-v0.md` § "Fuera de alcance".
 - Scripts por escena **sin actor** (`scene.script` en manifest usado directamente, sin un objeto
   colocado que lo referencie via `"script"`): sigue reservado. `goto_scene` de arriba no cambia
   esto — sigue haciendo falta un actor (aunque sea invisible) para correr cualquier Lua en una

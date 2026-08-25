@@ -11,9 +11,11 @@ from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
     QFileDialog,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
+    QPushButton,
     QSplitter,
     QStackedWidget,
     QTreeWidget,
@@ -145,12 +147,26 @@ class MainWindow(QMainWindow):
         self.workspace_tabs.tab_selected.connect(self._on_workspace_tab_selected)
         outer_layout.addWidget(self.workspace_tabs)
 
+        # Arbol de assets: oculto por defecto (usa mucho ancho para lo poco que se
+        # consulta) -- este boton lo muestra/oculta; vive fuera del splitter para
+        # seguir visible aunque el arbol este oculto.
+        toggle_row = QHBoxLayout()
+        toggle_row.setContentsMargins(8, 0, 8, 4)
+        self.btn_toggle_project_tree = QPushButton(tr("mainwindow.show_asset_tree"))
+        self.btn_toggle_project_tree.setCheckable(True)
+        self.btn_toggle_project_tree.setChecked(False)
+        self.btn_toggle_project_tree.toggled.connect(self._on_toggle_project_tree)
+        toggle_row.addWidget(self.btn_toggle_project_tree)
+        toggle_row.addStretch(1)
+        outer_layout.addLayout(toggle_row)
+
         splitter = QSplitter(Qt.Orientation.Horizontal)
         outer_layout.addWidget(splitter, stretch=1)
 
         self.project_tree = QTreeWidget()
         self.project_tree.setHeaderHidden(True)
         self.project_tree.itemDoubleClicked.connect(self._on_tree_double_click)
+        self.project_tree.setVisible(False)
         splitter.addWidget(self.project_tree)
 
         self.center_stack = _CenterStack()
@@ -365,6 +381,12 @@ class MainWindow(QMainWindow):
         self.center_stack.setCurrentWidget(self.scene_editor)
 
     # -- project tree ---------------------------------------------------------
+
+    def _on_toggle_project_tree(self, checked: bool) -> None:
+        self.project_tree.setVisible(checked)
+        self.btn_toggle_project_tree.setText(
+            tr("mainwindow.hide_asset_tree") if checked else tr("mainwindow.show_asset_tree")
+        )
 
     def _refresh_project_tree(self) -> None:
         self.project_tree.clear()

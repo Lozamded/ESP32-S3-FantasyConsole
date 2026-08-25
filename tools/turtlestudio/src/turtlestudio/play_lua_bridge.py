@@ -85,6 +85,13 @@ class ActorLuaBridge:
         g.text = self._l_text
         g.text_width = self._l_text_width
         g.goto_scene = self._l_goto_scene
+        g.find_by_id = self._l_find_by_id
+        g.find_by_tag = self._l_find_by_tag
+        g.obj_posx = self._l_obj_posx
+        g.obj_posy = self._l_obj_posy
+        g.obj_id = self._l_obj_id
+        g.obj_has_tag = self._l_obj_has_tag
+        g.self_id = self._l_self_id
 
     # -- puente, firmas verificadas contra turtle_actor_lua.cpp -----------
 
@@ -153,6 +160,51 @@ class ActorLuaBridge:
         turtle_scene_request_switch en firmware -- solo guarda el pedido, play_widget.py lo
         aplica despues de terminar el tick de este fotograma."""
         self.session.request_scene_switch(str(scene_id))
+
+    # -- spec/scene-object-identity-v0.md: buscar/consultar otros actores -----------
+    # Handle = indice 1-based en session.actors (equivalente al indice de s_actors en
+    # turtle_scene.cpp, ver turtle_scene_find_actor_by_id/turtle_scene_actor_pos_at).
+
+    def _actor_at_handle(self, handle: Any) -> ActorRuntimeState | None:
+        try:
+            idx = int(handle) - 1
+        except (TypeError, ValueError):
+            return None
+        if 0 <= idx < len(self.session.actors):
+            return self.session.actors[idx]
+        return None
+
+    def _l_find_by_id(self, oid: Any) -> int | None:
+        oid_s = str(oid)
+        for i, a in enumerate(self.session.actors):
+            if a.id == oid_s:
+                return i + 1
+        return None
+
+    def _l_find_by_tag(self, tag: Any) -> Any:
+        tag_s = str(tag)
+        handles = [i + 1 for i, a in enumerate(self.session.actors) if tag_s in a.tags]
+        return self.lua.table_from(handles)
+
+    def _l_obj_posx(self, handle: Any) -> int | None:
+        a = self._actor_at_handle(handle)
+        return int(a.x) if a is not None else None
+
+    def _l_obj_posy(self, handle: Any) -> int | None:
+        a = self._actor_at_handle(handle)
+        return int(a.y) if a is not None else None
+
+    def _l_obj_id(self, handle: Any) -> str | None:
+        a = self._actor_at_handle(handle)
+        return a.id if a is not None else None
+
+    def _l_obj_has_tag(self, handle: Any, tag: Any) -> bool:
+        a = self._actor_at_handle(handle)
+        return a is not None and str(tag) in a.tags
+
+    def _l_self_id(self) -> str | None:
+        a = self.current_actor
+        return a.id if a is not None else None
 
     # -- bind / tick --------------------------------------------------
 

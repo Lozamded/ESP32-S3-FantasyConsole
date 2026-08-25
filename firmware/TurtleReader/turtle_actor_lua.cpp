@@ -154,6 +154,92 @@ static int l_text_width(lua_State* L) {
   return 1;
 }
 
+// spec/scene-object-identity-v0.md: buscar/consultar otros actores por id/tag unico de
+// instancia. Handle = indice 1-based (convencion Lua) devuelto por find_by_id/find_by_tag;
+// las funciones obj_* lo convierten de vuelta a 0-based antes de llamar a turtle_scene.cpp.
+
+/** self_id() -> id de la instancia cuyo script se esta ejecutando este fotograma. */
+static int l_self_id(lua_State* L) {
+  char buf[40];
+  if (!turtle_scene_actor_id(buf, sizeof buf)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushstring(L, buf);
+  return 1;
+}
+
+/** find_by_id(id) -> handle (entero) o nil si no hay ningun actor con ese id en la escena. */
+static int l_find_by_id(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  int idx = -1;
+  if (!turtle_scene_find_actor_by_id(id, &idx)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushinteger(L, idx + 1);
+  return 1;
+}
+
+/** find_by_tag(tag) -> tabla (array) de handles, vacia si ninguno matchea. */
+static int l_find_by_tag(lua_State* L) {
+  const char* tag = luaL_checkstring(L, 1);
+  int idxs[kMaxActors];
+  const int n = turtle_scene_find_actors_by_tag(tag, idxs, kMaxActors);
+  lua_createtable(L, n, 0);
+  for (int i = 0; i < n; ++i) {
+    lua_pushinteger(L, idxs[i] + 1);
+    lua_rawseti(L, -2, i + 1);
+  }
+  return 1;
+}
+
+/** obj_posx(handle) -> X del actor en `handle`, o nil si el handle no es valido. */
+static int l_obj_posx(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  int x = 0;
+  int y = 0;
+  if (!turtle_scene_actor_pos_at(handle - 1, &x, &y)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushinteger(L, x);
+  return 1;
+}
+
+/** obj_posy(handle) -> Y del actor en `handle`, o nil si el handle no es valido. */
+static int l_obj_posy(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  int x = 0;
+  int y = 0;
+  if (!turtle_scene_actor_pos_at(handle - 1, &x, &y)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushinteger(L, y);
+  return 1;
+}
+
+/** obj_id(handle) -> id de instancia del actor en `handle`, o nil si el handle no es valido. */
+static int l_obj_id(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  char buf[40];
+  if (!turtle_scene_actor_id_at(handle - 1, buf, sizeof buf)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushstring(L, buf);
+  return 1;
+}
+
+/** obj_has_tag(handle, tag) -> true si el actor en `handle` tiene `tag`. */
+static int l_obj_has_tag(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  const char* tag = luaL_checkstring(L, 2);
+  lua_pushboolean(L, turtle_scene_actor_has_tag_at(handle - 1, tag));
+  return 1;
+}
+
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
@@ -192,6 +278,27 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_goto_scene);
   lua_setglobal(L, "goto_scene");
+
+  lua_pushcfunction(L, l_self_id);
+  lua_setglobal(L, "self_id");
+
+  lua_pushcfunction(L, l_find_by_id);
+  lua_setglobal(L, "find_by_id");
+
+  lua_pushcfunction(L, l_find_by_tag);
+  lua_setglobal(L, "find_by_tag");
+
+  lua_pushcfunction(L, l_obj_posx);
+  lua_setglobal(L, "obj_posx");
+
+  lua_pushcfunction(L, l_obj_posy);
+  lua_setglobal(L, "obj_posy");
+
+  lua_pushcfunction(L, l_obj_id);
+  lua_setglobal(L, "obj_id");
+
+  lua_pushcfunction(L, l_obj_has_tag);
+  lua_setglobal(L, "obj_has_tag");
 }
 
 static bool load_script_update_ref(int actor_index, const char* stem) {

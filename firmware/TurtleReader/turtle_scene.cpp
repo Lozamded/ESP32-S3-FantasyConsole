@@ -75,10 +75,19 @@ struct TileLayer {
   bool has_solid_tiles;
 };
 
+/** spec/scene-object-identity-v0.md: `obj_id` es la referencia de catalogo (objects/Objects/
+ *  <obj_id>.json, define sprite/script) -- varias instancias pueden compartir el mismo
+ *  obj_id (ej. varios "gear"). `instance_id` es el identificador UNICO de esta instancia
+ *  dentro de la escena (find_by_id/camera.target); TurtleStudio garantiza unicidad al
+ *  exportar, asi que el firmware no deduplica -- solo hace fallback a obj_id si falta (escena
+ *  legado sin migrar). `tags` es CSV sin espacios (ver json_extract_string_array_as_csv). */
 struct Placement {
   char obj_id[32];
+  char instance_id[40];
+  char tags[128];
   int x;
   int y;
+  bool visible;  // spec/scene-object-visibility-v0.md: default true si falta en el JSON.
 };
 
 constexpr int kMaxTextLabels = 16;
@@ -137,6 +146,9 @@ struct BgImageLayer {
 
 struct SceneActor {
   char obj_id[32];
+  char instance_id[40];  // spec/scene-object-identity-v0.md: ver Placement::instance_id
+  char tags[128];        // ver Placement::tags
+  bool visible;           // spec/scene-object-visibility-v0.md: ver Placement::visible
   char sprite_id[48];
   char anim_name[33];
   char script_stem[40];
@@ -679,6 +691,104 @@ static bool json_extract_string_for_key(const char* s, const char* e, const char
   }
   out[i] = '\0';
   return true;
+}
+
+/** spec/scene-object-identity-v0.md: extrae un array JSON de strings bajo `key_name` (ej.
+ *  "tags": ["enemy","flying"]) como CSV sin espacios en `out` (usado por find_by_tag via
+ *  tags_csv_has -- evita mantener un array real en runtime, un solo recorrido por tag alcanza).
+ *  Tokens vacios/demasiado largos se saltean; no falla la escena si faltan tags. */
+static bool json_extract_string_array_as_csv(const char* s, const char* e, const char* key_name,
+                                              char* out, size_t out_sz) {
+  out[0] = '\0';
+  char pattern[40];
+  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
+  const char* p = strstr_bounded(s, e, pattern);
+  if (!p) {
+    return false;
+  }
+  p += strlen(pattern);
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= e || *p != ':') {
+    return false;
+  }
+  ++p;
+  while (p < e && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= e || *p != '[') {
+    return false;
+  }
+  const char* arr_end = json_array_end(p);
+  if (!arr_end) {
+    return false;
+  }
+  ++p;
+  size_t out_len = 0;
+  while (p < arr_end && *p != ']') {
+    while (p < arr_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= arr_end || *p != '"') {
+      break;
+    }
+    ++p;
+    char tok[24];
+    size_t ti = 0;
+    while (p < arr_end && *p != '"' && ti + 1 < sizeof(tok)) {
+      if (*p == '\\' && p + 1 < arr_end) {
+        p += 2;
+        continue;
+      }
+      tok[ti++] = *p++;
+    }
+    tok[ti] = '\0';
+    while (p < arr_end && *p != '"') {  // token demasiado largo: descarta el resto del string
+      ++p;
+    }
+    if (p < arr_end && *p == '"') {
+      ++p;
+    }
+    if (ti == 0) {
+      continue;
+    }
+    const size_t need = ti + (out_len > 0 ? 1 : 0);
+    if (out_len + need + 1 > out_sz) {
+      break;
+    }
+    if (out_len > 0) {
+      out[out_len++] = ',';
+    }
+    memcpy(out + out_len, tok, ti);
+    out_len += ti;
+    out[out_len] = '\0';
+  }
+  return true;
+}
+
+/** true si `tag` aparece como token completo (separado por comas) en `csv` (ver
+ *  json_extract_string_array_as_csv) -- usado por find_by_tag en turtle_actor_lua.cpp. */
+static bool tags_csv_has(const char* csv, const char* tag) {
+  if (!csv || !csv[0] || !tag || !tag[0]) {
+    return false;
+  }
+  const size_t tag_len = strlen(tag);
+  const char* p = csv;
+  while (*p) {
+    const char* start = p;
+    while (*p && *p != ',') {
+      ++p;
+    }
+    const size_t len = static_cast<size_t>(p - start);
+    if (len == tag_len && strncmp(start, tag, tag_len) == 0) {
+      return true;
+    }
+    if (*p == ',') {
+      ++p;
+    }
+  }
+  return false;
 }
 
 static bool json_extract_int_for_key(const char* s, const char* e, const char* key_name, int* outv) {
@@ -2407,18 +2517,21 @@ static void parse_scene_bg_image_layers(const char* sc_start, const char* sc_end
 }
 
 static void resolve_player_actor_index(void) {
+  // spec/scene-object-identity-v0.md: camera.target (y el fallback "player"/"character" de
+  // abajo) matchean contra instance_id (identidad UNICA de la instancia), no obj_id
+  // (referencia de catalogo, compartida por varias instancias -- ej. varios "gear").
   s_player_actor = -1;
   if (s_camera_target[0]) {
     for (int i = 0; i < s_actor_count; ++i) {
-      if (strcmp(s_actors[i].obj_id, s_camera_target) == 0) {
+      if (strcmp(s_actors[i].instance_id, s_camera_target) == 0) {
         s_player_actor = i;
         return;
       }
     }
   }
   for (int i = 0; i < s_actor_count; ++i) {
-    if (strcmp(s_actors[i].obj_id, "player") == 0 ||
-        strcmp(s_actors[i].obj_id, "character") == 0) {
+    if (strcmp(s_actors[i].instance_id, "player") == 0 ||
+        strcmp(s_actors[i].instance_id, "character") == 0) {
       s_player_actor = i;
       return;
     }
@@ -3447,9 +3560,27 @@ static bool parse_placements(const char* scene_start, const char* scene_end, Pla
     if (n >= kMaxPlacements) {
       return false;
     }
-    if (!json_extract_string_for_key(ob, oe, "id", out[n].obj_id, sizeof(out[n].obj_id))) {
-      return false;
+    // spec/scene-object-identity-v0.md: "object" = referencia de catalogo; fallback a "id"
+    // para escenas legado (pre-migracion) donde "id" cumplia ese rol y no habia identidad
+    // propia por instancia. TurtleStudio garantiza unicidad de "id" al exportar -- el
+    // firmware no deduplica, solo hace fallback a obj_id si "id" falta.
+    if (!json_extract_string_for_key(ob, oe, "object", out[n].obj_id, sizeof(out[n].obj_id))) {
+      if (!json_extract_string_for_key(ob, oe, "id", out[n].obj_id, sizeof(out[n].obj_id))) {
+        return false;
+      }
+      out[n].instance_id[0] = '\0';
+    } else if (!json_extract_string_for_key(ob, oe, "id", out[n].instance_id,
+                                             sizeof(out[n].instance_id))) {
+      out[n].instance_id[0] = '\0';
     }
+    if (!out[n].instance_id[0]) {
+      snprintf(out[n].instance_id, sizeof(out[n].instance_id), "%s", out[n].obj_id);
+    }
+    out[n].tags[0] = '\0';
+    json_extract_string_array_as_csv(ob, oe, "tags", out[n].tags, sizeof(out[n].tags));
+    // spec/scene-object-visibility-v0.md: "visible" opcional, default true si falta.
+    out[n].visible = true;
+    json_extract_bool_for_key(ob, oe, "visible", &out[n].visible);
     if (!json_extract_int_for_key(ob, oe, "x", &out[n].x)) {
       return false;
     }
@@ -3917,6 +4048,9 @@ static bool init_actor_from_placement(const char* json, const char* json_end,
   }
 
   snprintf(actor->obj_id, sizeof actor->obj_id, "%s", pl->obj_id);
+  snprintf(actor->instance_id, sizeof actor->instance_id, "%s", pl->instance_id);
+  snprintf(actor->tags, sizeof actor->tags, "%s", pl->tags);
+  actor->visible = pl->visible;
   actor->script_stem[0] = '\0';
   json_extract_string_for_key(obj_inner, obj_inner_end, "script", actor->script_stem,
                               sizeof actor->script_stem);
@@ -4250,6 +4384,12 @@ static void draw_all_actors(void) {
 
     for (int i = 0; i < s_actor_count; ++i) {
       SceneActor* a = &s_actors[i];
+      // spec/scene-object-visibility-v0.md: un actor invisible se trata igual que uno fuera de
+      // camara -- nunca se carga/blittea, pero sigue recibiendo _update(dt) (tick_actors/Lua no
+      // consultan `visible`, solo el dibujado).
+      if (!a->visible) {
+        continue;
+      }
       int bx0 = 0, by0 = 0, bw = 0, bh = 0;
       actor_sprite_scene_bounds(a, &bx0, &by0, &bw, &bh);
       // Fuera de la ventana de camara: no vale la pena cargar/blittear el sprite.
@@ -4285,8 +4425,11 @@ static void draw_all_actors(void) {
 
     int cx0 = 0, cy0 = 0, cw = 0, ch = 0;
     actor_sprite_scene_bounds(a, &cx0, &cy0, &cw, &ch);
-    const bool in_view = rects_overlap(cx0, cy0, cx0 + cw - 1, cy0 + ch - 1, 0, 0, kSceneW - 1,
-                                       kSceneH - 1);
+    // spec/scene-object-visibility-v0.md: invisible se trata igual que fuera de camara (mas
+    // abajo esa rama limpia prev_blit/text_prev_blit y marca skip_draw) -- nunca se blittea,
+    // pero sigue recibiendo _update(dt).
+    const bool in_view = a->visible && rects_overlap(cx0, cy0, cx0 + cw - 1, cy0 + ch - 1, 0, 0,
+                                                      kSceneW - 1, kSceneH - 1);
     const bool sprite_dirty = !cache->pixels_valid || strcmp(cache->sprite_id, a->sprite_id) != 0 ||
                               cache->frame_index != a->frame_index;
     const bool moved = a->x != cache->last_x || a->y != cache->last_y;
@@ -4785,6 +4928,71 @@ bool turtle_scene_actor_pos(int* x, int* y) {
   *x = a->x;
   *y = a->y;
   return true;
+}
+
+/** self_id() en Lua: id de la instancia cuyo script se esta ejecutando este fotograma. */
+bool turtle_scene_actor_id(char* out, size_t out_cap) {
+  if (!out || out_cap == 0 || s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return false;
+  }
+  snprintf(out, out_cap, "%s", s_actors[s_lua_actor_target].instance_id);
+  return true;
+}
+
+/** find_by_id(id) en Lua. Handle = indice en s_actors (0-based aqui; turtle_actor_lua.cpp lo
+ *  expone como 1-based, convencion Lua). Estable mientras no cambie de escena (ver
+ *  spec/lua/object-script-v0.md "Cambio de escena"). */
+bool turtle_scene_find_actor_by_id(const char* id, int* out_index) {
+  if (!id || !id[0] || !out_index) {
+    return false;
+  }
+  for (int i = 0; i < s_actor_count; ++i) {
+    if (strcmp(s_actors[i].instance_id, id) == 0) {
+      *out_index = i;
+      return true;
+    }
+  }
+  return false;
+}
+
+/** find_by_tag(tag) en Lua: llena out_indices (hasta max_out) con los indices de actores que
+ *  tengan `tag`, en orden de s_actors. Devuelve cuantos encontro. */
+int turtle_scene_find_actors_by_tag(const char* tag, int* out_indices, int max_out) {
+  if (!tag || !tag[0] || !out_indices || max_out <= 0) {
+    return 0;
+  }
+  int n = 0;
+  for (int i = 0; i < s_actor_count && n < max_out; ++i) {
+    if (tags_csv_has(s_actors[i].tags, tag)) {
+      out_indices[n++] = i;
+    }
+  }
+  return n;
+}
+
+bool turtle_scene_actor_pos_at(int index, int* x, int* y) {
+  if (!x || !y || index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  const SceneActor* a = &s_actors[index];
+  *x = a->x;
+  *y = a->y;
+  return true;
+}
+
+bool turtle_scene_actor_id_at(int index, char* out, size_t out_cap) {
+  if (!out || out_cap == 0 || index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  snprintf(out, out_cap, "%s", s_actors[index].instance_id);
+  return true;
+}
+
+bool turtle_scene_actor_has_tag_at(int index, const char* tag) {
+  if (index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  return tags_csv_has(s_actors[index].tags, tag);
 }
 
 void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy) {

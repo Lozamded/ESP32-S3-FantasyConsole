@@ -347,7 +347,10 @@ def collect_studio_bundle_files(
         if isinstance(raw_objs, list):
             for item in raw_objs:
                 if isinstance(item, dict):
-                    oid = str(item.get("id", "")).strip()
+                    # "object" = referencia al catalogo (spec/scene-object-identity-v0.md);
+                    # fallback a "id" para escenas legado (sin migrar via el editor todavia).
+                    robj = item.get("object")
+                    oid = str(robj).strip() if isinstance(robj, str) and robj.strip() else str(item.get("id", "")).strip()
                 elif isinstance(item, str):
                     oid = item.strip()
                 else:

@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QInputDialog,
@@ -74,8 +75,10 @@ from turtlestudio.palette_policy import (
 from turtlestudio.project import (
     DEFAULT_INITIAL_SCENE_ID,
     MANIFEST_NAME,
+    MAX_TAGS_PER_PLACEMENT,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
+    TAG_MAX_LEN,
     TEXT_LABEL_BLINK_MS_MAX,
     TEXT_LABEL_TEXT_MAX_LEN,
     WORLD_STEPS_MAX,
@@ -84,12 +87,15 @@ from turtlestudio.project import (
     clamp_world_steps,
     ensure_scene_script_file,
     manifest_path,
+    next_unique_placement_id,
     parse_background_layers,
     parse_scene_objects_raw,
     parse_scene_text_labels_raw,
     parse_viewport_from_manifest,
     save_project,
     scene_world_pixel_size,
+    validate_object_tags,
+    validate_placement_instance_id,
     validate_text_label_id,
 )
 from turtlestudio.scene_camera import (
@@ -339,17 +345,10 @@ def _resolve_object_sprite_preview(project_root: Path, object_id: str) -> dict[s
     return {"mode": "solid", "pw": pw, "ph": ph, "rgb": (r, g, b), "origin_x": ox, "origin_y": oy}
 
 
-def _object_drag_preview_pixmap(project_root: Path, object_id: str) -> tuple[QPixmap, int, int] | None:
-    """Standalone sprite render for the live drag-and-drop ghost (see SceneCanvas
-    dragMoveEvent/paintEvent): without this, the drop point had zero visual feedback
-    even though it lands as the sprite's bottom-left anchor, not its visual center --
-    users would systematically drop objects floating above where they meant them to sit
-    (reported: placeholders resting on floor tiles in editor showed a full tile above the
-    floor once played, because the anchor, not the sprite's look, was what got aimed)."""
-    info = _resolve_object_sprite_preview(project_root, object_id)
+def _render_object_sprite_qimage(info: dict[str, Any]) -> QImage:
+    """RGBA render of an already-resolved object sprite (see _resolve_object_sprite_preview),
+    at its native pixel size -- shared by the canvas drag ghost and the objects-list icons."""
     pw, ph = int(info["pw"]), int(info["ph"])
-    if pw <= 0 or ph <= 0:
-        return None
     rgba = [0.0] * (pw * ph * 4)
     if info["mode"] == "indexed":
         _blit_indexed_rows_scene(rgba, pw, ph, 0, 0, info["rows"], info["rgbs"])
@@ -360,8 +359,34 @@ def _object_drag_preview_pixmap(project_root: Path, object_id: str) -> tuple[QPi
             rgba[i + 1] = g
             rgba[i + 2] = b
             rgba[i + 3] = 1.0
-    img = _rgba_floats_to_qimage(rgba, pw, ph)
+    return _rgba_floats_to_qimage(rgba, pw, ph)
+
+
+def _object_drag_preview_pixmap(project_root: Path, object_id: str) -> tuple[QPixmap, int, int] | None:
+    """Standalone sprite render for the live drag-and-drop ghost (see SceneCanvas
+    dragMoveEvent/paintEvent): without this, the drop point had zero visual feedback
+    even though it lands as the sprite's bottom-left anchor, not its visual center --
+    users would systematically drop objects floating above where they meant them to sit
+    (reported: placeholders resting on floor tiles in editor showed a full tile above the
+    floor once played, because the anchor, not the sprite's look, was what got aimed)."""
+    info = _resolve_object_sprite_preview(project_root, object_id)
+    if int(info["pw"]) <= 0 or int(info["ph"]) <= 0:
+        return None
+    img = _render_object_sprite_qimage(info)
     return QPixmap.fromImage(img), int(info["origin_x"]), int(info["origin_y"])
+
+
+def _object_list_icon(project_root: Path, object_id: str, *, size: int = 20) -> QIcon:
+    """Small preview icon for the placed-objects list (self.list_objects) -- same sprite
+    render as the drag ghost, scaled with nearest-neighbor so pixel art stays crisp."""
+    info = _resolve_object_sprite_preview(project_root, object_id)
+    if int(info["pw"]) <= 0 or int(info["ph"]) <= 0:
+        return QIcon()
+    img = _render_object_sprite_qimage(info)
+    pix = QPixmap.fromImage(img).scaled(
+        size, size, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.FastTransformation
+    )
+    return QIcon(pix)
 
 
 def _resolve_label_font_render_data(project_root: Path, font_id: str) -> dict[str, Any] | None:
@@ -458,7 +483,7 @@ def _paint_scene_objects(
     for p in placements:
         if not isinstance(p, dict):
             continue
-        oid = str(p.get("id", "")).strip()
+        oid = str(p.get("object", "")).strip()
         if not oid:
             continue
         try:
@@ -468,13 +493,17 @@ def _paint_scene_objects(
             continue
         sx = max(0, min(fw - 1, sx))
         sy = max(0, min(fh - 1, sy))
-        info = _resolve_object_sprite_preview(project_root, oid)
-        bx, by = sprite_blit_bottom_left(sx, sy, int(info["origin_x"]), int(info["origin_y"]))
-        if info["mode"] == "indexed":
-            _blit_indexed_rows_scene(rgba, fw, fh, bx, by, info["rows"], info["rgbs"])
-        else:
-            r, g, b = info["rgb"]
-            _fill_rect_rgba_region(rgba, fw, fh, bx, by, int(info["pw"]), int(info["ph"]), r, g, b)
+        # spec/scene-object-visibility-v0.md: invisible al arrancar la escena -- no se blittea
+        # el sprite en la vista previa (coincide con lo que hace el firmware/Play), pero la cruz
+        # de origen se deja igual para que el objeto siga siendo ubicable/clickeable en el editor.
+        if bool(p.get("visible", True)):
+            info = _resolve_object_sprite_preview(project_root, oid)
+            bx, by = sprite_blit_bottom_left(sx, sy, int(info["origin_x"]), int(info["origin_y"]))
+            if info["mode"] == "indexed":
+                _blit_indexed_rows_scene(rgba, fw, fh, bx, by, info["rows"], info["rgbs"])
+            else:
+                r, g, b = info["rgb"]
+                _fill_rect_rgba_region(rgba, fw, fh, bx, by, int(info["pw"]), int(info["ph"]), r, g, b)
         _draw_cross_on_rgba(rgba, fw, fh, sx, sy)
 
 
@@ -574,7 +603,7 @@ def render_scene_rgba(
     if selected_object_index is not None and 0 <= selected_object_index < len(placements):
         sel = placements[selected_object_index]
         if isinstance(sel, dict):
-            sel_oid = str(sel.get("id", "")).strip()
+            sel_oid = str(sel.get("object", "")).strip()
             if sel_oid:
                 try:
                     sel_sx = int(sel.get("x", 0))
@@ -1012,7 +1041,10 @@ def _normalize_row(
     tile_layers = parse_tile_layers(r.get("tile_layers"), tile_px=tile_px, world_w=ww, world_h=wh)
     r["tile_layers"] = tile_layers_to_json_list(tile_layers)
     placements = parse_scene_objects_raw(r.get("objects"), world_w=ww, world_h=wh)
-    r["objects"] = [{"id": p.id, "x": p.x, "y": p.y} for p in placements]
+    r["objects"] = [
+        {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible}
+        for p in placements
+    ]
     labels = parse_scene_text_labels_raw(r.get("text_labels"), world_w=ww, world_h=wh)
     r["text_labels"] = [
         {
@@ -1511,29 +1543,28 @@ class SceneEditorWidget(QWidget):
         section = CollapsibleSection(tr("scene.objects_group"))
         layout = section.content_layout()
         self.list_objects = QListWidget()
+        self.list_objects.setIconSize(QSize(20, 20))
         self.list_objects.currentRowChanged.connect(self._on_object_selected)
+        self.list_objects.itemChanged.connect(self._on_object_visibility_changed)
         layout.addWidget(self.list_objects)
 
-        layout.addWidget(QLabel(tr("scene.object_catalog_label")))
-        self.edit_object_filter = QLineEdit()
-        self.edit_object_filter.setPlaceholderText(tr("scene.object_filter_placeholder"))
-        self.edit_object_filter.textChanged.connect(self._apply_object_filter)
-        layout.addWidget(self.edit_object_filter)
+        id_row = QHBoxLayout()
+        id_row.addWidget(QLabel(tr("scene.object_id_label")))
+        self.edit_object_id = QLineEdit()
+        self.edit_object_id.setToolTip(tr("scene.object_id_tooltip"))
+        self.edit_object_id.editingFinished.connect(self._on_object_id_edited)
+        id_row.addWidget(self.edit_object_id)
+        layout.addLayout(id_row)
 
-        self._object_catalog_ids: list[str] = []
-        self.list_object_catalog = _ObjectCatalogList()
-        self.list_object_catalog.setMaximumHeight(96)
-        self.list_object_catalog.setToolTip(tr("scene.object_catalog_drag_hint"))
-        layout.addWidget(self.list_object_catalog)
-
-        add_row = QHBoxLayout()
-        self.btn_add_object = QPushButton(tr("scene.add_object"))
-        self.btn_add_object.clicked.connect(self._action_add_object)
-        add_row.addWidget(self.btn_add_object)
-        self.btn_remove_object = QPushButton(tr("scene.remove_object"))
-        self.btn_remove_object.clicked.connect(self._action_remove_object)
-        add_row.addWidget(self.btn_remove_object)
-        layout.addLayout(add_row)
+        tags_row = QHBoxLayout()
+        tags_row.addWidget(QLabel(tr("scene.object_tags_label")))
+        self.edit_object_tags = QLineEdit()
+        self.edit_object_tags.setMaxLength((TAG_MAX_LEN + 2) * MAX_TAGS_PER_PLACEMENT)
+        self.edit_object_tags.setPlaceholderText(tr("scene.object_tags_placeholder"))
+        self.edit_object_tags.setToolTip(tr("scene.object_tags_tooltip"))
+        self.edit_object_tags.editingFinished.connect(self._on_object_tags_edited)
+        tags_row.addWidget(self.edit_object_tags)
+        layout.addLayout(tags_row)
 
         pos_row = QHBoxLayout()
         pos_row.addWidget(QLabel(tr("scene.x_label")))
@@ -1547,6 +1578,33 @@ class SceneEditorWidget(QWidget):
         self.spin_obj_y.valueChanged.connect(self._on_object_xy_changed)
         pos_row.addWidget(self.spin_obj_y)
         layout.addLayout(pos_row)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+
+        layout.addWidget(QLabel(tr("scene.object_catalog_label")))
+        self.edit_object_filter = QLineEdit()
+        self.edit_object_filter.setPlaceholderText(tr("scene.object_filter_placeholder"))
+        self.edit_object_filter.textChanged.connect(self._apply_object_filter)
+        layout.addWidget(self.edit_object_filter)
+
+        self._object_catalog_ids: list[str] = []
+        self.list_object_catalog = _ObjectCatalogList()
+        self.list_object_catalog.setIconSize(QSize(20, 20))
+        self.list_object_catalog.setMaximumHeight(96)
+        self.list_object_catalog.setToolTip(tr("scene.object_catalog_drag_hint"))
+        layout.addWidget(self.list_object_catalog)
+
+        add_row = QHBoxLayout()
+        self.btn_add_object = QPushButton(tr("scene.add_object"))
+        self.btn_add_object.clicked.connect(self._action_add_object)
+        add_row.addWidget(self.btn_add_object)
+        self.btn_remove_object = QPushButton(tr("scene.remove_object"))
+        self.btn_remove_object.clicked.connect(self._action_remove_object)
+        add_row.addWidget(self.btn_remove_object)
+        layout.addLayout(add_row)
         return section
 
     def _build_text_labels_group(self) -> CollapsibleSection:
@@ -1733,6 +1791,8 @@ class SceneEditorWidget(QWidget):
             if row is None:
                 self.lbl_scene_id.setText("—")
                 self.list_objects.clear()
+                self.edit_object_id.clear()
+                self.edit_object_tags.clear()
                 self.list_labels.clear()
                 self.canvas.set_frame(QImage(), 0, 0)
                 self.btn_create_script.setVisible(False)
@@ -1859,8 +1919,18 @@ class SceneEditorWidget(QWidget):
         ids = [oid for oid in self._object_catalog_ids if needle in oid.lower()] if needle else self._object_catalog_ids
         self.list_object_catalog.blockSignals(True)
         self.list_object_catalog.clear()
-        self.list_object_catalog.addItems(ids)
+        for oid in ids:
+            icon = _object_list_icon(self.project_root, oid)
+            self.list_object_catalog.addItem(QListWidgetItem(icon, oid))
         self.list_object_catalog.blockSignals(False)
+
+    @staticmethod
+    def _object_list_item_text(p: dict[str, Any]) -> str:
+        iid = str(p.get("id", ""))
+        oid = str(p.get("object", ""))
+        tags = [str(t) for t in (p.get("tags") or []) if isinstance(t, str)]
+        tag_suffix = f"  #{','.join(tags)}" if tags else ""
+        return f"{iid}  [{oid}]  ({p.get('x', 0)}, {p.get('y', 0)}){tag_suffix}"
 
     def _load_objects(self, row: dict[str, Any]) -> None:
         self.list_objects.blockSignals(True)
@@ -1868,7 +1938,11 @@ class SceneEditorWidget(QWidget):
         for p in row.get("objects") or []:
             if not isinstance(p, dict):
                 continue
-            self.list_objects.addItem(f"{p.get('id', '')}  ({p.get('x', 0)}, {p.get('y', 0)})")
+            icon = _object_list_icon(self.project_root, str(p.get("object", "")))
+            item = QListWidgetItem(icon, self._object_list_item_text(p))
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if p.get("visible", True) else Qt.CheckState.Unchecked)
+            self.list_objects.addItem(item)
         self.list_objects.blockSignals(False)
 
     def _refresh_label_font_combo(self) -> None:
@@ -2635,7 +2709,9 @@ class SceneEditorWidget(QWidget):
         if not isinstance(objs, list):
             objs = []
             row["objects"] = objs
-        objs.append({"id": oid, "x": x, "y": y})
+        existing_ids = {str(o.get("id", "")) for o in objs if isinstance(o, dict)}
+        iid = next_unique_placement_id(oid, existing_ids)
+        objs.append({"object": oid, "id": iid, "x": x, "y": y, "tags": [], "visible": True})
         self._mark_dirty()
         self._load_objects(row)
         self._refresh_canvas()
@@ -2652,6 +2728,21 @@ class SceneEditorWidget(QWidget):
             self._load_objects(row)
             self._refresh_canvas()
 
+    def _on_object_visibility_changed(self, item: QListWidgetItem) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_objects.row(item)
+        objs = row.get("objects") or []
+        if not (0 <= idx < len(objs)):
+            return
+        visible = item.checkState() == Qt.CheckState.Checked
+        if bool(objs[idx].get("visible", True)) == visible:
+            return
+        objs[idx]["visible"] = visible
+        self._mark_dirty()
+        self._refresh_canvas()
+
     def _on_object_selected(self, index: int) -> None:
         row = self._current_row()
         if row is None:
@@ -2665,6 +2756,13 @@ class SceneEditorWidget(QWidget):
             self.spin_obj_y.setValue(int(p.get("y", 0)))
             self.spin_obj_x.blockSignals(False)
             self.spin_obj_y.blockSignals(False)
+            self.edit_object_id.blockSignals(True)
+            self.edit_object_id.setText(str(p.get("id", "")))
+            self.edit_object_id.blockSignals(False)
+            tags = [str(t) for t in (p.get("tags") or []) if isinstance(t, str)]
+            self.edit_object_tags.blockSignals(True)
+            self.edit_object_tags.setText(", ".join(tags))
+            self.edit_object_tags.blockSignals(False)
         self._refresh_canvas()
 
     def _on_object_xy_changed(self, _value: int) -> None:
@@ -2678,7 +2776,51 @@ class SceneEditorWidget(QWidget):
         objs[idx]["x"] = self.spin_obj_x.value()
         objs[idx]["y"] = self.spin_obj_y.value()
         self.list_objects.blockSignals(True)
-        self.list_objects.item(idx).setText(f"{objs[idx]['id']}  ({objs[idx]['x']}, {objs[idx]['y']})")
+        self.list_objects.item(idx).setText(self._object_list_item_text(objs[idx]))
+        self.list_objects.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _on_object_id_edited(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_objects.currentRow()
+        objs = row.get("objects") or []
+        if not (0 <= idx < len(objs)):
+            return
+        raw_id = self.edit_object_id.text().strip()
+        other_ids = {str(o.get("id", "")) for i, o in enumerate(objs) if i != idx and isinstance(o, dict)}
+        try:
+            iid = validate_placement_instance_id(raw_id)
+        except ValueError:
+            iid = ""
+        if not iid or iid in other_ids:
+            # Invalido o duplicado: se ignora el cambio, vuelve a mostrar el id actual
+            # (mismo criterio tolerante que _on_label_fields_changed con el id de etiqueta).
+            self.edit_object_id.setText(str(objs[idx].get("id", "")))
+            return
+        objs[idx]["id"] = iid
+        self.list_objects.blockSignals(True)
+        self.list_objects.item(idx).setText(self._object_list_item_text(objs[idx]))
+        self.list_objects.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _on_object_tags_edited(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_objects.currentRow()
+        objs = row.get("objects") or []
+        if not (0 <= idx < len(objs)):
+            return
+        raw_tags = [t.strip() for t in self.edit_object_tags.text().split(",")]
+        tags = list(validate_object_tags([t for t in raw_tags if t]))
+        objs[idx]["tags"] = tags
+        self.edit_object_tags.setText(", ".join(tags))
+        self.list_objects.blockSignals(True)
+        self.list_objects.item(idx).setText(self._object_list_item_text(objs[idx]))
         self.list_objects.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
@@ -2802,7 +2944,7 @@ class SceneEditorWidget(QWidget):
             p = placements[idx]
             if not isinstance(p, dict):
                 continue
-            oid = str(p.get("id", "")).strip()
+            oid = str(p.get("object", "")).strip()
             if not oid:
                 continue
             try:
@@ -2860,7 +3002,7 @@ class SceneEditorWidget(QWidget):
         self.spin_obj_x.blockSignals(False)
         self.spin_obj_y.blockSignals(False)
         self.list_objects.blockSignals(True)
-        self.list_objects.item(idx).setText(f"{objs[idx]['id']}  ({nx}, {ny})")
+        self.list_objects.item(idx).setText(self._object_list_item_text(objs[idx]))
         self.list_objects.blockSignals(False)
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
