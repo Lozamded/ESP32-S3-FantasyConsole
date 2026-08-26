@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include <SD.h>
+#include <esp_heap_caps.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -23,6 +24,36 @@ static lua_State* s_L = nullptr;
 static int s_update_ref[kMaxActors];
 static char s_script_stem[kMaxActors][kMaxScriptStem];
 static int s_script_actor_count = 0;
+
+/**
+ * Allocator para la VM de actores en PSRAM. La VM se mantiene VIVA durante toda la
+ * escena y cada script Lua cargado consume ~3 KB de heap (bytecode + upvalues +
+ * globals capturados por _update); con 20+ actores scriptados la DRAM interna (~85
+ * KB total en S3N16R8 y ya compartida con SD/FS/Wi-Fi/etc.) se agota y luaL_openlibs
+ * o luaL_ref hacen panic → abort() sin traceback claro. La ENTRY VM en TurtleReader.
+ * ino es efimera (una sola ejecucion, se cierra al terminar setup) y sigue con el
+ * malloc por defecto -- ver ese archivo.
+ *
+ * Todas las asignaciones van SPIRAM. Es mas lento que DRAM (200-300 ns/byte vs. ~40
+ * ns) pero la cache PSRAM del S3 esconde gran parte del costo para acceso secuencial,
+ * y el trade-off "juega mas lento" vs. "crashea al cargar" es obvio. Si algun script
+ * mide un impacto real en fps, se puede pasar a un allocator hibrido (chico DRAM /
+ * grande SPIRAM), pero por ahora simple gana.
+ */
+static void* actor_lua_alloc(void* ud, void* ptr, size_t osize, size_t nsize) {
+  (void)ud;
+  (void)osize;
+  if (nsize == 0) {
+    if (ptr) {
+      heap_caps_free(ptr);
+    }
+    return nullptr;
+  }
+  if (!ptr) {
+    return heap_caps_malloc(nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  }
+  return heap_caps_realloc(ptr, nsize, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+}
 
 static int l_serial_print(lua_State* L) {
   int n = lua_gettop(L);
@@ -115,6 +146,30 @@ static int l_play_anim(lua_State* L) {
 
 static int l_flip_h(lua_State* L) {
   turtle_scene_actor_set_flip_h(lua_toboolean(L, 1));
+  return 0;
+}
+
+/** set_visible(bool) — enciende/apaga el dibujo del actor actual. El script sigue
+ *  recibiendo _update(dt) aunque este invisible. Ver spec/scene-object-visibility-v0.md. */
+static int l_set_visible(lua_State* L) {
+  turtle_scene_actor_set_visible(lua_toboolean(L, 1));
+  return 0;
+}
+
+/** set_pos(x, y) — teleport puro del actor actual, sin colision ni clamp. Pensado para
+ *  hitboxes/overlays que reposicionan cada frame siguiendo a otro actor (ver
+ *  player_attack.lua). El redibujo por rects sucios se encarga de borrar el rect previo. */
+static int l_set_pos(lua_State* L) {
+  const int x = static_cast<int>(luaL_checkinteger(L, 1));
+  const int y = static_cast<int>(luaL_checkinteger(L, 2));
+  turtle_scene_actor_set_pos(x, y);
+  return 0;
+}
+
+/** flip_v(bool) — espejo vertical del sprite del actor actual, misma semantica que flip_h.
+ *  Sirve para reutilizar un sprite en su version cabeza abajo (ej. enemigo derrotado). */
+static int l_flip_v(lua_State* L) {
+  turtle_scene_actor_set_flip_v(lua_toboolean(L, 1));
   return 0;
 }
 
@@ -240,6 +295,46 @@ static int l_obj_has_tag(lua_State* L) {
   return 1;
 }
 
+/** obj_anim(handle) -> nombre de la animacion activa del actor en `handle`, o nil si
+ *  el handle no es valido o el actor no tiene animacion. Sirve para observar el estado
+ *  de otro actor (p.ej. si el jugador esta en "attack"/"air_attack") sin canal aparte. */
+static int l_obj_anim(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  char buf[33];
+  if (!turtle_scene_actor_anim_at(handle - 1, buf, sizeof buf)) {
+    lua_pushnil(L);
+    return 1;
+  }
+  lua_pushstring(L, buf);
+  return 1;
+}
+
+/** obj_flip_h(handle) -> true si el actor en `handle` esta espejado horizontalmente,
+ *  false si no o si el handle no es valido. */
+static int l_obj_flip_h(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  lua_pushboolean(L, turtle_scene_actor_flip_h_at(handle - 1));
+  return 1;
+}
+
+/** obj_visible(handle) -> true si el actor en `handle` esta actualmente visible; false
+ *  si no o si el handle no es valido. Sirve, p.ej., para que un enemigo detecte si el
+ *  hitbox del jugador esta activo antes de hacer AABB (ver eneny_snake.lua). */
+static int l_obj_visible(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  lua_pushboolean(L, turtle_scene_actor_visible_at(handle - 1));
+  return 1;
+}
+
+/** obj_flip_v(handle) -> true si el actor en `handle` esta espejado verticalmente;
+ *  false si no o si el handle no es valido. Usado por character.lua como senal de
+ *  "enemigo derrotado" (ver eneny_snake.lua). */
+static int l_obj_flip_v(lua_State* L) {
+  const int handle = static_cast<int>(luaL_checkinteger(L, 1));
+  lua_pushboolean(L, turtle_scene_actor_flip_v_at(handle - 1));
+  return 1;
+}
+
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
@@ -270,6 +365,15 @@ static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_flip_h);
   lua_setglobal(L, "flip_h");
 
+  lua_pushcfunction(L, l_set_visible);
+  lua_setglobal(L, "set_visible");
+
+  lua_pushcfunction(L, l_set_pos);
+  lua_setglobal(L, "set_pos");
+
+  lua_pushcfunction(L, l_flip_v);
+  lua_setglobal(L, "flip_v");
+
   lua_pushcfunction(L, l_text);
   lua_setglobal(L, "text");
 
@@ -299,6 +403,18 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_obj_has_tag);
   lua_setglobal(L, "obj_has_tag");
+
+  lua_pushcfunction(L, l_obj_anim);
+  lua_setglobal(L, "obj_anim");
+
+  lua_pushcfunction(L, l_obj_flip_h);
+  lua_setglobal(L, "obj_flip_h");
+
+  lua_pushcfunction(L, l_obj_visible);
+  lua_setglobal(L, "obj_visible");
+
+  lua_pushcfunction(L, l_obj_flip_v);
+  lua_setglobal(L, "obj_flip_v");
 }
 
 static bool load_script_update_ref(int actor_index, const char* stem) {
@@ -376,9 +492,9 @@ void turtle_actor_lua_init(void) {
     return;
   }
 
-  s_L = luaL_newstate();
+  s_L = lua_newstate(actor_lua_alloc, nullptr);
   if (!s_L) {
-    Serial.println("turtle_actor_lua: luaL_newstate fallo");
+    Serial.println("turtle_actor_lua: lua_newstate fallo (SPIRAM sin bloque suficiente?)");
     return;
   }
 

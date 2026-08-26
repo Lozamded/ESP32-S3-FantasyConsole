@@ -146,8 +146,8 @@ struct BgImageLayer {
 
 struct SceneActor {
   char obj_id[32];
-  char instance_id[40];  // spec/scene-object-identity-v0.md: ver Placement::instance_id
-  char tags[128];        // ver Placement::tags
+  // instance_id y tags se leen de s_placements[i] (indices paralelos) para no duplicar
+  // esos buffers en DRAM -- Placement ya los tiene y vive durante toda la escena activa.
   bool visible;           // spec/scene-object-visibility-v0.md: ver Placement::visible
   char sprite_id[48];
   char anim_name[33];
@@ -165,6 +165,7 @@ struct SceneActor {
   bool grounded;
   bool anim_repeat;
   bool flip_h;
+  bool flip_v;
   uint8_t frame_index;
   uint8_t frame_count;
   uint16_t anim_speed_x16;
@@ -295,6 +296,7 @@ struct ActorDrawCache {
   int last_x;
   int last_y;
   bool last_flip_h;
+  bool last_flip_v;
   /** Scratch de UN frame: decidido en draw_all_actors (camara fija), consumido por el loop
    * de dibujo del mismo frame. No tiene significado fuera de esa funcion. */
   bool skip_draw;
@@ -2088,13 +2090,15 @@ static bool draw_actor_runtime(int actor_index) {
   }
 
   turtle_gpu_blit_indexed_scene_anchor(a->x, a->y, a->pw, a->ph, cache->pixels, a->pw,
-                                       s_runtime_transp, a->origin_x, a->origin_y, a->flip_h);
+                                       s_runtime_transp, a->origin_x, a->origin_y, a->flip_h,
+                                       a->flip_v);
 
   actor_sprite_scene_bounds(a, &a->prev_blit_x, &a->prev_blit_y, &a->prev_blit_w, &a->prev_blit_h);
   a->has_prev_blit = true;
   cache->last_x = a->x;
   cache->last_y = a->y;
   cache->last_flip_h = a->flip_h;
+  cache->last_flip_v = a->flip_v;
 
   int tx0 = 0, ty0 = 0, tw = 0, th = 0;
   if (actor_text_scene_bounds(a, &tx0, &ty0, &tw, &th)) {
@@ -2523,15 +2527,15 @@ static void resolve_player_actor_index(void) {
   s_player_actor = -1;
   if (s_camera_target[0]) {
     for (int i = 0; i < s_actor_count; ++i) {
-      if (strcmp(s_actors[i].instance_id, s_camera_target) == 0) {
+      if (strcmp(s_placements[i].instance_id, s_camera_target) == 0) {
         s_player_actor = i;
         return;
       }
     }
   }
   for (int i = 0; i < s_actor_count; ++i) {
-    if (strcmp(s_actors[i].instance_id, "player") == 0 ||
-        strcmp(s_actors[i].instance_id, "character") == 0) {
+    if (strcmp(s_placements[i].instance_id, "player") == 0 ||
+        strcmp(s_placements[i].instance_id, "character") == 0) {
       s_player_actor = i;
       return;
     }
@@ -4048,8 +4052,6 @@ static bool init_actor_from_placement(const char* json, const char* json_end,
   }
 
   snprintf(actor->obj_id, sizeof actor->obj_id, "%s", pl->obj_id);
-  snprintf(actor->instance_id, sizeof actor->instance_id, "%s", pl->instance_id);
-  snprintf(actor->tags, sizeof actor->tags, "%s", pl->tags);
   actor->visible = pl->visible;
   actor->script_stem[0] = '\0';
   json_extract_string_for_key(obj_inner, obj_inner_end, "script", actor->script_stem,
@@ -4067,6 +4069,7 @@ static bool init_actor_from_placement(const char* json, const char* json_end,
   actor->anim_repeat = true;
   actor->anim_name[0] = '\0';
   actor->flip_h = false;
+  actor->flip_v = false;
   actor->has_prev_blit = false;
   actor->has_text = false;
   actor->text_has_prev_blit = false;
@@ -4433,7 +4436,7 @@ static void draw_all_actors(void) {
     const bool sprite_dirty = !cache->pixels_valid || strcmp(cache->sprite_id, a->sprite_id) != 0 ||
                               cache->frame_index != a->frame_index;
     const bool moved = a->x != cache->last_x || a->y != cache->last_y;
-    const bool flipped = a->flip_h != cache->last_flip_h;
+    const bool flipped = a->flip_h != cache->last_flip_h || a->flip_v != cache->last_flip_v;
     const bool idle_candidate = a->has_prev_blit && in_view && !a->has_text && !sprite_dirty &&
                                 !moved && !flipped;
     if (idle_candidate) {
@@ -4845,12 +4848,14 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
         parse_tile_layers(sc_start, sc_end, s_runtime_tile_px, s_tile_layers, kMaxTileLayers);
   }
   coll_tileset_cache_prewarm(json, json_end);
-
   draw_all_actors();
   s_runtime_active = true;
 
   turtle_actor_lua_init();
   turtle_actor_lua_bind_actors_from_scene();
+  Serial.printf("turtle_scene: post-bind DRAM=%u PSRAM=%u\n",
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
+                static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
 
   Serial.printf(
       "turtle_scene: runtime escena \"%s\" mundo %dx%d camara %s (%d actores), target_fps=%d "
@@ -4935,7 +4940,7 @@ bool turtle_scene_actor_id(char* out, size_t out_cap) {
   if (!out || out_cap == 0 || s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
     return false;
   }
-  snprintf(out, out_cap, "%s", s_actors[s_lua_actor_target].instance_id);
+  snprintf(out, out_cap, "%s", s_placements[s_lua_actor_target].instance_id);
   return true;
 }
 
@@ -4947,7 +4952,7 @@ bool turtle_scene_find_actor_by_id(const char* id, int* out_index) {
     return false;
   }
   for (int i = 0; i < s_actor_count; ++i) {
-    if (strcmp(s_actors[i].instance_id, id) == 0) {
+    if (strcmp(s_placements[i].instance_id, id) == 0) {
       *out_index = i;
       return true;
     }
@@ -4963,7 +4968,7 @@ int turtle_scene_find_actors_by_tag(const char* tag, int* out_indices, int max_o
   }
   int n = 0;
   for (int i = 0; i < s_actor_count && n < max_out; ++i) {
-    if (tags_csv_has(s_actors[i].tags, tag)) {
+    if (tags_csv_has(s_placements[i].tags, tag)) {
       out_indices[n++] = i;
     }
   }
@@ -4984,7 +4989,7 @@ bool turtle_scene_actor_id_at(int index, char* out, size_t out_cap) {
   if (!out || out_cap == 0 || index < 0 || index >= s_actor_count) {
     return false;
   }
-  snprintf(out, out_cap, "%s", s_actors[index].instance_id);
+  snprintf(out, out_cap, "%s", s_placements[index].instance_id);
   return true;
 }
 
@@ -4992,7 +4997,7 @@ bool turtle_scene_actor_has_tag_at(int index, const char* tag) {
   if (index < 0 || index >= s_actor_count) {
     return false;
   }
-  return tags_csv_has(s_actors[index].tags, tag);
+  return tags_csv_has(s_placements[index].tags, tag);
 }
 
 void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy) {
@@ -5098,6 +5103,65 @@ void turtle_scene_actor_set_flip_h(bool flip_h) {
     return;
   }
   s_actors[s_lua_actor_target].flip_h = flip_h;
+}
+
+void turtle_scene_actor_set_visible(bool visible) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return;
+  }
+  s_actors[s_lua_actor_target].visible = visible;
+}
+
+void turtle_scene_actor_set_pos(int x, int y) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return;
+  }
+  // Teleport puro: no resuelve colision ni actualiza `grounded`. draw_all_actors detecta
+  // el cambio por (a->x, a->y) != (cache->last_x, cache->last_y) y marca dirty tanto el
+  // prev_blit_* (borra) como el rect actual (pinta) en el mismo frame.
+  SceneActor* a = &s_actors[s_lua_actor_target];
+  a->x = x;
+  a->y = y;
+}
+
+bool turtle_scene_actor_anim_at(int index, char* out, size_t out_cap) {
+  if (!out || out_cap == 0 || index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  const SceneActor* a = &s_actors[index];
+  if (!a->anim_name[0]) {
+    return false;
+  }
+  snprintf(out, out_cap, "%s", a->anim_name);
+  return true;
+}
+
+bool turtle_scene_actor_flip_h_at(int index) {
+  if (index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  return s_actors[index].flip_h;
+}
+
+void turtle_scene_actor_set_flip_v(bool flip_v) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return;
+  }
+  s_actors[s_lua_actor_target].flip_v = flip_v;
+}
+
+bool turtle_scene_actor_flip_v_at(int index) {
+  if (index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  return s_actors[index].flip_v;
+}
+
+bool turtle_scene_actor_visible_at(int index) {
+  if (index < 0 || index >= s_actor_count) {
+    return false;
+  }
+  return s_actors[index].visible;
 }
 
 void turtle_scene_actor_set_text(const char* str, int dx, int dy, const char* font_id,

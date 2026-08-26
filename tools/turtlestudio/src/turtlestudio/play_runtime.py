@@ -119,6 +119,7 @@ class ActorRuntimeState:
     script_stem: str | None = None
     grounded: bool = False
     flip_h: bool = False
+    flip_v: bool = False
     anim_name: str = ""
     anim_repeat: bool = True
     anim_speed: float = 1.0
@@ -569,7 +570,10 @@ def _blit_actor_sprite(
         ty = (fh - 1) - sy
         if ty < 0 or ty >= fh:
             continue
-        row = rows[py] if py < len(rows) else []
+        # flip_v: leemos las filas en orden inverso, mismo rect (paridad con
+        # turtle_gpu.cpp blit_indexed_scene_anchor).
+        src_py = (h - 1 - py) if a.flip_v else py
+        row = rows[src_py] if src_py < len(rows) else []
         row_base = ty * fw * 4
         for lx in range(min(w, len(row))):
             idx = row[lx]

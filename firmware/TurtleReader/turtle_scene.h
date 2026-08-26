@@ -71,6 +71,39 @@ bool turtle_scene_actor_play_anim(const char* name, float speed, bool repeat);
 /** Espejo horizontal del sprite del actor Lua actual (alrededor del ancla del sprite). */
 void turtle_scene_actor_set_flip_h(bool flip_h);
 
+/** spec/scene-object-visibility-v0.md: enciende/apaga el dibujo del actor Lua actual.
+ *  El script sigue recibiendo _update(dt); solo el redibujo consulta `visible`. */
+void turtle_scene_actor_set_visible(bool visible);
+
+/** Reposiciona al actor Lua actual en (x, y) espacio escena. Sin colision ni clamp
+ *  contra tiles -- teleport puro, pensado para hitboxes/overlays que siguen a otro actor
+ *  (ver player_attack.lua). El redibujo por rects sucios detecta el cambio por a->x/y
+ *  distintos de last_x/last_y (draw_all_actors) y borra el rect previo. */
+void turtle_scene_actor_set_pos(int x, int y);
+
+/** Lee el nombre de la animacion actual del actor en `index` (0-based, mismo indice que
+ *  find_by_id/find_by_tag exponen +1). Devuelve false si el indice no es valido o el
+ *  actor no tiene animacion activa. */
+bool turtle_scene_actor_anim_at(int index, char* out, size_t out_cap);
+
+/** true si el actor en `index` esta espejado horizontalmente (flip_h). Devuelve false
+ *  si el indice no es valido (mismo valor que "no espejado" -- el llamador que necesite
+ *  distinguir tiene que chequear con obj_posx u otro getter). */
+bool turtle_scene_actor_flip_h_at(int index);
+
+/** Espejo vertical del sprite del actor Lua actual. Util para "muerte" cabeza abajo sin
+ *  necesidad de otra animacion (ver eneny_snake.lua). */
+void turtle_scene_actor_set_flip_v(bool flip_v);
+
+/** true si el actor en `index` esta espejado verticalmente (flip_v); false si no o si el
+ *  handle no es valido. Sirve como senal ligera "esta derrotado" sin necesidad de tags
+ *  mutables (ver eneny_snake.lua + character.lua). */
+bool turtle_scene_actor_flip_v_at(int index);
+
+/** true si el actor en `index` esta actualmente visible (Placement::visible en el JSON
+ *  o cambiado en runtime por set_visible). */
+bool turtle_scene_actor_visible_at(int index);
+
 /**
  * Overlay de texto del actor Lua actual: (dx, dy) offset desde (x, y) del actor, espacio
  * escena. `str`/`font_id` null o vacio borra el overlay. Persiste hasta el siguiente

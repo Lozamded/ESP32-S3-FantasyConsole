@@ -77,11 +77,13 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h, const uint8_t* 
 void turtle_gpu_blit_indexed_scene_tint(int x0, int y0, int w, int h,
                                         const uint8_t* rows_top_first, int row_stride,
                                         uint8_t transparent_index, uint8_t tint_color_index);
-/** Igual que blit_indexed_scene pero espejo horizontal alrededor del ancla (origin_x, origin_y). */
+/** Igual que blit_indexed_scene pero espejo horizontal y/o vertical alrededor del ancla
+ *  (origin_x, origin_y). flip_v invierte el orden de las filas fuente en su lugar (no cambia
+ *  el rect que ocupa el sprite, solo su contenido queda cabeza abajo). */
 void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
                                           const uint8_t* rows_top_first, int row_stride,
                                           uint8_t transparent_index, int origin_x, int origin_y,
-                                          bool flip_h);
+                                          bool flip_h, bool flip_v = false);
 /**
  * Una fila del framebuffer con su propio offset horizontal de muestreo (spec/scene-v0.md,
  * bandas de parallax). `scene_y` ubica la fila en espacio escena (Y arriba) para el mapeo

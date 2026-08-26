@@ -33,6 +33,14 @@
     {
       "name": "crouch",
       "sprite_id": "character_crouch"
+    },
+    {
+      "name": "damage",
+      "sprite_id": "character_damage"
+    },
+    {
+      "name": "defeat",
+      "sprite_id": "character_defeat"
     }
   ],
   "collision": {

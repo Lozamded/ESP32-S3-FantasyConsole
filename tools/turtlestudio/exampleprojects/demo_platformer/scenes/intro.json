@@ -45,9 +45,12 @@
   ],
   "objects": [
     {
+      "object": "scene_controller",
       "id": "scene_controller",
       "x": 0,
-      "y": 0
+      "y": 0,
+      "tags": [],
+      "visible": true
     }
   ],
   "text_labels": [

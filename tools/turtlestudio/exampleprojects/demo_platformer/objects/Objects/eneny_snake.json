@@ -4,6 +4,7 @@
   "id": "eneny_snake",
   "name": "eneny_snake",
   "sprite_id": "snake_walk",
+  "script": "eneny_snake",
   "animations": [
     {
       "name": "slide",

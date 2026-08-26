@@ -45,114 +45,214 @@
   ],
   "objects": [
     {
+      "object": "player",
       "id": "player",
       "x": 17,
-      "y": 19
+      "y": 19,
+      "tags": [],
+      "visible": true
     },
     {
+      "object": "player_attack",
+      "id": "player_attack",
+      "x": 17,
+      "y": 19,
+      "tags": [
+        "player_hitbox"
+      ],
+      "visible": false
+    },
+    {
+      "object": "eneny_snake",
       "id": "eneny_snake",
       "x": 118,
-      "y": 16
+      "y": 16,
+      "tags": [
+        "enemy"
+      ],
+      "visible": true
     },
     {
-      "id": "eneny_snake",
-      "x": 263,
-      "y": 16
+      "object": "eneny_snake",
+      "id": "eneny_snake_2",
+      "x": 273,
+      "y": 36,
+      "tags": [
+        "enemy"
+      ],
+      "visible": true
     },
     {
-      "id": "eneny_snake",
+      "object": "eneny_snake",
+      "id": "eneny_snake_3",
       "x": 400,
-      "y": 16
+      "y": 16,
+      "tags": [
+        "enemy"
+      ],
+      "visible": true
     },
     {
+      "object": "directional_block",
       "id": "directional_block",
-      "x": 176,
-      "y": 16
+      "x": 190,
+      "y": 17,
+      "tags": [
+        "turn"
+      ],
+      "visible": false
     },
     {
-      "id": "directional_block",
+      "object": "directional_block",
+      "id": "directional_block_2",
       "x": 49,
-      "y": 16
+      "y": 16,
+      "tags": [
+        "turn"
+      ],
+      "visible": false
     },
     {
-      "id": "directional_block",
-      "x": 608,
-      "y": 32
+      "object": "directional_block",
+      "id": "directional_block_3",
+      "x": 593,
+      "y": 33,
+      "tags": [
+        "turn"
+      ],
+      "visible": false
     },
     {
-      "id": "directional_block",
-      "x": 736,
-      "y": 32
+      "object": "directional_block",
+      "id": "directional_block_4",
+      "x": 752,
+      "y": 31,
+      "tags": [
+        "turn"
+      ],
+      "visible": false
     },
     {
-      "id": "eneny_snake",
+      "object": "eneny_snake",
+      "id": "eneny_snake_4",
       "x": 656,
-      "y": 32
+      "y": 32,
+      "tags": [
+        "enemy"
+      ],
+      "visible": true
     },
     {
+      "object": "gear",
       "id": "gear",
       "x": 82,
-      "y": 62
+      "y": 62,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_2",
       "x": 123,
-      "y": 92
+      "y": 92,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_3",
       "x": 144,
-      "y": 93
+      "y": 93,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_4",
       "x": 163,
-      "y": 92
+      "y": 92,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_5",
       "x": 255,
-      "y": 46
+      "y": 46,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_6",
       "x": 439,
-      "y": 41
+      "y": 41,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_7",
       "x": 454,
-      "y": 58
+      "y": 58,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_8",
       "x": 470,
-      "y": 74
+      "y": 74,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_9",
       "x": 276,
-      "y": 47
+      "y": 47,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_10",
       "x": 671,
-      "y": 67
+      "y": 67,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_11",
       "x": 818,
-      "y": 26
+      "y": 26,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_12",
       "x": 972,
-      "y": 40
+      "y": 40,
+      "tags": [],
+      "visible": true
     },
     {
-      "id": "gear",
+      "object": "gear",
+      "id": "gear_13",
       "x": 952,
-      "y": 42
+      "y": 42,
+      "tags": [],
+      "visible": true
+    },
+    {
+      "object": "directional_block",
+      "id": "directional_block_5",
+      "x": 335,
+      "y": 16,
+      "tags": [],
+      "visible": false
     }
   ],
   "text_labels": [],

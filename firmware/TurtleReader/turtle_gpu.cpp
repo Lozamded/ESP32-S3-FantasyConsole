@@ -648,7 +648,7 @@ void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
 void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int h,
                                           const uint8_t* rows_top_first, int row_stride,
                                           uint8_t transparent_index, int origin_x, int origin_y,
-                                          bool flip_h) {
+                                          bool flip_h, bool flip_v) {
   if (w <= 0 || h <= 0 || !rows_top_first || row_stride <= 0) {
     return;
   }
@@ -662,7 +662,10 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
     if (yfb < 0 || yfb >= kH) {
       continue;
     }
-    const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
+    // flip_v: sample rows in reverse (dibuja el sprite cabeza abajo pero en el mismo rect).
+    const int src_py = flip_v ? (h - 1 - py) : py;
+    const uint8_t* row =
+        rows_top_first + static_cast<size_t>(src_py) * static_cast<size_t>(row_stride);
     for (int lx = 0; lx < w; ++lx) {
       const uint8_t ci = row[lx];
       if (ci == tr) {

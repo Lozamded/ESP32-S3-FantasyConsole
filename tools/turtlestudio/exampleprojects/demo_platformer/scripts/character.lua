@@ -4,9 +4,33 @@
 -- Ver spec/lua/physics-v0.md y spec/lua/animation-v0.md.
 
 local walk_speed = 80    -- px/s
-local jump_speed = 180   -- px/s (impulso inicial hacia arriba)
+local jump_speed = 180   -- px/s (impulso inicial hacia arriba, tambien pico de salto alto)
+-- Salto binario: si se suelta A dentro de jump_hold_threshold desde el btnp,
+-- vy se recalcula para que el pico coincida exactamente con short_jump_peak
+-- (px). Si se mantiene A mas alla del umbral, no hay corte -> salto alto pleno.
+-- El calculo saca "cuanta velocidad me falta desde el pico deseado" con
+-- v = sqrt(2*g*h_restante), asi el pico corto es constante sin importar en que
+-- fotograma exacto de la ventana se solto el boton.
+local short_jump_peak = 16      -- px sobre el suelo para el salto corto
+local jump_hold_threshold = 0.1 -- s: aguantar A mas alla de esto => salto alto
 local gravity = 380      -- px/s^2
 local attack_time = 0.25 -- segundos que dura la animacion de golpe
+
+-- Golpe recibido: no hay colision actor-actor en v0 (spec/lua/physics-v0.md
+-- "Fuera de alcance"), asi que se detecta con find_by_tag("enemy") + AABB
+-- manual (mismo patron que eneny_snake.lua contra directional_block).
+-- Los enemigos tienen que llevar la tag "enemy" en la escena para que aparezcan
+-- aca.
+local damage_time = 0.35   -- s de knockback: sin input, empuje horizontal fijo
+local iframes_time = 0.6   -- s de invulnerabilidad tras un golpe (evita re-hit)
+local hit_push_speed = 90  -- px/s empuje horizontal opuesto al frente
+local hit_pop_speed = 120  -- px/s pequeno impulso vertical al recibir el golpe
+
+-- AABB de player.json y eneny_snake.json ("collision": {"x0"..."y1"}),
+-- relativas a posx()/posy() de cada actor. Duplicadas aca porque Lua no ve el
+-- JSON del objeto directamente.
+local self_x0, self_x1, self_y0, self_y1 = -9, 8, 0, 27
+local enemy_x0, enemy_x1, enemy_y0, enemy_y1 = -6, 7, 0, 13
 
 local BTN_LEFT, BTN_RIGHT, BTN_DOWN, BTN_A, BTN_B = 0, 1, 3, 4, 5
 
@@ -19,6 +43,12 @@ local attack_in_air = false
 local attack_timer = 0.0
 local crouching = false
 local was_crouching = false
+local hurt_timer = 0.0
+local iframes_timer = 0.0
+local damage_vx = 0.0
+local jumping = false  -- true durante la ventana de decision del salto binario
+local jump_hold_time = 0.0
+local jump_start_y = 0
 
 local function set_facing(dx)
   if dx < 0 and not facing_left then
@@ -38,6 +68,60 @@ local function set_anim_once(anim)
 end
 
 function _update(dt)
+  if hurt_timer > 0.0 then hurt_timer = hurt_timer - dt end
+  if iframes_timer > 0.0 then iframes_timer = iframes_timer - dt end
+
+  -- Estado de knockback: sin input, empuje fijo, gravedad normal. Sale solo
+  -- cuando hurt_timer expira; los iframes siguen contando aparte para tapar
+  -- un segundo golpe justo despues.
+  if hurt_timer > 0.0 then
+    if on_ground() then
+      if vy < 0 then vy = 0 end
+    else
+      vy = vy - gravity * dt
+    end
+    local mx = math.floor(damage_vx * dt + (damage_vx >= 0 and 0.5 or -0.5))
+    local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
+    local ax, ay = move(mx, my)
+    if my > 0 and ay < my then vy = 0 end
+    return
+  end
+
+  -- Chequeo de golpe recibido: solo si no venimos con iframes activos, tampoco
+  -- estamos golpeando (no queremos cancelar attack por un rozamiento del ataque
+  -- contra el enemigo, si algun dia hay hitbox de golpe), y NO estamos agachados
+  -- (agacharse es una defensa: el enemigo rebota en el jugador, ver eneny_snake.lua).
+  -- Nota: `crouching` es el valor del fotograma pasado -- se recalcula despues.
+  -- Si sueltas ABAJO justo al chocar, tomarias dano un fotograma despues, no ahora.
+  if iframes_timer <= 0.0 and not attacking and not crouching then
+    local px = posx()
+    local py = posy()
+    local enemies = find_by_tag("enemy")
+    for i = 1, #enemies do
+      -- Un enemigo derrotado por el hitbox del jugador queda cabeza abajo cayendo
+      -- (ver eneny_snake.lua). No queremos que ese cadaver siga golpeando al jugador
+      -- durante los frames que aun se ve en pantalla, asi que flip_v es la senal
+      -- ligera de "esta muerto, ignoralo".
+      if not obj_flip_v(enemies[i]) then
+        local ex = obj_posx(enemies[i])
+        local ey = obj_posy(enemies[i])
+        if (px + self_x1) > (ex + enemy_x0) and (px + self_x0) < (ex + enemy_x1) and
+           (py + self_y1) > (ey + enemy_y0) and (py + self_y0) < (ey + enemy_y1) then
+          damage_vx = facing_left and hit_push_speed or -hit_push_speed
+          vy = hit_pop_speed
+          rem_x = 0.0
+          hurt_timer = damage_time
+          iframes_timer = iframes_time
+          crouching = false
+          was_crouching = false
+          cur_anim = "damage"
+          play_anim("damage", 1.0, false)
+          return
+        end
+      end
+    end
+  end
+
   local grounded = on_ground()
 
   -- Agachado: solo en tierra, sin golpear; se sale al soltar ABAJO.
@@ -81,8 +165,30 @@ function _update(dt)
     end
     if not attacking and not crouching and btnp(BTN_A) then
       vy = jump_speed
+      jumping = true
+      jump_hold_time = 0.0
+      jump_start_y = posy()
     end
   else
+    -- Salto binario (dos alturas). Ventana de decision = jump_hold_threshold:
+    --  * Se suelta A antes  => vy se recalcula para que el pico sea exactamente
+    --    short_jump_peak (fixed, no depende del fotograma exacto de release).
+    --  * Se mantiene A hasta pasar la ventana => sin corte, salto alto pleno.
+    if jumping then
+      jump_hold_time = jump_hold_time + dt
+      if jump_hold_time >= jump_hold_threshold then
+        jumping = false
+      elseif not btn(BTN_A) then
+        -- Si height_gained ya paso short_jump_peak (p.ej. rebote de techo), dejamos
+        -- vy como este -- forzarlo a 0 aca crearia un "flotado" momentaneo.
+        local height_gained = posy() - jump_start_y
+        local remaining = short_jump_peak - height_gained
+        if remaining > 0 then
+          vy = math.sqrt(2 * gravity * remaining)
+        end
+        jumping = false
+      end
+    end
     vy = vy - gravity * dt
   end
 

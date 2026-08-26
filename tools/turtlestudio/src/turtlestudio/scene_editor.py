@@ -174,7 +174,8 @@ def _fill_rect_rgba(rgba: list[float], fw: int, fh: int, r: float, g: float, b: 
 
 
 def _fill_rect_rgba_region(
-    rgba: list[float], fw: int, fh: int, sx0: int, sy0: int, w: int, h: int, r: float, g: float, b: float
+    rgba: list[float], fw: int, fh: int, sx0: int, sy0: int, w: int, h: int, r: float, g: float, b: float,
+    alpha: float = 1.0,
 ) -> None:
     for sy in range(max(0, sy0), min(fh, sy0 + h)):
         ty = (fh - 1) - sy
@@ -186,7 +187,7 @@ def _fill_rect_rgba_region(
             rgba[i] = r
             rgba[i + 1] = g
             rgba[i + 2] = b
-            rgba[i + 3] = 1.0
+            rgba[i + 3] = alpha
 
 
 def _blit_indexed_rows_scene(
@@ -197,6 +198,7 @@ def _blit_indexed_rows_scene(
     sy_bottom: int,
     rows: list[list[int]],
     rgbs: list[tuple[float, float, float]],
+    alpha: float = 1.0,
 ) -> None:
     """(sx0, sy_bottom) = bottom-left corner of the bbox, in scene space."""
     ph = len(rows)
@@ -223,7 +225,7 @@ def _blit_indexed_rows_scene(
             rgba[i] = r
             rgba[i + 1] = g
             rgba[i + 2] = b
-            rgba[i + 3] = 1.0
+            rgba[i + 3] = alpha
 
 
 def _draw_cross_on_rgba(rgba: list[float], fw: int, fh: int, sx: int, sy: int) -> None:
@@ -493,17 +495,18 @@ def _paint_scene_objects(
             continue
         sx = max(0, min(fw - 1, sx))
         sy = max(0, min(fh - 1, sy))
-        # spec/scene-object-visibility-v0.md: invisible al arrancar la escena -- no se blittea
-        # el sprite en la vista previa (coincide con lo que hace el firmware/Play), pero la cruz
-        # de origen se deja igual para que el objeto siga siendo ubicable/clickeable en el editor.
-        if bool(p.get("visible", True)):
-            info = _resolve_object_sprite_preview(project_root, oid)
-            bx, by = sprite_blit_bottom_left(sx, sy, int(info["origin_x"]), int(info["origin_y"]))
-            if info["mode"] == "indexed":
-                _blit_indexed_rows_scene(rgba, fw, fh, bx, by, info["rows"], info["rgbs"])
-            else:
-                r, g, b = info["rgb"]
-                _fill_rect_rgba_region(rgba, fw, fh, bx, by, int(info["pw"]), int(info["ph"]), r, g, b)
+        # spec/scene-object-visibility-v0.md: invisible al arrancar la escena -- se blittea
+        # con alpha reducido para que el objeto siga siendo ubicable en el editor, pero quede
+        # claro que no sera visible al inicio del juego. La cruz de origen se dibuja siempre.
+        visible = bool(p.get("visible", True))
+        sprite_alpha = 1.0 if visible else 0.35
+        info = _resolve_object_sprite_preview(project_root, oid)
+        bx, by = sprite_blit_bottom_left(sx, sy, int(info["origin_x"]), int(info["origin_y"]))
+        if info["mode"] == "indexed":
+            _blit_indexed_rows_scene(rgba, fw, fh, bx, by, info["rows"], info["rgbs"], sprite_alpha)
+        else:
+            r, g, b = info["rgb"]
+            _fill_rect_rgba_region(rgba, fw, fh, bx, by, int(info["pw"]), int(info["ph"]), r, g, b, sprite_alpha)
         _draw_cross_on_rgba(rgba, fw, fh, sx, sy)
 
 

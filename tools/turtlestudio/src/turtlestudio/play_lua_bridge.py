@@ -82,6 +82,9 @@ class ActorLuaBridge:
         g.set_anim = self._l_set_anim
         g.play_anim = self._l_play_anim
         g.flip_h = self._l_flip_h
+        g.flip_v = self._l_flip_v
+        g.set_visible = self._l_set_visible
+        g.set_pos = self._l_set_pos
         g.text = self._l_text
         g.text_width = self._l_text_width
         g.goto_scene = self._l_goto_scene
@@ -91,6 +94,10 @@ class ActorLuaBridge:
         g.obj_posy = self._l_obj_posy
         g.obj_id = self._l_obj_id
         g.obj_has_tag = self._l_obj_has_tag
+        g.obj_anim = self._l_obj_anim
+        g.obj_flip_h = self._l_obj_flip_h
+        g.obj_flip_v = self._l_obj_flip_v
+        g.obj_visible = self._l_obj_visible
         g.self_id = self._l_self_id
 
     # -- puente, firmas verificadas contra turtle_actor_lua.cpp -----------
@@ -147,6 +154,24 @@ class ActorLuaBridge:
         if a is not None:
             a.flip_h = bool(value)
 
+    def _l_flip_v(self, value: Any = False) -> None:
+        a = self.current_actor
+        if a is not None:
+            a.flip_v = bool(value)
+
+    def _l_set_visible(self, value: Any = False) -> None:
+        a = self.current_actor
+        if a is not None:
+            a.visible = bool(value)
+
+    def _l_set_pos(self, x: Any, y: Any) -> None:
+        """Teleport puro sin colision ni clamp -- misma semantica que
+        turtle_scene_actor_set_pos en firmware (ver player_attack.lua)."""
+        a = self.current_actor
+        if a is not None:
+            a.x = int(x)
+            a.y = int(y)
+
     def _l_text(self, s: Any, font_id: Any = "", dx: Any = 0, dy: Any = 0, color_index: Any = -1) -> None:
         a = self.current_actor
         if a is not None:
@@ -201,6 +226,24 @@ class ActorLuaBridge:
     def _l_obj_has_tag(self, handle: Any, tag: Any) -> bool:
         a = self._actor_at_handle(handle)
         return a is not None and str(tag) in a.tags
+
+    def _l_obj_anim(self, handle: Any) -> str | None:
+        a = self._actor_at_handle(handle)
+        if a is None or not a.anim_name:
+            return None
+        return a.anim_name
+
+    def _l_obj_flip_h(self, handle: Any) -> bool:
+        a = self._actor_at_handle(handle)
+        return a is not None and a.flip_h
+
+    def _l_obj_flip_v(self, handle: Any) -> bool:
+        a = self._actor_at_handle(handle)
+        return a is not None and a.flip_v
+
+    def _l_obj_visible(self, handle: Any) -> bool:
+        a = self._actor_at_handle(handle)
+        return a is not None and a.visible
 
     def _l_self_id(self) -> str | None:
         a = self.current_actor

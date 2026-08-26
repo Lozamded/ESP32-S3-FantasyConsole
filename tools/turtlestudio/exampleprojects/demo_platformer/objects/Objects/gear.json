@@ -4,6 +4,7 @@
   "id": "gear",
   "name": "gear",
   "sprite_id": "gear",
+  "script": "gear",
   "collision": {
     "mode": "aabb",
     "x0": -6,
