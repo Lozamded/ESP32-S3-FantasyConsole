@@ -339,7 +339,10 @@ static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
 
-  turtle_input_register_lua(L);
+  // spec/gui-layer-v0.md: variante "gated" -- las capas con captures_input=true bloquean
+  // los btn/btnp de actor mientras el menu esta arriba. La VM ENTRY se queda con la
+  // version normal para poder navegar el menu.
+  turtle_input_register_lua_actor(L);
 
   lua_pushcfunction(L, l_axis);
   lua_setglobal(L, "axis");

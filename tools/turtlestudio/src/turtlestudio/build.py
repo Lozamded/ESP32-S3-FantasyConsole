@@ -464,6 +464,29 @@ def collect_studio_bundle_files(
             manifest_data = {}
     target_fps, default_anim_fps = parse_runtime_from_manifest(manifest_data)
 
+    # spec/gui-layer-v0.md: catalogo de capas GUI apilables. Cada archivo `guilayers/*.json`
+    # aporta una entrada al array top-level `guilayers` del bundle. Orden estable (alfabetico
+    # por stem) para que el desempate por z-manifest sea reproducible entre exports.
+    from turtlestudio.guilayers import (
+        MAX_GUI_LAYERS,
+        gui_layer_to_json,
+        list_gui_layer_stems,
+        read_gui_layer_file,
+    )
+
+    guilayers_list: list[dict[str, Any]] = []
+    gui_stems = list_gui_layer_stems(root)
+    if len(gui_stems) > MAX_GUI_LAYERS:
+        # Truncar al maximo del firmware. Cartuchos con >8 capas emiten un aviso pero
+        # exportan las primeras 8 (orden alfabetico -- documentado en spec/gui-layer-v0.md).
+        gui_stems = gui_stems[:MAX_GUI_LAYERS]
+    for stem in gui_stems:
+        try:
+            ly = read_gui_layer_file(root, stem)
+        except ValueError:
+            continue  # archivos rotos no rompen el build, solo se descartan
+        guilayers_list.append(gui_layer_to_json(ly))
+
     bundle: dict[str, Any] = {
         "format_version": 1,
         "kind": "turtlestudio.cart_bundle",
@@ -479,6 +502,7 @@ def collect_studio_bundle_files(
         "backgrounds": backgrounds_map,
         "tilesets": tilesets_map,
         "fonts": fonts_map,
+        "guilayers": guilayers_list,
     }
     bundle_rel = "studio/project_bundle.json"
     bundle_text = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False) + "\n"

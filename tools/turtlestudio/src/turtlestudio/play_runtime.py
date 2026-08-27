@@ -637,6 +637,14 @@ class PlaySession:
         self.fh = VIEWPORT_PIXEL_H
         self.viewport_w = VIEWPORT_PIXEL_W
         self.viewport_h = VIEWPORT_PIXEL_H
+        # spec/hud-border-v0.md: playfield derivado de camera.hud_border en begin(). El
+        # scroll/clamp usa estos valores en vez de viewport_w/h para que la simulacion
+        # coincida con el firmware. HUD region = complemento del rect playfield en el
+        # framebuffer; se pinta como overlay al final de render_rgba (marcador visual).
+        self.playfield_w = VIEWPORT_PIXEL_W
+        self.playfield_h = VIEWPORT_PIXEL_H
+        self.playfield_ox = 0
+        self.playfield_oy = 0  # coord raster fb, Y-abajo (top-left)
         self.tile_px = 16
         self.cam_x = 0
         self.cam_y = 0
@@ -678,10 +686,23 @@ class PlaySession:
     ) -> None:
         self.tile_px = tile_px
         self.viewport_w, self.viewport_h = viewport_w, viewport_h
+        # spec/hud-border-v0.md: el mundo EFECTIVO se dimensiona sobre el playfield
+        # (playfield_w × ws_x, playfield_h × ws_y). Con hud_border.top=16 y ws_y=1 el
+        # mundo queda 108 px de alto -- la fila 0 (piso) queda anclada al borde inferior
+        # del playfield, sin scroll en Y. La rejilla de tiles se sigue autorando contra el
+        # viewport canonico (ver scene_tile_grid_dimensions -> 7 filas para ws_y=1); las
+        # celdas cuyo rango scene y cae fuera del mundo efectivo se descartan al pintar.
+        self.camera = parse_scene_camera_from_row(row)
+        pf_w, pf_h = self.camera.hud_border.playfield_size(viewport_w, viewport_h)
+        self.playfield_w = max(1, pf_w)
+        self.playfield_h = max(1, pf_h)
+        self.playfield_ox = int(self.camera.hud_border.left)
+        self.playfield_oy = int(self.camera.hud_border.top)
         wsx = clamp_world_steps(row.get("world_steps_x", 1))
         wsy = clamp_world_steps(row.get("world_steps_y", 1))
-        self.fw, self.fh = scene_world_pixel_size(wsx, wsy, base_w=viewport_w, base_h=viewport_h)
-        self.camera = parse_scene_camera_from_row(row)
+        self.fw, self.fh = scene_world_pixel_size(
+            wsx, wsy, base_w=self.playfield_w, base_h=self.playfield_h
+        )
         self.target_fps = scene_target_fps(row, project_target_fps)
         self.default_anim_fps = scene_default_anim_fps(row, project_anim_fps)
 
@@ -850,21 +871,25 @@ class PlaySession:
     # -- camara ----------------------------------------------------
 
     def _scrolling(self) -> bool:
-        return self.fw > self.viewport_w or self.fh > self.viewport_h
+        # spec/hud-border-v0.md: comparar contra playfield (no contra viewport), mismo
+        # criterio que scene_uses_scrolling() en turtle_scene.cpp.
+        return self.fw > self.playfield_w or self.fh > self.playfield_h
 
     def _update_camera(self) -> None:
         if not self._scrolling():
             self.cam_x, self.cam_y = 0, 0
             return
+        pf_w = self.playfield_w
+        pf_h = self.playfield_h
         if self.camera.mode == CAMERA_MODE_FIXED or self.player_id is None:
             self.cam_x, self.cam_y = clamp_camera_position(
-                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=self.viewport_w, viewport_h=self.viewport_h
+                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=pf_w, viewport_h=pf_h
             )
             return
         player = self._actor_by_id(self.player_id)
         if player is None:
             self.cam_x, self.cam_y = clamp_camera_position(
-                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=self.viewport_w, viewport_h=self.viewport_h
+                self.cam_x, self.cam_y, world_w=self.fw, world_h=self.fh, viewport_w=pf_w, viewport_h=pf_h
             )
             return
         self.cam_x, self.cam_y = compute_follow_camera(
@@ -874,8 +899,8 @@ class PlaySession:
             self.cam_y,
             world_w=self.fw,
             world_h=self.fh,
-            viewport_w=self.viewport_w,
-            viewport_h=self.viewport_h,
+            viewport_w=pf_w,
+            viewport_h=pf_h,
             margin_x=self.camera.margin_x,
             margin_y=self.camera.margin_y,
         )
@@ -1002,4 +1027,44 @@ class PlaySession:
                         cam_x=self.cam_x,
                         cam_y=self.cam_y,
                     )
+        # spec/hud-border-v0.md: overlay de la region HUD reservada. La simulacion de playtest
+        # no ejecuta _hud_init / _hud (requiere una VM Lua ENTRY completa aca, fuera de
+        # alcance de v0). Aca solo se pinta un marcador semitransparente para que el autor vea
+        # que area queda reservada. Al probar en hardware, el HUD real (dibujado por el cart)
+        # ocupara esa banda.
+        if not self.camera.hud_border.is_zero():
+            self._paint_hud_border_overlay(rgba, vw, vh)
         return rgba, vw, vh
+
+    def _paint_hud_border_overlay(self, rgba: list[float], vw: int, vh: int) -> None:
+        r, g, b, a = 0.10, 0.55, 0.85, 0.55
+        top = int(self.camera.hud_border.top)
+        bottom = int(self.camera.hud_border.bottom)
+        left = int(self.camera.hud_border.left)
+        right = int(self.camera.hud_border.right)
+        # Franjas top / bottom (ocupan todo el ancho).
+        for y in range(0, min(top, vh)):
+            row = y * vw * 4
+            for x in range(vw):
+                _blend_rgba_pixel_inplace_local(rgba, row + x * 4, r, g, b, a)
+        for y in range(max(0, vh - bottom), vh):
+            row = y * vw * 4
+            for x in range(vw):
+                _blend_rgba_pixel_inplace_local(rgba, row + x * 4, r, g, b, a)
+        # Franjas left / right dentro del rango de playfield vertical (no repintar esquinas).
+        y_lo = min(top, vh)
+        y_hi = max(0, vh - bottom)
+        for y in range(y_lo, y_hi):
+            row = y * vw * 4
+            for x in range(0, min(left, vw)):
+                _blend_rgba_pixel_inplace_local(rgba, row + x * 4, r, g, b, a)
+            for x in range(max(0, vw - right), vw):
+                _blend_rgba_pixel_inplace_local(rgba, row + x * 4, r, g, b, a)
+
+
+def _blend_rgba_pixel_inplace_local(rgba: list[float], off: int, r: float, g: float, b: float, a: float) -> None:
+    inv = 1.0 - a
+    rgba[off + 0] = rgba[off + 0] * inv + r * a
+    rgba[off + 1] = rgba[off + 1] * inv + g * a
+    rgba[off + 2] = rgba[off + 2] * inv + b * a
+    rgba[off + 3] = max(rgba[off + 3], a)

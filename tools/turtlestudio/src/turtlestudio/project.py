@@ -1420,6 +1420,13 @@ def _normalize_scenes_for_save(
                 "camera_y": cam_row.y,
                 "camera_margin_x": cam_row.margin_x,
                 "camera_margin_y": cam_row.margin_y,
+                # spec/hud-border-v0.md: bordes HUD tambien planos por si el consumidor del
+                # manifest no lee `camera.hud_border` anidado. Siempre presentes (default 0)
+                # -- son enteros baratos y facilitan diffs simetricos con margin_x/y.
+                "camera_hud_border_top": int(cam_row.hud_border.top),
+                "camera_hud_border_bottom": int(cam_row.hud_border.bottom),
+                "camera_hud_border_left": int(cam_row.hud_border.left),
+                "camera_hud_border_right": int(cam_row.hud_border.right),
             }
         )
         if cam_row.target.strip():

@@ -125,6 +125,10 @@ scene.camera_target_placeholder,id de objeto (vacio = auto),object id (empty = a
 scene.camera_target_label,Objetivo:,Target:
 scene.margin_x_label,Margen X:,Margin X:
 scene.margin_y_label,Margen Y:,Margin Y:
+scene.hud_border_top_label,HUD arriba (px):,HUD top (px):
+scene.hud_border_bottom_label,HUD abajo (px):,HUD bottom (px):
+scene.hud_border_left_label,HUD izq. (px):,HUD left (px):
+scene.hud_border_right_label,HUD der. (px):,HUD right (px):
 scene.parallax_group,Bandas de parallax (Capa 1),Parallax bands (Layer 1)
 scene.parallax_hint,"Controla el scroll horizontal de la Capa 1 (base) por rango Y de escena (parallax_x). Sin banda activa para una fila: comportamiento de hoy (1.0, sin repetir).","Controls Layer 1's (base) horizontal scroll by scene Y-range (parallax_x). Rows with no active band behave as today (1.0, no repeat)."
 scene.parallax_enabled_label,Activar bandas de parallax,Enable parallax bands

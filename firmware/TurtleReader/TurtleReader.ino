@@ -9,7 +9,9 @@
 
 #include "turtle_boot_font.h"
 #include "turtle_cart.h"
+#include "turtle_entry_lua.h"
 #include "turtle_gpu.h"
+#include "turtle_gui_layer.h"
 #include "turtle_input.h"
 #include "turtle_scene.h"
 
@@ -138,6 +140,107 @@ static int l_text_width(lua_State* L) {
   return 1;
 }
 
+// spec/hud-border-v0.md: bindings HUD. Todos usan coord de framebuffer absolutas (Y-abajo,
+// top-left = (0,0) del framebuffer fisico); pixeles dentro del playfield actual son no-op
+// (proteccion contra pintar la zona de juego desde ENTRY).
+
+/** hud_pix(x, y, color_index) */
+static int l_hud_pix(lua_State* L) {
+  const int x = static_cast<int>(luaL_checkinteger(L, 1));
+  const int y = static_cast<int>(luaL_checkinteger(L, 2));
+  const int ci = static_cast<int>(luaL_checkinteger(L, 3));
+  turtle_gpu_pixel_absolute(x, y, static_cast<uint8_t>(ci < 0 ? 0 : (ci > 31 ? 31 : ci)));
+  return 0;
+}
+
+/** hud_rect(x, y, w, h, color_index) */
+static int l_hud_rect(lua_State* L) {
+  const int x = static_cast<int>(luaL_checkinteger(L, 1));
+  const int y = static_cast<int>(luaL_checkinteger(L, 2));
+  const int w = static_cast<int>(luaL_checkinteger(L, 3));
+  const int h = static_cast<int>(luaL_checkinteger(L, 4));
+  const int ci = static_cast<int>(luaL_checkinteger(L, 5));
+  turtle_gpu_fill_rect_absolute(x, y, w, h,
+                                static_cast<uint8_t>(ci < 0 ? 0 : (ci > 31 ? 31 : ci)));
+  return 0;
+}
+
+/** hud_clear([color_index]) — rellena TODA la region HUD (todo lo que no es playfield). */
+static int l_hud_clear(lua_State* L) {
+  const int ci = static_cast<int>(luaL_optinteger(L, 1, 0));
+  const uint8_t c = static_cast<uint8_t>(ci < 0 ? 0 : (ci > 31 ? 31 : ci));
+  // Barrido del framebuffer entero; los pixeles dentro del playfield son no-op
+  // (turtle_gpu_fill_rect_absolute los ignora), asi que este llamado se reduce a las
+  // bandas HUD reales -- sin bucle de 4 rects separados por borde.
+  turtle_gpu_fill_rect_absolute(0, 0, 164, 124, c);
+  return 0;
+}
+
+/** hud_text(x, y, str, font_id [, color_index]) -> ancho dibujado (px). */
+static int l_hud_text(lua_State* L) {
+  const int xfb = static_cast<int>(luaL_checkinteger(L, 1));
+  const int yfb = static_cast<int>(luaL_checkinteger(L, 2));
+  const char* str = luaL_checkstring(L, 3);
+  const char* font_id = luaL_checkstring(L, 4);
+  const int color_index = static_cast<int>(luaL_optinteger(L, 5, -1));
+  const int w = turtle_scene_draw_text_absolute(g_bundle.data, g_bundle.len, font_id, xfb, yfb,
+                                                str, color_index);
+  lua_pushinteger(L, w);
+  return 1;
+}
+
+/** hud_text_width(str, font_id) -> ancho en px, sin dibujar. */
+static int l_hud_text_width(lua_State* L) {
+  const char* str = luaL_checkstring(L, 1);
+  const char* font_id = luaL_checkstring(L, 2);
+  const int w = turtle_scene_measure_text(g_bundle.data, g_bundle.len, font_id, str);
+  lua_pushinteger(L, w);
+  return 1;
+}
+
+// spec/gui-layer-v0.md: bindings de capas GUI apilables. Todos operan sobre el catalogo
+// cargado por turtle_gui_layer_begin_scene al comenzar la escena; id/label_id inexistentes
+// son no-op silencioso.
+
+/** gui_layer_show(id [, z]) -- si `z` viene, overridea el `z` del manifest para este show. */
+static int l_gui_layer_show(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  bool has_z = !lua_isnoneornil(L, 2);
+  int z = has_z ? static_cast<int>(luaL_checkinteger(L, 2)) : 0;
+  turtle_gui_layer_show(id, has_z, z);
+  return 0;
+}
+
+/** gui_layer_hide(id) */
+static int l_gui_layer_hide(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  turtle_gui_layer_hide(id);
+  return 0;
+}
+
+/** gui_layer_visible(id) -> bool */
+static int l_gui_layer_visible(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  lua_pushboolean(L, turtle_gui_layer_is_visible(id));
+  return 1;
+}
+
+/** gui_layer_hide_all() -- oculta todas las capas activas. */
+static int l_gui_layer_hide_all(lua_State* L) {
+  (void)L;
+  turtle_gui_layer_hide_all();
+  return 0;
+}
+
+/** gui_layer_set_text(id, label_id, str) */
+static int l_gui_layer_set_text(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  const char* label_id = luaL_checkstring(L, 2);
+  const char* str = luaL_optstring(L, 3, "");
+  turtle_gui_layer_set_text(id, label_id, str);
+  return 0;
+}
+
 static bool runCartEntryLua(const char* source, size_t source_len, const char* chunkName) {
   if (!source || source_len == 0) {
     Serial.println("Lua: ENTRY vacio");
@@ -162,6 +265,33 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_pushcfunction(L, l_text_width);
   lua_setglobal(L, "text_width");
 
+  // spec/hud-border-v0.md: bindings HUD disponibles ya durante el script de arranque (asi
+  // splash/title screens tambien pueden usarlos) y para siempre, ya que la VM sobrevive
+  // al arranque (ver turtle_entry_lua_take mas abajo).
+  lua_pushcfunction(L, l_hud_pix);
+  lua_setglobal(L, "hud_pix");
+  lua_pushcfunction(L, l_hud_rect);
+  lua_setglobal(L, "hud_rect");
+  lua_pushcfunction(L, l_hud_clear);
+  lua_setglobal(L, "hud_clear");
+  lua_pushcfunction(L, l_hud_text);
+  lua_setglobal(L, "hud_text");
+  lua_pushcfunction(L, l_hud_text_width);
+  lua_setglobal(L, "hud_text_width");
+
+  // spec/gui-layer-v0.md: bindings de capas GUI apilables. Solo en la VM ENTRY -- los
+  // actores no tienen acceso (mantiene la separacion: un actor no puede alterar la UI).
+  lua_pushcfunction(L, l_gui_layer_show);
+  lua_setglobal(L, "gui_layer_show");
+  lua_pushcfunction(L, l_gui_layer_hide);
+  lua_setglobal(L, "gui_layer_hide");
+  lua_pushcfunction(L, l_gui_layer_visible);
+  lua_setglobal(L, "gui_layer_visible");
+  lua_pushcfunction(L, l_gui_layer_hide_all);
+  lua_setglobal(L, "gui_layer_hide_all");
+  lua_pushcfunction(L, l_gui_layer_set_text);
+  lua_setglobal(L, "gui_layer_set_text");
+
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {
     Serial.print("Lua (carga): ");
@@ -180,12 +310,19 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
     return false;
   }
 
-  lua_close(L);
+  // spec/hud-border-v0.md: NO cerrar la VM. Queda viva para que turtle_scene pueda invocar
+  // `_hud_init` (una vez por escena) y `_hud(dt)` (cada frame) via turtle_entry_lua_*.
+  turtle_entry_lua_take(L);
   return true;
 }
 
 /** Lua + paleta; carga cartucho pequeno y bundle en sidecar. */
 static bool loadCartRunLua(const char* path) {
+  // spec/hud-border-v0.md: la VM ENTRY del cart anterior queda invalida en cuanto liberamos
+  // g_bundle (los bindings hud_text/text la usan). Cerrar aca antes de tocar los buffers.
+  turtle_entry_lua_release();
+  // spec/gui-layer-v0.md: el catalogo GUI apunta a g_bundle; liberarlo tambien antes.
+  turtle_gui_layer_release();
   turtle_cart_free(&g_cart);
   turtle_cart_free(&g_bundle);
   g_has_bundle = false;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from turtlestudio.scene_tiles import _blend_rgba_pixel_inplace, scene_y_to_framebuffer_y
@@ -18,7 +18,31 @@ _CAMERA_MODE_CHOICES = (CAMERA_MODE_FOLLOW, CAMERA_MODE_FIXED)
 DEFAULT_CAMERA_MARGIN_X = 64
 DEFAULT_CAMERA_MARGIN_Y = 48
 
+# spec/hud-border-v0.md: minimo de playfield reservado tras aplicar hud_border (8 px por eje).
+HUD_MIN_PLAYFIELD = 8
+
 _SCENE_CAMERA_RGBA = (1.0, 0.55, 0.2, 0.92)
+_HUD_BORDER_RGBA = (0.15, 0.7, 1.0, 0.55)
+
+
+@dataclass(frozen=True)
+class HudBorder:
+    """spec/hud-border-v0.md: cuatro bordes HUD en px de framebuffer. Todo cero = sin HUD."""
+
+    top: int = 0
+    bottom: int = 0
+    left: int = 0
+    right: int = 0
+
+    def is_zero(self) -> bool:
+        return self.top == 0 and self.bottom == 0 and self.left == 0 and self.right == 0
+
+    def playfield_size(
+        self,
+        viewport_w: int = VIEWPORT_PIXEL_W,
+        viewport_h: int = VIEWPORT_PIXEL_H,
+    ) -> tuple[int, int]:
+        return (viewport_w - self.left - self.right, viewport_h - self.top - self.bottom)
 
 
 @dataclass(frozen=True)
@@ -29,6 +53,7 @@ class SceneCameraConfig:
     target: str = ""
     margin_x: int = DEFAULT_CAMERA_MARGIN_X
     margin_y: int = DEFAULT_CAMERA_MARGIN_Y
+    hud_border: HudBorder = field(default_factory=HudBorder)
 
 
 def _clamp_int(v: object, lo: int, hi: int, *, default: int) -> int:
@@ -42,6 +67,47 @@ def _clamp_int(v: object, lo: int, hi: int, *, default: int) -> int:
 def clamp_camera_margin(margin: int, viewport_size: int) -> int:
     cap = max(0, (max(1, int(viewport_size)) - 1) // 2)
     return max(0, min(cap, int(margin)))
+
+
+def clamp_hud_border(
+    top: int,
+    bottom: int,
+    left: int,
+    right: int,
+    *,
+    viewport_w: int = VIEWPORT_PIXEL_W,
+    viewport_h: int = VIEWPORT_PIXEL_H,
+) -> HudBorder:
+    """spec/hud-border-v0.md: mismos limites que en firmware (parse_scene_hud_border):
+    cada borde en [0, viewport/2 - 1]; garantia de HUD_MIN_PLAYFIELD px de playfield por eje."""
+    max_v = max(0, viewport_h // 2 - 1)
+    max_h = max(0, viewport_w // 2 - 1)
+    t = max(0, min(max_v, int(top)))
+    b = max(0, min(max_v, int(bottom)))
+    l = max(0, min(max_h, int(left)))
+    r = max(0, min(max_h, int(right)))
+    if viewport_h - t - b < HUD_MIN_PLAYFIELD:
+        b = max(0, viewport_h - t - HUD_MIN_PLAYFIELD)
+        if b < 0:
+            t = max(0, viewport_h - HUD_MIN_PLAYFIELD)
+            b = 0
+    if viewport_w - l - r < HUD_MIN_PLAYFIELD:
+        r = max(0, viewport_w - l - HUD_MIN_PLAYFIELD)
+        if r < 0:
+            l = max(0, viewport_w - HUD_MIN_PLAYFIELD)
+            r = 0
+    return HudBorder(top=t, bottom=b, left=l, right=r)
+
+
+def parse_hud_border(raw: Any) -> HudBorder:
+    if not isinstance(raw, dict):
+        return HudBorder()
+    return clamp_hud_border(
+        _clamp_int(raw.get("top", 0), 0, VIEWPORT_PIXEL_H, default=0),
+        _clamp_int(raw.get("bottom", 0), 0, VIEWPORT_PIXEL_H, default=0),
+        _clamp_int(raw.get("left", 0), 0, VIEWPORT_PIXEL_W, default=0),
+        _clamp_int(raw.get("right", 0), 0, VIEWPORT_PIXEL_W, default=0),
+    )
 
 
 def clamp_camera_position(
@@ -94,6 +160,7 @@ def parse_scene_camera(raw: Any) -> SceneCameraConfig:
         VIEWPORT_PIXEL_H,
         default=DEFAULT_CAMERA_MARGIN_Y,
     )
+    hud_border = parse_hud_border(d.get("hud_border"))
     return SceneCameraConfig(
         mode=mode,
         x=x,
@@ -101,6 +168,7 @@ def parse_scene_camera(raw: Any) -> SceneCameraConfig:
         target=target,
         margin_x=clamp_camera_margin(mx, VIEWPORT_PIXEL_W),
         margin_y=clamp_camera_margin(my, VIEWPORT_PIXEL_H),
+        hud_border=hud_border,
     )
 
 
@@ -115,6 +183,16 @@ def parse_scene_camera_from_row(row: dict[str, Any]) -> SceneCameraConfig:
         "margin_x": row.get("camera_margin_x"),
         "margin_y": row.get("camera_margin_y"),
     }
+    # spec/hud-border-v0.md: alternativa plana (camera_hud_border_*) para pipelines que
+    # aplanan campos en filas; la forma canonica sigue siendo anidada bajo `camera.hud_border`.
+    flat_hud = {
+        "top": row.get("camera_hud_border_top"),
+        "bottom": row.get("camera_hud_border_bottom"),
+        "left": row.get("camera_hud_border_left"),
+        "right": row.get("camera_hud_border_right"),
+    }
+    if any(v is not None for v in flat_hud.values()):
+        flat["hud_border"] = {k: (0 if v is None else v) for k, v in flat_hud.items()}
     if any(v is not None for v in flat.values()):
         return parse_scene_camera(flat)
     return SceneCameraConfig()
@@ -130,6 +208,15 @@ def scene_camera_to_json(cam: SceneCameraConfig) -> dict[str, Any]:
     }
     if cam.target.strip():
         out["target"] = cam.target.strip()
+    # spec/hud-border-v0.md: se omite si es todo cero (comportamiento pre-v0) para no ensuciar
+    # diffs de escenas viejas; se emite si hay algun borde no cero.
+    if not cam.hud_border.is_zero():
+        out["hud_border"] = {
+            "top": int(cam.hud_border.top),
+            "bottom": int(cam.hud_border.bottom),
+            "left": int(cam.hud_border.left),
+            "right": int(cam.hud_border.right),
+        }
     return out
 
 
@@ -141,6 +228,10 @@ def scene_camera_flat_row_fields(cam: SceneCameraConfig) -> dict[str, Any]:
         "camera_y": int(cam.y),
         "camera_margin_x": int(cam.margin_x),
         "camera_margin_y": int(cam.margin_y),
+        "camera_hud_border_top": int(cam.hud_border.top),
+        "camera_hud_border_bottom": int(cam.hud_border.bottom),
+        "camera_hud_border_left": int(cam.hud_border.left),
+        "camera_hud_border_right": int(cam.hud_border.right),
     }
     if cam.target.strip():
         out["camera_target"] = cam.target.strip()
@@ -251,6 +342,68 @@ def resolve_scene_camera_viewport(
         margin_x=cam.margin_x,
         margin_y=cam.margin_y,
     )
+
+
+def draw_scene_hud_border_on_rgba(
+    rgba: list[float],
+    fw: int,
+    fh: int,
+    cam_x: int,
+    cam_y: int,
+    hud_border: HudBorder,
+    *,
+    viewport_w: int = VIEWPORT_PIXEL_W,
+    viewport_h: int = VIEWPORT_PIXEL_H,
+    fill_rgba: tuple[float, float, float, float] = _HUD_BORDER_RGBA,
+) -> None:
+    """spec/hud-border-v0.md: tinte semitransparente sobre las cuatro franjas HUD dentro del
+    viewport de camara actual. Marca visualmente al autor que area del framebuffer queda
+    reservada para el HUD -- el codigo del cart no puede pintar el playfield desde hud_*,
+    y los actores no se derraman a estas franjas."""
+    if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
+        return
+    if hud_border.is_zero():
+        return
+    vw = max(1, int(viewport_w))
+    vh = max(1, int(viewport_h))
+    x0 = max(0, int(cam_x))
+    y0 = max(0, int(cam_y))
+    x1 = min(fw - 1, x0 + vw - 1)
+    y1 = min(fh - 1, y0 + vh - 1)
+    if x0 > x1 or y0 > y1:
+        return
+    r, g, b, a = fill_rgba
+    top = int(hud_border.top)
+    bottom = int(hud_border.bottom)
+    left = int(hud_border.left)
+    right = int(hud_border.right)
+    # Franja arriba (fb): filas scene_y en [y1 - top + 1, y1].
+    top_scene_lo = max(y0, y1 - top + 1)
+    for sy in range(top_scene_lo, y1 + 1):
+        y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
+        row_base = y_fb * fw * 4
+        for x in range(x0, x1 + 1):
+            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+    # Franja abajo (fb): scene_y en [y0, y0 + bottom - 1].
+    bot_scene_hi = min(y1, y0 + bottom - 1)
+    for sy in range(y0, bot_scene_hi + 1):
+        y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
+        row_base = y_fb * fw * 4
+        for x in range(x0, x1 + 1):
+            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+    # Franjas laterales solo cubren las filas del playfield (no repintan esquinas ya
+    # pintadas arriba/abajo -- se ven mas oscuras si se acumulan dos capas del mismo tinte).
+    inner_lo = min(y1, y0 + bottom)
+    inner_hi = max(y0, y1 - top)
+    for sy in range(inner_lo, inner_hi + 1):
+        y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
+        row_base = y_fb * fw * 4
+        left_hi = min(x1, x0 + left - 1)
+        for x in range(x0, left_hi + 1):
+            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+        right_lo = max(x0, x1 - right + 1)
+        for x in range(right_lo, x1 + 1):
+            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
 
 
 def draw_scene_camera_viewport_on_rgba(

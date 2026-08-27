@@ -104,6 +104,7 @@ from turtlestudio.scene_camera import (
     VIEWPORT_PIXEL_H,
     VIEWPORT_PIXEL_W,
     draw_scene_camera_viewport_on_rgba,
+    draw_scene_hud_border_on_rgba,
     parse_scene_camera_from_row,
     resolve_scene_camera_viewport,
     scene_camera_to_json,
@@ -592,13 +593,23 @@ def render_scene_rgba(
                 rgba, fw, fh, parallax_bands, selected_index=selected_parallax_band_index
             )
 
+    # spec/hud-border-v0.md: parse siempre (aunque el mundo no tenga scroll), asi la HUD
+    # tambien se marca en escenas single-screen. En scroll, resolve_scene_camera_viewport
+    # da la posicion actual de la camara; sin scroll, cam esta anclada en (0, 0).
+    hud_cam = parse_scene_camera_from_row(row)
     if fw > viewport_w or fh > viewport_h:
         draw_scene_step_bounds_on_rgba(rgba, fw, fh, step_w=viewport_w, step_h=viewport_h)
-        cam = parse_scene_camera_from_row(row)
         cam_x, cam_y = resolve_scene_camera_viewport(
-            cam, world_w=fw, world_h=fh, objects=list(placements), viewport_w=viewport_w, viewport_h=viewport_h
+            hud_cam, world_w=fw, world_h=fh, objects=list(placements), viewport_w=viewport_w, viewport_h=viewport_h
         )
         draw_scene_camera_viewport_on_rgba(rgba, fw, fh, cam_x, cam_y, viewport_w=viewport_w, viewport_h=viewport_h)
+    else:
+        cam_x, cam_y = 0, 0
+    if not hud_cam.hud_border.is_zero():
+        draw_scene_hud_border_on_rgba(
+            rgba, fw, fh, cam_x, cam_y, hud_cam.hud_border,
+            viewport_w=viewport_w, viewport_h=viewport_h,
+        )
 
     # Se dibuja al final, encima de todo (tiles, capas, limites de mundo, viewport de
     # camara), para que el marco de seleccion siempre sea visible sin importar que
@@ -1702,6 +1713,27 @@ class SceneEditorWidget(QWidget):
         self.spin_cam_margin_y.setRange(0, VIEWPORT_PIXEL_H)
         self.spin_cam_margin_y.valueChanged.connect(self._on_camera_changed)
         form.addRow(tr("scene.margin_y_label"), self.spin_cam_margin_y)
+        # spec/hud-border-v0.md: cuatro spinbox por borde. Rango firme por eje
+        # (VIEWPORT/2 - 1) para respetar HUD_MIN_PLAYFIELD; el clamp final vive en
+        # scene_camera.clamp_hud_border al momento de serializar.
+        max_v = max(0, VIEWPORT_PIXEL_H // 2 - 1)
+        max_h = max(0, VIEWPORT_PIXEL_W // 2 - 1)
+        self.spin_hud_top = QSpinBox()
+        self.spin_hud_top.setRange(0, max_v)
+        self.spin_hud_top.valueChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_top_label"), self.spin_hud_top)
+        self.spin_hud_bottom = QSpinBox()
+        self.spin_hud_bottom.setRange(0, max_v)
+        self.spin_hud_bottom.valueChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_bottom_label"), self.spin_hud_bottom)
+        self.spin_hud_left = QSpinBox()
+        self.spin_hud_left.setRange(0, max_h)
+        self.spin_hud_left.valueChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_left_label"), self.spin_hud_left)
+        self.spin_hud_right = QSpinBox()
+        self.spin_hud_right.setRange(0, max_h)
+        self.spin_hud_right.valueChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_right_label"), self.spin_hud_right)
         return section
 
     def _build_parallax_bands_group(self) -> QGroupBox:
@@ -1986,12 +2018,17 @@ class SceneEditorWidget(QWidget):
 
     def _load_camera(self, row: dict[str, Any]) -> None:
         cam = row.get("camera") or {}
+        hud = cam.get("hud_border") or {}
         self.combo_camera_mode.blockSignals(True)
         self.spin_cam_x.blockSignals(True)
         self.spin_cam_y.blockSignals(True)
         self.edit_cam_target.blockSignals(True)
         self.spin_cam_margin_x.blockSignals(True)
         self.spin_cam_margin_y.blockSignals(True)
+        self.spin_hud_top.blockSignals(True)
+        self.spin_hud_bottom.blockSignals(True)
+        self.spin_hud_left.blockSignals(True)
+        self.spin_hud_right.blockSignals(True)
         idx = self.combo_camera_mode.findText(str(cam.get("mode", CAMERA_MODE_FOLLOW)))
         self.combo_camera_mode.setCurrentIndex(max(0, idx))
         self.spin_cam_x.setValue(int(cam.get("x", 0)))
@@ -1999,12 +2036,20 @@ class SceneEditorWidget(QWidget):
         self.edit_cam_target.setText(str(cam.get("target", "")))
         self.spin_cam_margin_x.setValue(int(cam.get("margin_x", 64)))
         self.spin_cam_margin_y.setValue(int(cam.get("margin_y", 48)))
+        self.spin_hud_top.setValue(int(hud.get("top", 0) or 0))
+        self.spin_hud_bottom.setValue(int(hud.get("bottom", 0) or 0))
+        self.spin_hud_left.setValue(int(hud.get("left", 0) or 0))
+        self.spin_hud_right.setValue(int(hud.get("right", 0) or 0))
         self.combo_camera_mode.blockSignals(False)
         self.spin_cam_x.blockSignals(False)
         self.spin_cam_y.blockSignals(False)
         self.edit_cam_target.blockSignals(False)
         self.spin_cam_margin_x.blockSignals(False)
         self.spin_cam_margin_y.blockSignals(False)
+        self.spin_hud_top.blockSignals(False)
+        self.spin_hud_bottom.blockSignals(False)
+        self.spin_hud_left.blockSignals(False)
+        self.spin_hud_right.blockSignals(False)
 
     @staticmethod
     def _parallax_band_summary(d: dict[str, Any]) -> str:
@@ -3030,6 +3075,9 @@ class SceneEditorWidget(QWidget):
         row = self._current_row()
         if row is None:
             return
+        # spec/hud-border-v0.md: hud_border va anidado bajo camera (misma familia que
+        # margin_x/y). El clamp final (rangos + min. playfield 8 px) se aplica en
+        # scene_camera.parse_scene_camera al serializar el manifest.
         row["camera"] = {
             "mode": self.combo_camera_mode.currentText(),
             "x": self.spin_cam_x.value(),
@@ -3037,6 +3085,12 @@ class SceneEditorWidget(QWidget):
             "target": self.edit_cam_target.text().strip(),
             "margin_x": self.spin_cam_margin_x.value(),
             "margin_y": self.spin_cam_margin_y.value(),
+            "hud_border": {
+                "top": self.spin_hud_top.value(),
+                "bottom": self.spin_hud_bottom.value(),
+                "left": self.spin_hud_left.value(),
+                "right": self.spin_hud_right.value(),
+            },
         }
         self._mark_dirty()
         self._refresh_canvas()

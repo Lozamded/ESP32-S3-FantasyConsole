@@ -28,6 +28,15 @@ static bool s_force_full_flip = true;
 static int s_cam_x = 0;
 static int s_cam_y = 0;
 
+// spec/hud-border-v0.md: playfield = subrectangulo del framebuffer donde se pintan escena +
+// actores; el area fuera es la region HUD (nunca la tocan blits de escena). Defecto = todo
+// el framebuffer, es decir sin HUD, para carts que no usen el mecanismo. turtle_scene.cpp
+// llama a set_playfield en cada begin_runtime con los valores derivados del manifest.
+static int s_pf_ox = 0;
+static int s_pf_oy = 0;
+static int s_pf_w = kW;
+static int s_pf_h = kH;
+
 // Grilla de celdas sucias (en vez de un unico rect englobante): dos sprites en extremos
 // opuestos de la pantalla ya no inflan la region sucia a casi toda la pantalla, cada uno
 // solo ensucia sus propias celdas. 16px/celda: 11x8 celdas, barrerla entera cada frame
@@ -503,10 +512,27 @@ static uint8_t lua_color_index(lua_State* L, int arg) {
   return static_cast<uint8_t>(c);
 }
 
+// Fwd decl: definido mas abajo pero necesario para turtle_gpu_pixel_absolute /
+// _fill_rect_absolute (declaradas antes en el orden actual del archivo). Basura si el
+// caller pasa un color >= kNColors -- clampea al ultimo indice valido.
+static uint8_t clamp_color_index(uint8_t ci);
+
 static void plot_fb(int xfb, int yfb, uint8_t ci) {
   if (xfb < 0 || xfb >= kW || yfb < 0 || yfb >= kH) {
     return;
   }
+  s_fb[yfb * kW + xfb] = ci;
+}
+
+// spec/hud-border-v0.md: plot dentro del playfield partiendo de coords viewport-relativas
+// (vx: 0..pf_w-1 hacia la derecha; vy_scene: 0..pf_h-1 hacia arriba, misma convencion Y-up
+// que usan blit_indexed_scene y familia). Fuera del playfield es no-op.
+static inline void plot_playfield(int vx, int vy_scene, uint8_t ci) {
+  if (vx < 0 || vx >= s_pf_w || vy_scene < 0 || vy_scene >= s_pf_h) {
+    return;
+  }
+  const int xfb = s_pf_ox + vx;
+  const int yfb = s_pf_oy + (s_pf_h - 1) - vy_scene;
   s_fb[yfb * kW + xfb] = ci;
 }
 
@@ -524,6 +550,165 @@ void turtle_gpu_get_camera(int* cam_x, int* cam_y) {
   }
 }
 
+void turtle_gpu_set_playfield(int ox, int oy, int pw, int ph) {
+  // Clamp defensivo: valores erroneos aca desalinean todo el pipeline de dibujo. El
+  // parser del manifest (turtle_scene.cpp) ya valida rangos con reglas de spec, pero
+  // este es la ultima linea de defensa (unit tests, llamadas fuera de scene).
+  if (pw < 1) {
+    pw = 1;
+  }
+  if (ph < 1) {
+    ph = 1;
+  }
+  if (ox < 0) {
+    ox = 0;
+  }
+  if (oy < 0) {
+    oy = 0;
+  }
+  if (ox + pw > kW) {
+    pw = kW - ox;
+  }
+  if (oy + ph > kH) {
+    ph = kH - oy;
+  }
+  s_pf_ox = ox;
+  s_pf_oy = oy;
+  s_pf_w = pw;
+  s_pf_h = ph;
+}
+
+void turtle_gpu_get_playfield(int* ox, int* oy, int* pw, int* ph) {
+  if (ox) {
+    *ox = s_pf_ox;
+  }
+  if (oy) {
+    *oy = s_pf_oy;
+  }
+  if (pw) {
+    *pw = s_pf_w;
+  }
+  if (ph) {
+    *ph = s_pf_h;
+  }
+}
+
+bool turtle_gpu_playfield_contains(int x, int y) {
+  return x >= s_pf_ox && x < s_pf_ox + s_pf_w && y >= s_pf_oy && y < s_pf_oy + s_pf_h;
+}
+
+// spec/hud-border-v0.md: escritura HUD absoluta. `s_fb` y `s_static_fb` se mantienen en
+// sincronia para que restore_static_dirty no revierta el HUD si un dirty rect de actores
+// se derrama a la region HUD (por la holgura ±4 de dirty_mark_scene_rect). La celda dirty
+// se marca aca directamente en fb-coords (no scene-space), sin la holgura de escena que
+// solo tiene sentido para blits de actor.
+static inline void mark_panel_dirty_pixel_fb(int xfb, int yfb) {
+  if (xfb < 0 || xfb >= kW || yfb < 0 || yfb >= kH) {
+    return;
+  }
+  s_dirty_cell[yfb / kTileSize][xfb / kTileSize] = 1;
+  s_dirty_valid = true;
+}
+
+void turtle_gpu_pixel_absolute(int x, int y, uint8_t color_index) {
+  if (x < 0 || x >= kW || y < 0 || y >= kH) {
+    return;
+  }
+  if (turtle_gpu_playfield_contains(x, y)) {
+    return;  // proteccion: hud_* no puede pintar el area de juego
+  }
+  const uint8_t ci = clamp_color_index(color_index);
+  s_fb[y * kW + x] = ci;
+  if (s_has_static) {
+    s_static_fb[y * kW + x] = ci;
+  }
+  mark_panel_dirty_pixel_fb(x, y);
+}
+
+void turtle_gpu_pixel_raw(int x, int y, uint8_t color_index) {
+  if (x < 0 || x >= kW || y < 0 || y >= kH) {
+    return;
+  }
+  const uint8_t ci = clamp_color_index(color_index);
+  s_fb[y * kW + x] = ci;
+  if (s_has_static) {
+    s_static_fb[y * kW + x] = ci;
+  }
+  mark_panel_dirty_pixel_fb(x, y);
+}
+
+void turtle_gpu_fill_rect_raw(int x, int y, int w, int h, uint8_t color_index) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const uint8_t ci = clamp_color_index(color_index);
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w - 1;
+  int y1 = y + h - 1;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 >= kW) x1 = kW - 1;
+  if (y1 >= kH) y1 = kH - 1;
+  if (x0 > x1 || y0 > y1) {
+    return;
+  }
+  for (int yy = y0; yy <= y1; ++yy) {
+    uint8_t* row_fb = &s_fb[yy * kW + x0];
+    memset(row_fb, ci, static_cast<size_t>(x1 - x0 + 1));
+    if (s_has_static) {
+      uint8_t* row_stat = &s_static_fb[yy * kW + x0];
+      memset(row_stat, ci, static_cast<size_t>(x1 - x0 + 1));
+    }
+  }
+  dirty_mark_fb_clamped(x0, y0, x1, y1);
+}
+
+void turtle_gpu_fill_rect_absolute(int x, int y, int w, int h, uint8_t color_index) {
+  if (w <= 0 || h <= 0) {
+    return;
+  }
+  const uint8_t ci = clamp_color_index(color_index);
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w - 1;
+  int y1 = y + h - 1;
+  if (x0 < 0) {
+    x0 = 0;
+  }
+  if (y0 < 0) {
+    y0 = 0;
+  }
+  if (x1 >= kW) {
+    x1 = kW - 1;
+  }
+  if (y1 >= kH) {
+    y1 = kH - 1;
+  }
+  if (x0 > x1 || y0 > y1) {
+    return;
+  }
+  const int pf_x0 = s_pf_ox;
+  const int pf_y0 = s_pf_oy;
+  const int pf_x1 = s_pf_ox + s_pf_w - 1;
+  const int pf_y1 = s_pf_oy + s_pf_h - 1;
+  for (int yy = y0; yy <= y1; ++yy) {
+    for (int xx = x0; xx <= x1; ++xx) {
+      // Playfield: no-op (proteccion). El rect puede cruzar bordes sin efecto ahi.
+      if (xx >= pf_x0 && xx <= pf_x1 && yy >= pf_y0 && yy <= pf_y1) {
+        continue;
+      }
+      s_fb[yy * kW + xx] = ci;
+      if (s_has_static) {
+        s_static_fb[yy * kW + xx] = ci;
+      }
+    }
+  }
+  // Marca panel-dirty a nivel de celda (16 px) englobando el rect entero; el interior
+  // playfield-only se restaura desde s_static_fb (identidad) en el proximo frame, sin costo.
+  dirty_mark_fb_clamped(x0, y0, x1, y1);
+}
+
 static uint8_t clamp_color_index(uint8_t ci) {
   if (ci >= kNColors) {
     return static_cast<uint8_t>(kNColors - 1);
@@ -536,6 +721,18 @@ void turtle_gpu_cls(uint8_t color_index) {
   turtle_gpu_request_full_flip();
 }
 
+void turtle_gpu_playfield_clear(uint8_t color_index) {
+  const uint8_t ci = clamp_color_index(color_index);
+  const int y0 = s_pf_oy;
+  const int y1 = s_pf_oy + s_pf_h;
+  const int x0 = s_pf_ox;
+  const int span = s_pf_w;
+  for (int yy = y0; yy < y1; ++yy) {
+    memset(&s_fb[yy * kW + x0], ci, static_cast<size_t>(span));
+  }
+  turtle_gpu_request_full_flip();
+}
+
 void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index) {
   if (w <= 0 || h <= 0) {
     return;
@@ -543,16 +740,15 @@ void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_inde
   const uint8_t ci = clamp_color_index(color_index);
   for (int sy = y0; sy < y0 + h; ++sy) {
     const int vy = sy - s_cam_y;
-    const int yfb = (kH - 1) - vy;
-    if (yfb < 0 || yfb >= kH) {
+    if (vy < 0 || vy >= s_pf_h) {
       continue;
     }
     for (int sx = x0; sx < x0 + w; ++sx) {
       const int vx = sx - s_cam_x;
-      if (vx < 0 || vx >= kW) {
+      if (vx < 0 || vx >= s_pf_w) {
         continue;
       }
-      plot_fb(vx, yfb, ci);
+      plot_playfield(vx, vy, ci);
     }
   }
 }
@@ -567,8 +763,7 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
   for (int py = 0; py < h; ++py) {
     const int sy = y0 + (h - 1 - py);
     const int vy = sy - s_cam_y;
-    const int yfb = (kH - 1) - vy;
-    if (yfb < 0 || yfb >= kH) {
+    if (vy < 0 || vy >= s_pf_h) {
       continue;
     }
     const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
@@ -578,10 +773,10 @@ void turtle_gpu_blit_indexed_scene(int x0, int y0, int w, int h,
         continue;
       }
       const int vx = x0 + lx - s_cam_x;
-      if (vx < 0 || vx >= kW) {
+      if (vx < 0 || vx >= s_pf_w) {
         continue;
       }
-      plot_fb(vx, yfb, clamp_color_index(ci));
+      plot_playfield(vx, vy, clamp_color_index(ci));
     }
   }
 }
@@ -597,8 +792,7 @@ void turtle_gpu_blit_indexed_scene_tint(int x0, int y0, int w, int h,
   for (int py = 0; py < h; ++py) {
     const int sy = y0 + (h - 1 - py);
     const int vy = sy - s_cam_y;
-    const int yfb = (kH - 1) - vy;
-    if (yfb < 0 || yfb >= kH) {
+    if (vy < 0 || vy >= s_pf_h) {
       continue;
     }
     const uint8_t* row = rows_top_first + static_cast<size_t>(py) * static_cast<size_t>(row_stride);
@@ -607,10 +801,10 @@ void turtle_gpu_blit_indexed_scene_tint(int x0, int y0, int w, int h,
         continue;
       }
       const int vx = x0 + lx - s_cam_x;
-      if (vx < 0 || vx >= kW) {
+      if (vx < 0 || vx >= s_pf_w) {
         continue;
       }
-      plot_fb(vx, yfb, tint);
+      plot_playfield(vx, vy, tint);
     }
   }
 }
@@ -622,12 +816,11 @@ void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
     return;
   }
   const int vy = scene_y - s_cam_y;
-  const int yfb = (kH - 1) - vy;
-  if (yfb < 0 || yfb >= kH) {
+  if (vy < 0 || vy >= s_pf_h) {
     return;
   }
   const uint8_t tr = clamp_color_index(transparent_index);
-  for (int vx = 0; vx < kW; ++vx) {
+  for (int vx = 0; vx < s_pf_w; ++vx) {
     int sx = vx + x_offset;
     if (wrap_x) {
       sx %= sample_row_len;
@@ -641,7 +834,7 @@ void turtle_gpu_blit_indexed_row_banded(int scene_y, const uint8_t* sample_row,
     if (ci == tr) {
       continue;
     }
-    plot_fb(vx, yfb, clamp_color_index(ci));
+    plot_playfield(vx, vy, clamp_color_index(ci));
   }
 }
 
@@ -658,8 +851,7 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
   for (int py = 0; py < h; ++py) {
     const int sy = blit_y + (h - 1 - py);
     const int vy = sy - s_cam_y;
-    const int yfb = (kH - 1) - vy;
-    if (yfb < 0 || yfb >= kH) {
+    if (vy < 0 || vy >= s_pf_h) {
       continue;
     }
     // flip_v: sample rows in reverse (dibuja el sprite cabeza abajo pero en el mismo rect).
@@ -674,10 +866,10 @@ void turtle_gpu_blit_indexed_scene_anchor(int anchor_x, int anchor_y, int w, int
       const int sx =
           flip_h ? (anchor_x + origin_x - lx) : (anchor_x + lx - origin_x);
       const int vx = sx - s_cam_x;
-      if (vx < 0 || vx >= kW) {
+      if (vx < 0 || vx >= s_pf_w) {
         continue;
       }
-      plot_fb(vx, yfb, clamp_color_index(ci));
+      plot_playfield(vx, vy, clamp_color_index(ci));
     }
   }
 }
@@ -697,14 +889,24 @@ void turtle_gpu_dirty_mark_scene_rect(int x0, int y0, int w, int h) {
   if (w <= 0 || h <= 0) {
     return;
   }
-  /* Margen extra: borrado prev_blit + holgura por mapeo fb 164 -> panel ~320. */
+  /* Margen extra: borrado prev_blit + holgura por mapeo fb 164 -> panel ~320.
+   * spec/hud-border-v0.md: los rects marcados aca vienen del camino de camara fija
+   * (draw_all_actors, ver comentario alli). El caller pasa coords de escena Y-arriba
+   * viewport-relativas (equivalen a viewport-relative con cam=(0,0)); aca se convierten
+   * a coords de framebuffer aplicando el offset del playfield -- si hay HUD en top>0
+   * los dirty cells caen desplazados hacia abajo, y no se cruzan a la region HUD
+   * (dirty_mark_fb_clamped clampea al framebuffer completo; los pixeles HUD que caigan
+   * en un rect sucio se restauran desde s_static_fb, que hud_pixel_absolute actualiza
+   * en cada escritura, asi que el HUD queda correcto). */
   const int sx0 = x0 - 4;
   const int sx1 = x0 + w + 3;
   const int sy0 = y0 - 4;
   const int sy1 = y0 + h + 3;
-  const int yfb0 = (kH - 1) - sy1;
-  const int yfb1 = (kH - 1) - sy0;
-  dirty_mark_fb_clamped(sx0, yfb0, sx1, yfb1);
+  const int xfb0 = s_pf_ox + sx0;
+  const int xfb1 = s_pf_ox + sx1;
+  const int yfb0 = s_pf_oy + (s_pf_h - 1) - sy1;
+  const int yfb1 = s_pf_oy + (s_pf_h - 1) - sy0;
+  dirty_mark_fb_clamped(xfb0, yfb0, xfb1, yfb1);
 }
 
 /**
@@ -791,15 +993,17 @@ static int l_pix(lua_State* L) {
 }
 
 /**
- * Coordenadas escena (spec/scene-v0.md): (0,0) abajo-izquierda, Y hacia arriba.
- * xfb = sx, yfb = (H - 1) - sy
+ * Coordenadas escena (spec/scene-v0.md): (0,0) esquina inferior-izq del playfield, Y-arriba.
+ * spec/hud-border-v0.md: si hay `camera.hud_border`, `sx`/`sy` son viewport-relativas al
+ * playfield reducido (no al framebuffer completo). Fuera del playfield es no-op. Durante
+ * la ejecucion de la VM ENTRY antes de comenzar la primera escena, playfield = framebuffer
+ * entero, asi que el comportamiento es identico al de antes de v0.
  */
 static int l_spix(lua_State* L) {
   const int sx = static_cast<int>(luaL_checkinteger(L, 1));
   const int sy = static_cast<int>(luaL_checkinteger(L, 2));
   const uint8_t ci = lua_color_index(L, 3);
-  const int yfb = (kH - 1) - sy;
-  plot_fb(sx, yfb, ci);
+  plot_playfield(sx, sy, ci);
   return 0;
 }
 

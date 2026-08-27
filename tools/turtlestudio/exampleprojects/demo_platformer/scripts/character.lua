@@ -11,7 +11,7 @@ local jump_speed = 180   -- px/s (impulso inicial hacia arriba, tambien pico de 
 -- El calculo saca "cuanta velocidad me falta desde el pico deseado" con
 -- v = sqrt(2*g*h_restante), asi el pico corto es constante sin importar en que
 -- fotograma exacto de la ventana se solto el boton.
-local short_jump_peak = 16      -- px sobre el suelo para el salto corto
+local short_jump_peak = 18      -- px sobre el suelo para el salto corto
 local jump_hold_threshold = 0.1 -- s: aguantar A mas alla de esto => salto alto
 local gravity = 380      -- px/s^2
 local attack_time = 0.25 -- segundos que dura la animacion de golpe

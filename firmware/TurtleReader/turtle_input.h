@@ -62,3 +62,10 @@ bool turtle_input_released(int btn);
 uint8_t turtle_input_held_mask(void);
 
 void turtle_input_register_lua(lua_State* L);
+
+/**
+ * spec/gui-layer-v0.md: variante para VMs de actor. Igual API que la version normal, pero
+ * btn/btnp devuelven `false` mientras una capa GUI visible tenga `captures_input: true`.
+ * La VM ENTRY sigue usando la version normal para poder navegar menus con input real.
+ */
+void turtle_input_register_lua_actor(lua_State* L);

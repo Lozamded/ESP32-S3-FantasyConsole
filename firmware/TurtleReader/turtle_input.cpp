@@ -1,5 +1,7 @@
 #include "turtle_input.h"
 
+#include "turtle_gui_layer.h"
+
 #include <Arduino.h>
 
 extern "C" {
@@ -102,6 +104,29 @@ static int l_btnp(lua_State* L) {
   return 1;
 }
 
+// spec/gui-layer-v0.md: version "gated" para VMs de actor. Cuando una capa visible tiene
+// `captures_input: true`, devuelve `false` para toda tecla. La VM ENTRY (menu, HUD) sigue
+// usando l_btn/l_btnp normales para poder navegar la UI.
+static int l_btn_actor(lua_State* L) {
+  const int i = lua_btn_index(L, 1);
+  if (turtle_gui_layer_any_captures_input()) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
+  lua_pushboolean(L, turtle_input_held(i));
+  return 1;
+}
+
+static int l_btnp_actor(lua_State* L) {
+  const int i = lua_btn_index(L, 1);
+  if (turtle_gui_layer_any_captures_input()) {
+    lua_pushboolean(L, false);
+    return 1;
+  }
+  lua_pushboolean(L, turtle_input_pressed(i));
+  return 1;
+}
+
 }  // namespace
 
 void turtle_input_init(void) {
@@ -170,5 +195,13 @@ void turtle_input_register_lua(lua_State* L) {
   lua_setglobal(L, "btn");
 
   lua_pushcfunction(L, l_btnp);
+  lua_setglobal(L, "btnp");
+}
+
+void turtle_input_register_lua_actor(lua_State* L) {
+  lua_pushcfunction(L, l_btn_actor);
+  lua_setglobal(L, "btn");
+
+  lua_pushcfunction(L, l_btnp_actor);
   lua_setglobal(L, "btnp");
 }

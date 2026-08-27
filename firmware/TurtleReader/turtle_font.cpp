@@ -231,6 +231,76 @@ int turtle_font_draw_scene(const TurtleFont* f, int sx, int sy, const char* str,
   return x - sx;
 }
 
+int turtle_font_draw_fb_raw(const TurtleFont* f, int xfb, int yfb_top, const char* str,
+                            uint8_t transparent_index, int tint_color_index) {
+  if (!f || !str) {
+    return 0;
+  }
+  const int glyph_px = f->glyph_px;
+  int x = xfb;
+  for (const char* p = str; *p; ++p) {
+    const int idx = turtle_font_charset_index(*p);
+    if (idx < 0) {
+      x += glyph_px;
+      continue;
+    }
+    const uint8_t* pixels = turtle_font_glyph_pixels(f, idx);
+    if (pixels) {
+      for (int py = 0; py < glyph_px; ++py) {
+        const uint8_t* row = pixels + static_cast<size_t>(py) * static_cast<size_t>(glyph_px);
+        for (int px = 0; px < glyph_px; ++px) {
+          const uint8_t ci = row[px];
+          if (ci == transparent_index) {
+            continue;
+          }
+          const int fb_x = x + px;
+          const int fb_y = yfb_top + py;
+          const uint8_t out_ci =
+              (tint_color_index >= 0) ? static_cast<uint8_t>(tint_color_index) : ci;
+          turtle_gpu_pixel_raw(fb_x, fb_y, out_ci);
+        }
+      }
+    }
+    x += turtle_font_glyph_advance(f, idx);
+  }
+  return x - xfb;
+}
+
+int turtle_font_draw_fb_absolute(const TurtleFont* f, int xfb, int yfb_top, const char* str,
+                                 uint8_t transparent_index, int tint_color_index) {
+  if (!f || !str) {
+    return 0;
+  }
+  const int glyph_px = f->glyph_px;
+  int x = xfb;
+  for (const char* p = str; *p; ++p) {
+    const int idx = turtle_font_charset_index(*p);
+    if (idx < 0) {
+      x += glyph_px;
+      continue;
+    }
+    const uint8_t* pixels = turtle_font_glyph_pixels(f, idx);
+    if (pixels) {
+      for (int py = 0; py < glyph_px; ++py) {
+        const uint8_t* row = pixels + static_cast<size_t>(py) * static_cast<size_t>(glyph_px);
+        for (int px = 0; px < glyph_px; ++px) {
+          const uint8_t ci = row[px];
+          if (ci == transparent_index) {
+            continue;
+          }
+          const int fb_x = x + px;
+          const int fb_y = yfb_top + py;
+          const uint8_t out_ci =
+              (tint_color_index >= 0) ? static_cast<uint8_t>(tint_color_index) : ci;
+          turtle_gpu_pixel_absolute(fb_x, fb_y, out_ci);
+        }
+      }
+    }
+    x += turtle_font_glyph_advance(f, idx);
+  }
+  return x - xfb;
+}
+
 int turtle_font_draw_scene_tint(const TurtleFont* f, int sx, int sy, const char* str,
                                 uint8_t transparent_index, uint8_t tint_color_index) {
   if (!f || !str) {

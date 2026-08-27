@@ -61,6 +61,14 @@ int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len);
 
 /** Indices 0..31; rellena framebuffer con indice de color. */
 void turtle_gpu_cls(uint8_t color_index);
+/**
+ * spec/hud-border-v0.md: rellena SOLO la region del playfield con `color_index`, ignorando
+ * la camara (a diferencia de fill_rect_scene, que trabaja en espacio escena y se desplaza
+ * con la camara). La region HUD queda intacta. Usado por paint_scene_static_layers para
+ * limpiar el area de juego cada frame en camara con scroll, sin borrar el HUD y sin
+ * depender del origen actual de la camara.
+ */
+void turtle_gpu_playfield_clear(uint8_t color_index);
 /** Rectangulo en coordenadas de escena (spec/scene-v0.md): esquina inferior izquierda (x0,y0), Y hacia arriba. */
 void turtle_gpu_fill_rect_scene(int x0, int y0, int w, int h, uint8_t color_index);
 /**
@@ -101,6 +109,48 @@ void turtle_gpu_flip(void);
 /** Origen de camara en espacio escena (esquina inf-izq del viewport). Por defecto (0,0). */
 void turtle_gpu_set_camera(int cam_x, int cam_y);
 void turtle_gpu_get_camera(int* cam_x, int* cam_y);
+
+/**
+ * spec/hud-border-v0.md: reserva franjas HUD en los bordes del framebuffer. `ox, oy` =
+ * esquina superior-izquierda del playfield dentro del framebuffer (Y-abajo, raster). `pw, ph`
+ * = tamano del playfield. Todos los blits de escena (fill_rect_scene, blit_indexed_scene*,
+ * blit_indexed_row_banded) clipean y aplican offset contra este rectangulo; el area fuera
+ * del playfield queda como region HUD, jamas tocada por dibujo de escena.
+ *
+ * Defecto tras turtle_gpu_init: `(0, 0, 164, 124)` = playfield = framebuffer completo
+ * (sin HUD, comportamiento pre-v0). turtle_scene.cpp llama a set_playfield al comenzar cada
+ * escena con los valores derivados de `camera.hud_border` del manifest.
+ */
+void turtle_gpu_set_playfield(int ox, int oy, int pw, int ph);
+void turtle_gpu_get_playfield(int* ox, int* oy, int* pw, int* ph);
+/** true si (x, y) — coord de framebuffer, Y-abajo — cae dentro del playfield. */
+bool turtle_gpu_playfield_contains(int x, int y);
+
+/**
+ * Escribe un pixel HUD en coord de framebuffer (Y-abajo, origen top-left del framebuffer
+ * fisico). NO-OP si (x, y) cae dentro del playfield (proteccion contra pintar la zona de
+ * juego desde bindings hud_*). Ademas de escribir en `s_fb`, actualiza `s_static_fb` (si
+ * hay snapshot) para que restore_static_dirty no revierta el nuevo estado, y marca la
+ * celda como panel-dirty para el proximo flush.
+ */
+void turtle_gpu_pixel_absolute(int x, int y, uint8_t color_index);
+/** Relleno solido HUD en coord de framebuffer. Cada pixel fuera del playfield sigue la
+ *  misma semantica que turtle_gpu_pixel_absolute; los que caigan dentro del playfield son
+ *  no-op silencioso (el rect puede cruzar bordes sin efectos colaterales). */
+void turtle_gpu_fill_rect_absolute(int x, int y, int w, int h, uint8_t color_index);
+
+/**
+ * spec/gui-layer-v0.md: escritura sin restriccion de playfield. Escribe `s_fb` en (x, y) si
+ * cae en el framebuffer, sin importar si es zona HUD o playfield. Ademas actualiza
+ * `s_static_fb` (si hay snapshot) para que restore_static_dirty no revierta el nuevo estado
+ * en camara fija, y marca la celda como panel-dirty para el proximo flush. Pensado para
+ * capas GUI apilables (menu de pausa, dialogos) que deben poder cubrir la accion del juego.
+ * NO USAR desde bindings de HUD (`hud_pix`/`hud_text`/etc) — esos delegan en `_absolute`
+ * justamente para proteger el playfield de escrituras accidentales.
+ */
+void turtle_gpu_pixel_raw(int x, int y, uint8_t color_index);
+/** Relleno solido sin restriccion de playfield. Ver turtle_gpu_pixel_raw. */
+void turtle_gpu_fill_rect_raw(int x, int y, int w, int h, uint8_t color_index);
 
 /** Marca region sucia (coords escena: esquina inf-izq del blit, Y arriba). */
 void turtle_gpu_dirty_reset(void);

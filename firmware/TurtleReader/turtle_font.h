@@ -61,3 +61,21 @@ int turtle_font_draw_scene(const TurtleFont* f, int sx, int sy, const char* str,
  */
 int turtle_font_draw_scene_tint(const TurtleFont* f, int sx, int sy, const char* str,
                                 uint8_t transparent_index, uint8_t tint_color_index);
+
+/**
+ * spec/hud-border-v0.md: dibuja `str` en coord de framebuffer (Y-abajo, origen top-left del
+ * framebuffer fisico). `(xfb, yfb_top)` = esquina superior-izquierda del primer glifo.
+ * Cada pixel dentro del playfield actual es no-op (proteccion). `tint_color_index` >= 0 tinta
+ * los pixeles no transparentes; < 0 usa los colores propios del glifo. Devuelve ancho dibujado.
+ */
+int turtle_font_draw_fb_absolute(const TurtleFont* f, int xfb, int yfb_top, const char* str,
+                                 uint8_t transparent_index, int tint_color_index);
+
+/**
+ * spec/gui-layer-v0.md: variante para capas GUI apilables. Igual convencion que
+ * turtle_font_draw_fb_absolute, pero cada pixel se escribe via `turtle_gpu_pixel_raw` (sin
+ * restriccion de playfield). Necesario para pintar texto en capas que cubran el area de
+ * juego (menu de pausa, dialogos).
+ */
+int turtle_font_draw_fb_raw(const TurtleFont* f, int xfb, int yfb_top, const char* str,
+                            uint8_t transparent_index, int tint_color_index);

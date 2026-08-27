@@ -133,3 +133,24 @@ int turtle_scene_draw_text(const char* bundle_json, size_t bundle_json_len, cons
 /** Ancho en px de `str` con `font_id`, sin dibujar. 0 si la fuente no se pudo resolver. */
 int turtle_scene_measure_text(const char* bundle_json, size_t bundle_json_len,
                               const char* font_id, const char* str);
+
+/**
+ * spec/hud-border-v0.md: variante para bindings `hud_text`. `(xfb, yfb_top)` = esquina
+ * superior-izquierda del primer glifo en coord de framebuffer (Y-abajo). Pixeles que caen
+ * dentro del playfield actual son no-op (proteccion contra pintar la zona de juego); el
+ * resto se escribe con turtle_gpu_pixel_absolute (mantiene s_static_fb en sync + marca
+ * panel-dirty). Devuelve ancho dibujado (px).
+ */
+int turtle_scene_draw_text_absolute(const char* bundle_json, size_t bundle_json_len,
+                                    const char* font_id, int xfb, int yfb_top, const char* str,
+                                    int color_index = -1);
+
+/**
+ * spec/gui-layer-v0.md: variante para capas GUI apilables. Igual convencion que
+ * turtle_scene_draw_text_absolute (coord de framebuffer top-left, `color_index >= 0` tinta)
+ * pero SIN restriccion de playfield -- puede pintar sobre la zona de juego (menu de pausa,
+ * dialogos). Usa turtle_font_draw_fb_raw internamente.
+ */
+int turtle_scene_draw_text_raw(const char* bundle_json, size_t bundle_json_len,
+                               const char* font_id, int xfb, int yfb_top, const char* str,
+                               int color_index = -1);

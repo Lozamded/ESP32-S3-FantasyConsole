@@ -4,11 +4,11 @@
   "id": "Lvl_1",
   "palette": "palettes/palette.txt",
   "script": "Lvl_1",
-  "bg_color_index": 1,
+  "bg_color_index": 0,
   "background_layers": [
     {
       "enabled": true,
-      "color_index": 1,
+      "color_index": 0,
       "opacity": 255,
       "background": "sky",
       "parallax_x": 1.0,
@@ -18,7 +18,7 @@
     {
       "enabled": false,
       "color_index": 0,
-      "opacity": 255,
+      "opacity": 254,
       "background": "sky",
       "parallax_x": 0.6,
       "fixed": false,
@@ -255,7 +255,26 @@
       "visible": false
     }
   ],
-  "text_labels": [],
+  "text_labels": [
+    {
+      "id": "label1",
+      "text": "Mechaturtle",
+      "x": 0,
+      "y": 0,
+      "font": "default",
+      "color_index": -1,
+      "blink_ms": 3
+    },
+    {
+      "id": "label2",
+      "text": "Lives",
+      "x": 3,
+      "y": 112,
+      "font": "default",
+      "color_index": -1,
+      "blink_ms": 0
+    }
+  ],
   "tile_layers": [
     {
       "enabled": true,
@@ -2072,7 +2091,13 @@
     "x": 0,
     "y": 0,
     "margin_x": 81,
-    "margin_y": 61,
-    "target": "player"
+    "margin_y": 0,
+    "target": "player",
+    "hud_border": {
+      "top": 16,
+      "bottom": 0,
+      "left": 0,
+      "right": 0
+    }
   }
 }
