@@ -24,6 +24,10 @@ static lua_State* s_L = nullptr;
 static int s_update_ref[kMaxActors];
 static char s_script_stem[kMaxActors][kMaxScriptStem];
 static int s_script_actor_count = 0;
+// spec/lua/scene-script-v0.md: ref de _update del script de escena (o LUA_NOREF).
+// Comparte s_L con los actores -- las globales quedan compartidas a proposito (el
+// script de escena tipicamente hace de "controlador" que actua sobre estado global).
+static int s_scene_update_ref = LUA_NOREF;
 
 /**
  * Allocator para la VM de actores en PSRAM. La VM se mantiene VIVA durante toda la
@@ -420,23 +424,30 @@ static void register_api(lua_State* L) {
   lua_setglobal(L, "obj_flip_v");
 }
 
-static bool load_script_update_ref(int actor_index, const char* stem) {
-  if (!s_L || !stem || !stem[0] || actor_index < 0 || actor_index >= kMaxActors) {
-    return false;
+/**
+ * Carga scripts/<stem>.lua en s_L, ejecuta el chunk una vez y devuelve la ref de la
+ * global _update (LUA_NOREF ante cualquier fallo). Compartido por scripts de actor y de
+ * escena: ambos cargan del mismo directorio, ambos capturan _update global inmediatamente
+ * al final del pcall del chunk. `owner_tag` solo se usa para prefijar logs (p.ej. "actor
+ * 3" vs "escena") de manera identificable.
+ */
+static int load_update_ref(const char* stem, const char* owner_tag) {
+  if (!s_L || !stem || !stem[0]) {
+    return LUA_NOREF;
   }
 
   char path[64];
   snprintf(path, sizeof path, "/scripts/%s.lua", stem);
 
   if (!SD.exists(path)) {
-    Serial.printf("turtle_actor_lua: falta %s\n", path);
-    return false;
+    Serial.printf("turtle_actor_lua (%s): falta %s\n", owner_tag, path);
+    return LUA_NOREF;
   }
 
   File f = SD.open(path, FILE_READ);
   if (!f) {
-    Serial.printf("turtle_actor_lua: no abrio %s\n", path);
-    return false;
+    Serial.printf("turtle_actor_lua (%s): no abrio %s\n", owner_tag, path);
+    return LUA_NOREF;
   }
 
   // Lectura de un solo golpe a un buffer propio (no un String): scripts/<stem>.lua puede
@@ -447,45 +458,46 @@ static bool load_script_update_ref(int actor_index, const char* stem) {
   const size_t len = f.size();
   uint8_t* buf = static_cast<uint8_t*>(malloc(len > 0 ? len : 1));
   if (!buf) {
-    Serial.printf("turtle_actor_lua: sin RAM para %s (%u bytes)\n", path,
+    Serial.printf("turtle_actor_lua (%s): sin RAM para %s (%u bytes)\n", owner_tag, path,
                   static_cast<unsigned>(len));
     f.close();
-    return false;
+    return LUA_NOREF;
   }
   const size_t got = f.read(buf, len);
   f.close();
   if (got != len) {
-    Serial.printf("turtle_actor_lua: lectura incompleta %s (%u/%u bytes)\n", path,
-                  static_cast<unsigned>(got), static_cast<unsigned>(len));
+    Serial.printf("turtle_actor_lua (%s): lectura incompleta %s (%u/%u bytes)\n", owner_tag,
+                  path, static_cast<unsigned>(got), static_cast<unsigned>(len));
     free(buf);
-    return false;
+    return LUA_NOREF;
   }
 
   const char* chunk_name = path;
   int st = luaL_loadbuffer(s_L, reinterpret_cast<const char*>(buf), len, chunk_name);
   free(buf);
   if (st != LUA_OK) {
-    Serial.printf("turtle_actor_lua: carga %s: %s\n", path, lua_tostring(s_L, -1));
+    Serial.printf("turtle_actor_lua (%s): carga %s: %s\n", owner_tag, path,
+                  lua_tostring(s_L, -1));
     lua_pop(s_L, 1);
-    return false;
+    return LUA_NOREF;
   }
 
   st = lua_pcall(s_L, 0, 0, 0);
   if (st != LUA_OK) {
-    Serial.printf("turtle_actor_lua: init %s: %s\n", path, lua_tostring(s_L, -1));
+    Serial.printf("turtle_actor_lua (%s): init %s: %s\n", owner_tag, path,
+                  lua_tostring(s_L, -1));
     lua_pop(s_L, 1);
-    return false;
+    return LUA_NOREF;
   }
 
   lua_getglobal(s_L, "_update");
   if (!lua_isfunction(s_L, -1)) {
-    Serial.printf("turtle_actor_lua: %s sin funcion _update(dt)\n", path);
+    Serial.printf("turtle_actor_lua (%s): %s sin funcion _update(dt)\n", owner_tag, path);
     lua_pop(s_L, 1);
-    return false;
+    return LUA_NOREF;
   }
 
-  s_update_ref[actor_index] = luaL_ref(s_L, LUA_REGISTRYINDEX);
-  return true;
+  return luaL_ref(s_L, LUA_REGISTRYINDEX);
 }
 
 }  // namespace
@@ -534,6 +546,10 @@ void turtle_actor_lua_shutdown(void) {
       s_update_ref[i] = LUA_NOREF;
     }
   }
+  if (s_scene_update_ref != LUA_NOREF) {
+    luaL_unref(s_L, LUA_REGISTRYINDEX, s_scene_update_ref);
+    s_scene_update_ref = LUA_NOREF;
+  }
 
   lua_close(s_L);
   s_L = nullptr;
@@ -564,7 +580,57 @@ void turtle_actor_lua_bind_actors_from_scene(void) {
       continue;
     }
     snprintf(s_script_stem[i], sizeof s_script_stem[i], "%s", stem);
-    load_script_update_ref(i, stem);
+    char tag[24];
+    snprintf(tag, sizeof tag, "actor %d", i);
+    const int ref = load_update_ref(stem, tag);
+    if (ref != LUA_NOREF) {
+      s_update_ref[i] = ref;
+    }
+  }
+}
+
+void turtle_actor_lua_bind_scene_script(void) {
+  if (!s_L) {
+    return;
+  }
+  // spec/lua/scene-script-v0.md: siempre limpiar la ref previa antes de cargar la nueva
+  // (o de decidir que la escena entrante no tiene script) -- si no, un goto_scene a una
+  // escena sin script mantendria el _update de la escena vieja tickeando indefinidamente.
+  if (s_scene_update_ref != LUA_NOREF) {
+    luaL_unref(s_L, LUA_REGISTRYINDEX, s_scene_update_ref);
+    s_scene_update_ref = LUA_NOREF;
+  }
+  char stem[kMaxScriptStem];
+  if (!turtle_scene_script_stem(stem, sizeof stem)) {
+    return;
+  }
+  s_scene_update_ref = load_update_ref(stem, "escena");
+}
+
+void turtle_actor_lua_tick_scene(uint32_t delta_ms) {
+  if (!s_L || delta_ms == 0 || s_scene_update_ref == LUA_NOREF) {
+    return;
+  }
+  const float dt = static_cast<float>(delta_ms) / 1000.0f;
+
+  // spec/lua/scene-script-v0.md: la VM de escena no tiene actor asociado. Fijamos target
+  // = -1 antes del tick para que cualquier binding actor-scoped que la escena invoque
+  // (posx/posy/move/set_anim/...) degrade a no-op/0 en vez de escribir sobre un actor
+  // arbitrario. Los bindings estan compartidos con la VM de actores por diseno; los
+  // documentados para la escena son print/btn/btnp/axis/goto_scene/find_by_*/obj_*.
+  turtle_scene_actor_set_lua_target(-1);
+
+  lua_rawgeti(s_L, LUA_REGISTRYINDEX, s_scene_update_ref);
+  if (!lua_isfunction(s_L, -1)) {
+    lua_pop(s_L, 1);
+    return;
+  }
+  lua_pushnumber(s_L, static_cast<lua_Number>(dt));
+  const int st = lua_pcall(s_L, 1, 0, 0);
+  if (st != LUA_OK) {
+    const char* err = lua_tostring(s_L, -1);
+    Serial.printf("turtle_actor_lua: _update escena: %s\n", err ? err : "?");
+    lua_pop(s_L, 1);
   }
 }
 

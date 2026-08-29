@@ -117,12 +117,13 @@ Gravedad vertical (Y escena hacia arriba): ver ejemplo en **`spec/lua/physics-v0
 |---------|-------------|
 | `goto_scene(scene_id)` | Pide cambiar la escena activa a `scene_id`. **Diferido**: no se aplica de inmediato -- el resto de los actores de la escena vieja siguen recibiendo `_update(dt)` hasta que termina el fotograma actual, y el cambio real (destruir actores viejos, cargar la nueva escena, rebindear scripts) ocurre despues, fuera del tick. Llamarlo mas de una vez en el mismo fotograma solo deja el ultimo pedido. |
 
-No hace falta un actor visible para esto: un objeto con un sprite totalmente transparente
-(indice de paleta 31 en todos sus pixeles) y `"script"` apuntando al archivo deseado sirve como
-"controlador" de la escena sin dibujar nada en pantalla — ver
-`tools/turtlestudio/exampleprojects/demo_platformer/objects/Objects/scene_controller.json` y
-`objects/Sprites/invisible.json` para un ejemplo (escena `intro`, salta a `Lvl_1` con
-cualquier boton que no sea de direccion).
+No hace falta un actor para esto: la escena puede declarar `"script": "<stem>"` en su propio
+JSON y `scripts/<stem>.lua` corre como **VM de escena** (tickea antes que los actores cada frame,
+sin actor asociado) — ver `spec/lua/scene-script-v0.md`. Ejemplo vivo en la escena `intro` del
+demo (`exampleprojects/demo_platformer/scenes/intro.json` + `scripts/intro.lua`): salta a `Lvl_1`
+con cualquier boton A/B/C/D. Antes de `spec/lua/scene-script-v0.md` esto se hacia con un actor de
+sprite totalmente transparente (indice 31) haciendo de "controlador" — patron ya obsoleto, la VM
+de escena lo reemplaza sin costo de placement/sprite.
 
 Implementacion (firmware): `turtle_scene_request_switch`/`turtle_scene_consume_pending_switch`
 (`turtle_scene.h`/`.cpp`) mas el binding `l_goto_scene` en `turtle_actor_lua.cpp`;

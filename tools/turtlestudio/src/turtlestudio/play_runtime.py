@@ -665,6 +665,11 @@ class PlaySession:
         # el firmware (turtle_scene_request_switch), aplicarlo es responsabilidad del que
         # orquesta el tick (play_widget.py) -- este modulo solo guarda el pedido.
         self.pending_scene_switch: str | None = None
+        # spec/lua/scene-script-v0.md: stem del script de escena de la escena activa
+        # (row["script"]), o None si no declara. play_lua_bridge.ActorLuaBridge lo consume
+        # en bind() para cargar scripts/<stem>.lua como VM de escena (tickea antes que los
+        # actores). Se pisa cada begin() -- goto_scene() lo actualiza limpiamente.
+        self.scene_script_stem: str | None = None
         self.log: list[str] = []
         self._active = False
 
@@ -708,6 +713,10 @@ class PlaySession:
 
         placements = row.get("objects") or []
         self.actors = build_actor_states(self.project_root, placements)
+        raw_script = row.get("script")
+        self.scene_script_stem = (
+            raw_script.strip() if isinstance(raw_script, str) and raw_script.strip() else None
+        )
         self._sprite_cache = {}
         self._font_cache = {}
 

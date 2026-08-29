@@ -325,6 +325,10 @@ class PlayWidget(QWidget):
         )
         if self._actor_bridge is not None:
             self._actor_bridge.bind_actors(self.session.actors)
+            # spec/lua/scene-script-v0.md: al cambiar de escena hay que re-bindear el script
+            # de la escena entrante (o limpiar la ref si la nueva escena no declara uno) --
+            # si no, seguiria tickeando el _update de la escena vieja indefinidamente.
+            self._actor_bridge.bind_scene_script(self.session.scene_script_stem)
         self.scene_combo.blockSignals(True)
         idx = self.scene_combo.findText(sid)
         if idx >= 0:

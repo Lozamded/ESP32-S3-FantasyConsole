@@ -38,6 +38,14 @@ void turtle_scene_request_switch(const char* scene_id);
  *  llamo en el fotograma que acaba de terminar. Llamar una vez por iteracion de loop(). */
 bool turtle_scene_consume_pending_switch(char* out, size_t out_cap);
 
+/**
+ * spec/lua/scene-script-v0.md: si la escena declara `"script": "<stem>"` en su JSON,
+ * scripts/<stem>.lua se carga como VM de escena (comparte el lua_State de actores; ver
+ * turtle_actor_lua_bind_scene_script). Copia el stem sin extension a `out` y devuelve
+ * true; devuelve false si la escena activa no declara script o si aun no hay escena.
+ */
+bool turtle_scene_script_stem(char* out, size_t out_cap);
+
 /** Actores en runtime (para scripts Lua por objeto). */
 int turtle_scene_actor_count(void);
 bool turtle_scene_actor_script_stem(int index, char* out, size_t out_cap);

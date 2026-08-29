@@ -645,14 +645,14 @@ def ensure_object_script_file(
     return path, True
 
 
-_STARTER_SCENE_LUA = """-- Script de escena (scripts/{stem}.lua)
--- Solo corre si algun actor de la escena lo referencia con "script": "{stem}" en su JSON
--- (objects/Objects/<id>.json) -- un actor con sprite totalmente transparente (indice 31 en
--- todos sus pixeles) sirve de "controlador" sin dibujar nada. Ver spec/lua/object-script-v0.md
--- "Cambio de escena" (goto_scene) para un ejemplo completo.
+_STARTER_SCENE_LUA = """-- Script de escena (scripts/{stem}.lua) -- ver spec/lua/scene-script-v0.md.
+-- Corre siempre que la escena declare "script": "{stem}" en su JSON (sin necesidad de
+-- un actor "controlador"). Su _update(dt) tickea ANTES que los _update de los actores
+-- cada frame, asi puede fijar flags/estado global que ellos lean.
+-- API: print, btn(i), btnp(i), axis(neg, pos), goto_scene(id), find_by_id/tag, obj_*.
 
 function _update(dt)
-  -- Logica de la escena (dt en segundos). Input: btn(i), btnp(i).
+  -- Logica de la escena (dt en segundos).
 end
 """
 

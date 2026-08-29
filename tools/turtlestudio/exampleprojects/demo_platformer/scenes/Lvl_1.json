@@ -716,7 +716,7 @@
     },
     {
       "enabled": false,
-      "tileset": "",
+      "tileset": "greenfield",
       "cells": [
         [
           31,

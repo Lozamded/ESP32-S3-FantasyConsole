@@ -252,6 +252,10 @@ static int s_runtime_tile_px = 16;
 // turtle_scene_consume_pending_switch.
 static char s_pending_scene_switch[64] = "";
 static bool s_pending_scene_switch_valid = false;
+// spec/lua/scene-script-v0.md: stem del script de escena declarado en el JSON de la
+// escena activa ("script": "<stem>"), vacio si no declara ninguno. turtle_actor_lua_
+// bind_scene_script lo consume al final de begin_runtime.
+static char s_scene_script_stem[64] = "";
 static int s_runtime_tile_layer_count = 0;
 /** spec/scene-v0.md "Capa de colision": unica capa de tiles cuyos tiles solidos
  *  bloquean actores; las otras 3 son puramente decorativas sin importar su propio
@@ -4747,6 +4751,12 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   parse_scene_parallax_bands(sc_start, sc_end);
   parse_scene_bg_image_layers(sc_start, sc_end);
   parse_scene_text_labels(sc_start, sc_end);
+  // spec/lua/scene-script-v0.md: campo opcional a nivel escena. Se carga como VM de escena
+  // al final de begin_runtime (turtle_actor_lua_bind_scene_script). Si esta ausente o
+  // vacio, no se abre ningun script -- es un feature opt-in, no obligatorio.
+  s_scene_script_stem[0] = '\0';
+  json_extract_string_for_key(sc_start, sc_end, "script", s_scene_script_stem,
+                              sizeof s_scene_script_stem);
 
   int bg = 0;
   if (!json_extract_int_for_key(sc_start, sc_end, "background_index", &bg)) {
@@ -4858,6 +4868,12 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
 
   turtle_actor_lua_init();
   turtle_actor_lua_bind_actors_from_scene();
+  // spec/lua/scene-script-v0.md: carga scripts/<s_scene_script_stem>.lua en la MISMA
+  // lua_State que los actores. Debe ir DESPUES de bind_actors -- ambos hacen luaL_loadbuffer
+  // + pcall(0,0) para inicializar el chunk (registrando _update global), y bind_actors
+  // pisa la global cada script; bind_scene_script guarda su referencia inmediatamente al
+  // final para no colisionar.
+  turtle_actor_lua_bind_scene_script();
   Serial.printf("turtle_scene: post-bind DRAM=%u PSRAM=%u\n",
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_INTERNAL)),
                 static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)));
@@ -4883,6 +4899,10 @@ void turtle_scene_runtime_tick(uint32_t delta_ms) {
   // spec/gui-layer-v0.md "Pausa" para el rationale.
   const bool paused = turtle_gui_layer_any_pauses();
   if (!paused) {
+    // spec/lua/scene-script-v0.md: la VM de escena tickea ANTES que los actores para que
+    // pueda fijar flags/estado globales que los _update de actores lean en el mismo frame
+    // (patron "controlador" tradicional). No-op si la escena no declara "script".
+    turtle_actor_lua_tick_scene(delta_ms);
     turtle_actor_lua_tick_all(delta_ms);
   }
   tick_actors(delta_ms);
@@ -4926,6 +4946,18 @@ int turtle_scene_target_fps(void) {
 
 int turtle_scene_actor_count(void) {
   return s_actor_count;
+}
+
+bool turtle_scene_script_stem(char* out, size_t out_cap) {
+  if (!out || out_cap == 0) {
+    return false;
+  }
+  if (!s_scene_script_stem[0]) {
+    out[0] = '\0';
+    return false;
+  }
+  snprintf(out, out_cap, "%s", s_scene_script_stem);
+  return true;
 }
 
 bool turtle_scene_actor_script_stem(int index, char* out, size_t out_cap) {

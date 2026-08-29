@@ -67,6 +67,10 @@ class ActorLuaBridge:
         self.lua = lupa.LuaRuntime(unpack_returned_tuples=True)  # type: ignore[union-attr]
         self.current_actor: ActorRuntimeState | None = None
         self._update_refs: dict[str, Any] = {}
+        # spec/lua/scene-script-v0.md: _update capturada del script de escena, o None.
+        # Comparte el mismo lua_State que los actores (mismo trade-off que el firmware
+        # -- ver turtle_actor_lua.cpp `s_scene_update_ref`).
+        self._scene_update_ref: Any = None
         self._register()
 
     def _register(self) -> None:
@@ -277,7 +281,40 @@ class ActorLuaBridge:
                 continue
             self._update_refs[a.id] = update_fn
 
+    def bind_scene_script(self, stem: str | None) -> None:
+        """spec/lua/scene-script-v0.md: equivalente a turtle_actor_lua_bind_scene_script.
+        Debe llamarse DESPUES de bind_actors -- cada execute pisa la global `_update`, y
+        aca capturamos la del script de escena al final para no colisionar. Un `stem` None
+        (o script inexistente) desactiva la VM de escena limpiamente."""
+        self._scene_update_ref = None
+        if not stem:
+            return
+        path = self.session.project_root / "scripts" / f"{stem}.lua"
+        if not path.is_file():
+            self.session.log.append(f'falta scripts/{stem}.lua (escena)')
+            return
+        try:
+            src = path.read_text(encoding="utf-8")
+            self.lua.execute(src)
+        except Exception as exc:  # lupa.LuaError u otro error de sintaxis
+            self.session.log.append(f'error cargando scripts/{stem}.lua (escena): {exc}')
+            return
+        update_fn = self.lua.globals()["_update"]
+        if update_fn is None or not callable(update_fn):
+            self.session.log.append(f'scripts/{stem}.lua sin funcion _update(dt) (escena)')
+            return
+        self._scene_update_ref = update_fn
+
     def tick(self, actors: list[ActorRuntimeState], dt_seconds: float) -> None:
+        # spec/lua/scene-script-v0.md: la VM de escena tickea ANTES de los actores. Sin
+        # actor activo (current_actor = None), los bindings actor-scoped que la escena
+        # invoque no-opean con seguridad -- mismo patron que target=-1 en firmware.
+        if self._scene_update_ref is not None:
+            self.current_actor = None
+            try:
+                self._scene_update_ref(dt_seconds)
+            except Exception as exc:
+                self.session.log.append(f'_update escena: {exc}')
         for a in actors:
             update_fn = self._update_refs.get(a.id)
             if update_fn is None:
@@ -341,4 +378,8 @@ class EntryLuaBridge:
 def make_run_actor_scripts(session: PlaySession) -> tuple[Callable[[list[ActorRuntimeState], float], None], ActorLuaBridge]:
     bridge = ActorLuaBridge(session)
     bridge.bind_actors(session.actors)
+    # spec/lua/scene-script-v0.md: bind_scene_script DESPUES de bind_actors -- ambos
+    # ejecutan chunks Lua que pisan la global _update; capturamos la de escena al final
+    # para que la ref sobreviva. Mismo orden que turtle_scene_begin_runtime en firmware.
+    bridge.bind_scene_script(session.scene_script_stem)
     return bridge.tick, bridge

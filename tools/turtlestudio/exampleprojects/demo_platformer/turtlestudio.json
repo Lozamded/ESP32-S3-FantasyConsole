@@ -50,16 +50,7 @@
         }
       ],
       "script": "intro",
-      "objects": [
-        {
-          "object": "scene_controller",
-          "id": "scene_controller",
-          "x": 0,
-          "y": 0,
-          "tags": [],
-          "visible": true
-        }
-      ],
+      "objects": [],
       "text_labels": [
         {
           "id": "startlabel",
@@ -254,7 +245,7 @@
         },
         {
           "enabled": false,
-          "tileset": "greenfield",
+          "tileset": "",
           "cells": [
             [
               31,
@@ -1170,7 +1161,7 @@
         },
         {
           "enabled": false,
-          "tileset": "",
+          "tileset": "greenfield",
           "cells": [
             [
               31,
@@ -2562,9 +2553,447 @@
       "camera_hud_border_left": 0,
       "camera_hud_border_right": 0,
       "camera_target": "player"
+    },
+    {
+      "id": "game_over",
+      "palette": "palettes/palette.txt",
+      "background_index": 1,
+      "background_layers": [
+        {
+          "enabled": true,
+          "color_index": 1,
+          "opacity": 255,
+          "background": "gameover_bg",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
+        },
+        {
+          "enabled": false,
+          "color_index": 1,
+          "opacity": 255,
+          "background": "",
+          "parallax_x": 1.0,
+          "fixed": false,
+          "repeat_x": false
+        }
+      ],
+      "script": "gameover",
+      "objects": [],
+      "text_labels": [
+        {
+          "id": "label_presstotryagain",
+          "text": "Press to restart",
+          "x": 19,
+          "y": 6,
+          "font": "default",
+          "color_index": -1,
+          "blink_ms": 200
+        }
+      ],
+      "tile_layers": [
+        {
+          "enabled": false,
+          "tileset": "",
+          "cells": [
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ]
+          ]
+        },
+        {
+          "enabled": false,
+          "tileset": "",
+          "cells": [
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ]
+          ]
+        },
+        {
+          "enabled": false,
+          "tileset": "",
+          "cells": [
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ]
+          ]
+        },
+        {
+          "enabled": false,
+          "tileset": "",
+          "cells": [
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ],
+            [
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31,
+              31
+            ]
+          ]
+        }
+      ],
+      "collision_tile_layer": 0,
+      "world_steps_x": 1,
+      "world_steps_y": 1,
+      "gui_layers_autoshow": [],
+      "camera": {
+        "mode": "follow",
+        "x": 0,
+        "y": 0,
+        "margin_x": 64,
+        "margin_y": 48
+      },
+      "camera_mode": "follow",
+      "camera_x": 0,
+      "camera_y": 0,
+      "camera_margin_x": 64,
+      "camera_margin_y": 48,
+      "camera_hud_border_top": 0,
+      "camera_hud_border_bottom": 0,
+      "camera_hud_border_left": 0,
+      "camera_hud_border_right": 0
     }
   ],
-  "active_scene": "Lvl_1",
+  "active_scene": "intro",
   "transparent_index": 31,
   "target_fps": 30,
   "default_anim_fps": 8,
