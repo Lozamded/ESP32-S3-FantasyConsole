@@ -16,20 +16,24 @@ from turtlestudio.guilayers import (
     MAX_GUI_BAR_RANGES,
     MAX_GUI_LAYER_PIP_BARS,
     MAX_GUI_LAYER_PROGRESS_BARS,
+    MAX_GUI_LAYER_SPRITES,
     MAX_PIP_COUNT,
     GuiBarRange,
     GuiLayer,
     GuiPipBar,
     GuiProgressBar,
+    GuiSpriteIcon,
     collect_gui_layer_sprite_ids,
     gui_bar_range_to_json,
     gui_layer_to_json,
     gui_pip_bar_to_json,
     gui_progress_bar_to_json,
+    gui_sprite_icon_to_json,
     parse_gui_bar_range,
     parse_gui_layer,
     parse_gui_pip_bar,
     parse_gui_progress_bar,
+    parse_gui_sprite_icon,
     read_gui_layer_file,
     write_gui_layer_file,
 )
@@ -405,6 +409,195 @@ class GuiBarsEditorSmokeTests(unittest.TestCase):
             # Debe pintar el preview con el fallback gris, no crashear.
             w._refresh_preview()
             self.assertIsNotNone(w.preview.pixmap())
+
+
+class GuiSpriteIconParseTests(unittest.TestCase):
+    """spec/gui-layer-v0.md "Iconos sprite": modelo Python (parse/serialize/collect)."""
+
+    def test_full_round_trip(self) -> None:
+        icon = GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=4,
+                             frame_index=3, flip_h=True, flip_v=False)
+        d = gui_sprite_icon_to_json(icon)
+        self.assertEqual(parse_gui_sprite_icon(d), icon)
+
+    def test_minimal_defaults_are_omitted_in_json(self) -> None:
+        # frame_index=0, flip_h=False, flip_v=False no salen para no ensuciar JSON.
+        icon = GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=0, y=0)
+        d = gui_sprite_icon_to_json(icon)
+        self.assertNotIn("frame_index", d)
+        self.assertNotIn("flip_h", d)
+        self.assertNotIn("flip_v", d)
+        self.assertEqual(parse_gui_sprite_icon(d), icon)
+
+    def test_invalid_id_returns_none(self) -> None:
+        self.assertIsNone(parse_gui_sprite_icon({"id": "1bad", "sprite_id": "gear"}))
+        self.assertIsNone(parse_gui_sprite_icon({"sprite_id": "gear"}))
+
+    def test_missing_or_invalid_sprite_returns_none(self) -> None:
+        self.assertIsNone(parse_gui_sprite_icon({"id": "gear_icon"}))
+        self.assertIsNone(parse_gui_sprite_icon({"id": "gear_icon", "sprite_id": "1bad"}))
+
+    def test_frame_index_clamped(self) -> None:
+        icon = parse_gui_sprite_icon({"id": "x", "sprite_id": "gear", "frame_index": 999})
+        assert icon is not None
+        self.assertLessEqual(icon.frame_index, 255)
+        icon2 = parse_gui_sprite_icon({"id": "x", "sprite_id": "gear", "frame_index": -5})
+        assert icon2 is not None
+        self.assertEqual(icon2.frame_index, 0)
+
+
+class GuiLayerSpritesRoundTripTests(unittest.TestCase):
+    def test_layer_json_carries_icons(self) -> None:
+        ly = GuiLayer(id="hud", sprites=(
+            GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=2),
+            GuiSpriteIcon(id="key_icon", sprite_id="key", x=10, y=2, flip_h=True),
+        ))
+        d = gui_layer_to_json(ly)
+        self.assertEqual(len(d["sprites"]), 2)
+        ly2 = parse_gui_layer(d)
+        assert ly2 is not None
+        self.assertEqual(ly2.sprites, ly.sprites)
+
+    def test_extra_icons_dropped_at_cap(self) -> None:
+        raw = {
+            "id": "hud",
+            "sprites": [
+                {"id": f"i{i}", "sprite_id": "gear"} for i in range(MAX_GUI_LAYER_SPRITES + 3)
+            ],
+        }
+        ly = parse_gui_layer(raw)
+        assert ly is not None
+        self.assertEqual(len(ly.sprites), MAX_GUI_LAYER_SPRITES)
+
+    def test_disk_round_trip_preserves_icons(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            ly = GuiLayer(id="hud", sprites=(
+                GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=2, frame_index=1),
+            ))
+            write_gui_layer_file(root, ly)
+            reread = read_gui_layer_file(root, "hud")
+            self.assertEqual(reread.sprites, ly.sprites)
+
+    def test_collect_sprite_ids_includes_icons(self) -> None:
+        ly = GuiLayer(id="hud", sprites=(
+            GuiSpriteIcon(id="a", sprite_id="gear"),
+            GuiSpriteIcon(id="b", sprite_id="key"),
+        ))
+        ids = collect_gui_layer_sprite_ids(ly)
+        self.assertIn("gear", ids)
+        self.assertIn("key", ids)
+
+
+@unittest.skipUnless(_has_pyqt6(), "requires PyQt6 for the editor widget")
+class GuiSpriteIconsEditorSmokeTests(unittest.TestCase):
+    def test_add_icon_requires_sprite_in_project(self) -> None:
+        from unittest.mock import patch
+
+        from turtlestudio.gui_layer_editor import GuiLayerEditorWidget
+
+        _ensure_qapp()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            w = GuiLayerEditorWidget(Path("."))
+            w.project_root = root
+            w.layer_id = "hud"
+            with patch("turtlestudio.gui_layer_editor.QMessageBox.warning"):
+                w._action_add_sprite()
+            self.assertEqual(len(w.sprites), 0)
+
+    def test_current_layer_carries_icons(self) -> None:
+        from turtlestudio.gui_layer_editor import GuiLayerEditorWidget
+
+        _ensure_qapp()
+        w = GuiLayerEditorWidget(Path("."))
+        w.layer_id = "hud"
+        w.sprites = [
+            GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=2, frame_index=1, flip_h=True),
+        ]
+        ly = w._current_layer()
+        self.assertEqual(len(ly.sprites), 1)
+        self.assertEqual(ly.sprites[0].sprite_id, "gear")
+        self.assertTrue(ly.sprites[0].flip_h)
+
+    def test_save_round_trip_with_icons(self) -> None:
+        from turtlestudio.gui_layer_editor import GuiLayerEditorWidget
+
+        _ensure_qapp()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            initial = GuiLayer(id="hud", sprites=(
+                GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=2),
+            ))
+            write_gui_layer_file(root, initial)
+            w = GuiLayerEditorWidget(Path("."))
+            w.set_project_root(root)
+            self.assertEqual(len(w.sprites), 1)
+            w.sprites[0] = GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=5, y=5, frame_index=2)
+            w._dirty = True
+            w._action_save()
+            reread = read_gui_layer_file(root, "hud")
+            self.assertEqual(reread.sprites[0].x, 5)
+            self.assertEqual(reread.sprites[0].frame_index, 2)
+
+    def test_preview_does_not_crash_with_missing_icon_sprite(self) -> None:
+        from turtlestudio.gui_layer_editor import GuiLayerEditorWidget
+
+        _ensure_qapp()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "guilayers").mkdir()
+            w = GuiLayerEditorWidget(Path("."))
+            w.project_root = root
+            w.layer_id = "hud"
+            w.sprites = [GuiSpriteIcon(id="ghost", sprite_id="does_not_exist", x=2, y=2)]
+            w._refresh_preview()
+            # Preview keeps the framebuffer size (previous fw/fh shadowing regression).
+            pm = w.preview.pixmap()
+            from turtlestudio.gui_layer_editor import PREVIEW_ZOOM
+            from turtlestudio.guilayers import SCENE_PIXEL_H, SCENE_PIXEL_W
+            self.assertEqual(pm.width(), SCENE_PIXEL_W * PREVIEW_ZOOM)
+            self.assertEqual(pm.height(), SCENE_PIXEL_H * PREVIEW_ZOOM)
+
+
+class BuildExportsIconSpritesTests(unittest.TestCase):
+    """Un icono referencia un sprite que ningun objeto usa; el exportador debe incluirlo."""
+
+    def test_icon_sprite_included_in_export(self) -> None:
+        from turtlestudio.build import collect_studio_bundle_files
+        from turtlestudio.sprites import write_solid_sprite_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "scripts").mkdir()
+            (root / "objects" / "Objects").mkdir(parents=True)
+            (root / "objects" / "Sprites").mkdir(parents=True)
+            (root / "palettes").mkdir()
+            (root / "guilayers").mkdir()
+            (root / "scripts" / "main.lua").write_text("cls(0)\n", encoding="utf-8")
+            (root / "palettes" / "pal.txt").write_text(
+                "\n".join([f"#{i:02x}{i:02x}{i:02x}" for i in range(32)]) + "\n",
+                encoding="utf-8",
+            )
+            write_solid_sprite_json(root, "gear", palette_rel="palettes/pal.txt",
+                                    blocks_w=1, blocks_h=1, palette_index=5)
+            layer = GuiLayer(id="hud", sprites=(
+                GuiSpriteIcon(id="gear_icon", sprite_id="gear", x=2, y=2),
+            ))
+            write_gui_layer_file(root, layer)
+            pkg = collect_studio_bundle_files(
+                root,
+                scenes=[],
+                active_scene="",
+                transparent_index=31,
+                entry_relpath="scripts/main.lua",
+            )
+            bundle_text = next(
+                (data for rel, data in pkg.sidecar if rel == "studio/project_bundle.json"),
+                None,
+            )
+            assert bundle_text is not None
+            self.assertIn('"gear"', bundle_text)
 
 
 if __name__ == "__main__":

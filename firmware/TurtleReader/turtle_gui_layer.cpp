@@ -21,6 +21,7 @@ constexpr int kMaxGuiLayerRects = 16;
 constexpr int kMaxGuiLayerLabels = 16;
 constexpr int kMaxGuiLayerProgressBars = 4;
 constexpr int kMaxGuiLayerPipBars = 4;
+constexpr int kMaxGuiLayerSprites = 4;
 constexpr int kMaxGuiBarRanges = 3;
 constexpr int kMaxPipCount = 32;
 constexpr size_t kGuiLayerTextCap = 64;   // 63 chars + nul
@@ -114,6 +115,16 @@ struct GuiPipBar {
   GuiBarRange ranges[kMaxGuiBarRanges];
 };
 
+struct GuiSpriteIcon {
+  char id[kGuiLayerLabelIdCap];
+  int16_t x;
+  int16_t y;
+  char sprite_id[kGuiSpriteIdCap];
+  uint8_t frame_index;
+  bool flip_h;
+  bool flip_v;
+};
+
 struct GuiLayer {
   char id[kGuiLayerIdCap];
   int16_t x;
@@ -132,10 +143,12 @@ struct GuiLayer {
   int label_count;
   int progress_bar_count;
   int pip_bar_count;
+  int sprite_count;
   GuiRect rects[kMaxGuiLayerRects];
   GuiLabel labels[kMaxGuiLayerLabels];
   GuiProgressBar progress_bars[kMaxGuiLayerProgressBars];
   GuiPipBar pip_bars[kMaxGuiLayerPipBars];
+  GuiSpriteIcon sprites[kMaxGuiLayerSprites];
 };
 
 // El array vive en el heap (preferentemente PSRAM). sizeof(GuiLayer) * 8 ~= 38 KB con
@@ -512,6 +525,39 @@ void parse_pip_bars_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
   }
 }
 
+void parse_sprites_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
+  ly->sprite_count = 0;
+  const char* p = arr_s;
+  while (p < arr_e && ly->sprite_count < kMaxGuiLayerSprites) {
+    while (p < arr_e && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= arr_e || *p == ']') break;
+    if (*p != '{') break;
+    const char* oe = json_object_end(p);
+    if (!oe) break;
+    GuiSpriteIcon icon{};
+    icon.id[0] = '\0';
+    icon.sprite_id[0] = '\0';
+    icon.frame_index = 0;
+    icon.flip_h = false;
+    icon.flip_v = false;
+    json_extract_string_for_key(p, oe, "id", icon.id, sizeof icon.id);
+    json_extract_string_for_key(p, oe, "sprite_id", icon.sprite_id, sizeof icon.sprite_id);
+    int v = 0;
+    icon.x = json_extract_int_for_key(p, oe, "x", &v) ? static_cast<int16_t>(v) : 0;
+    icon.y = json_extract_int_for_key(p, oe, "y", &v) ? static_cast<int16_t>(v) : 0;
+    if (json_extract_int_for_key(p, oe, "frame_index", &v)) {
+      icon.frame_index = static_cast<uint8_t>(clamp_int(v, 0, 255));
+    }
+    json_extract_bool_for_key(p, oe, "flip_h", &icon.flip_h);
+    json_extract_bool_for_key(p, oe, "flip_v", &icon.flip_v);
+    p = oe;
+    if (!icon.id[0] || !icon.sprite_id[0]) continue;  // sin id o sprite, icono invalido
+    ly->sprites[ly->sprite_count++] = icon;
+  }
+}
+
 bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
   memset(ly, 0, sizeof(*ly));
   ly->w = kSceneW;
@@ -588,6 +634,17 @@ bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
       }
     }
   }
+  const char* sk = strstr_bounded(obj_s, obj_e, "\"sprites\"");
+  if (sk) {
+    const char* sp = sk + 9;
+    while (sp < obj_e && *sp != '[') ++sp;
+    if (sp < obj_e && *sp == '[') {
+      const char* se = json_array_end(sp);
+      if (se) {
+        parse_sprites_array(sp + 1, se, ly);
+      }
+    }
+  }
   return true;
 }
 
@@ -645,6 +702,52 @@ void blit_sprite_raw(int dx, int dy, const uint8_t* src_pixels, int sw, int sh) 
       if (px == kDefaultTransparentIndex) continue;
       turtle_gpu_pixel_raw(dx + x, dy + y, px);
     }
+  }
+}
+
+/**
+ * Variante de blit_sprite_raw con flip horizontal/vertical (para iconos sprite en capas GUI).
+ * flip_h invierte la columna fuente (sw - 1 - x), flip_v invierte la fila fuente (sh - 1 - y).
+ * El rect ocupado no cambia -- solo el contenido queda espejado.
+ */
+void blit_sprite_raw_flipped(int dx, int dy, const uint8_t* src_pixels, int sw, int sh,
+                             bool flip_h, bool flip_v) {
+  if (!src_pixels || sw <= 0 || sh <= 0) return;
+  for (int y = 0; y < sh; ++y) {
+    const int sy = flip_v ? (sh - 1 - y) : y;
+    for (int x = 0; x < sw; ++x) {
+      const int sx = flip_h ? (sw - 1 - x) : x;
+      const uint8_t px = src_pixels[sy * sw + sx];
+      if (px == kDefaultTransparentIndex) continue;
+      turtle_gpu_pixel_raw(dx + x, dy + y, px);
+    }
+  }
+}
+
+void paint_sprite_icon(const GuiLayer* ly, const GuiSpriteIcon* icon) {
+  if (!icon->sprite_id[0]) return;
+  if (is_sprite_known_missing(icon->sprite_id)) return;
+  if (!ensure_sprite_scratch_allocated()) return;
+  int sw = 0;
+  int sh = 0;
+  if (!turtle_scene_load_sprite_pixels(icon->sprite_id, icon->frame_index, s_gui_sprite_scratch,
+                                       kGuiSpriteScratchCap, &sw, &sh)) {
+    mark_sprite_missing(icon->sprite_id);
+    return;
+  }
+  if (sw <= 0 || sh <= 0) return;
+  const int dx = ly->x + icon->x;
+  const int dy = ly->y + icon->y;
+  // Clamp: si el icono no cabe dentro del rect de la capa, cortar silenciosamente. El autor
+  // debe posicionarlo bien; el editor puede advertir. No hay clip por-pixel aca (matchea
+  // blit_sprite_raw) -- si desborda parcialmente se pinta lo que quepa dentro del framebuffer,
+  // pero fuera del rect de la capa la escena de fondo se ve.
+  if (dx + sw > ly->x + ly->w) return;
+  if (dy + sh > ly->y + ly->h) return;
+  if (icon->flip_h || icon->flip_v) {
+    blit_sprite_raw_flipped(dx, dy, s_gui_sprite_scratch, sw, sh, icon->flip_h, icon->flip_v);
+  } else {
+    blit_sprite_raw(dx, dy, s_gui_sprite_scratch, sw, sh);
   }
 }
 
@@ -803,6 +906,11 @@ void paint_one_layer(const GuiLayer* ly) {
   // Barras de pips -- mismo orden. Cada pip es un blit 1:1 del sprite full (o su swap por rango).
   for (int i = 0; i < ly->pip_bar_count; ++i) {
     paint_pip_bar(ly, &ly->pip_bars[i]);
+  }
+  // Iconos sprite -- blit 1:1 estatico (con posible flip). Van despues de pip bars asi el autor
+  // puede superponer un icono sobre un bar (raro, pero coherente con el orden array).
+  for (int i = 0; i < ly->sprite_count; ++i) {
+    paint_sprite_icon(ly, &ly->sprites[i]);
   }
   // Etiquetas de texto. Usan turtle_scene_draw_text_absolute-like pero sin
   // proteccion de playfield -- ver turtle_font_draw_fb_raw.
@@ -979,6 +1087,13 @@ int find_pip_bar_index(const GuiLayer* ly, const char* bar_id) {
   }
   return -1;
 }
+int find_sprite_icon_index(const GuiLayer* ly, const char* icon_id) {
+  if (!ly || !icon_id || !*icon_id) return -1;
+  for (int i = 0; i < ly->sprite_count; ++i) {
+    if (strcmp(ly->sprites[i].id, icon_id) == 0) return i;
+  }
+  return -1;
+}
 }  // namespace
 
 bool turtle_gui_layer_set_progress(const char* id, const char* bar_id, int value_num,
@@ -1008,5 +1123,24 @@ bool turtle_gui_layer_set_pips(const char* id, const char* bar_id, int value, bo
     bar.max_value = static_cast<int16_t>(clamp_int(max_value, 1, kMaxPipCount));
   }
   bar.value = static_cast<int16_t>(clamp_int(value, 0, bar.max_value));
+  return true;
+}
+
+bool turtle_gui_layer_set_sprite(const char* id, const char* icon_id, const char* sprite_id,
+                                 bool has_frame, int frame_index) {
+  const int idx = find_layer_index(id);
+  if (idx < 0) return false;
+  GuiLayer* ly = &s_layers[idx];
+  const int ii = find_sprite_icon_index(ly, icon_id);
+  if (ii < 0) return false;
+  GuiSpriteIcon& icon = ly->sprites[ii];
+  if (sprite_id && *sprite_id) {
+    const size_t maxlen = sizeof icon.sprite_id - 1;
+    strncpy(icon.sprite_id, sprite_id, maxlen);
+    icon.sprite_id[maxlen] = '\0';
+  }
+  if (has_frame) {
+    icon.frame_index = static_cast<uint8_t>(clamp_int(frame_index, 0, 255));
+  }
   return true;
 }

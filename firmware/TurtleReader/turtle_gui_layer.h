@@ -64,3 +64,11 @@ bool turtle_gui_layer_set_progress(const char* id, const char* bar_id, int value
  */
 bool turtle_gui_layer_set_pips(const char* id, const char* bar_id, int value, bool has_max,
                                int max_value);
+
+/**
+ * Actualiza el `sprite_id` (y opcionalmente el `frame_index`) de un icono sprite estatico.
+ * `sprite_id` null o vacio deja el sprite actual sin cambio (util para cambiar solo el frame).
+ * `has_frame` false deja el frame actual. Devuelve false si la capa o el icono no existen.
+ */
+bool turtle_gui_layer_set_sprite(const char* id, const char* icon_id, const char* sprite_id,
+                                 bool has_frame, int frame_index);

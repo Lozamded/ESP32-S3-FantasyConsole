@@ -76,6 +76,7 @@ Las capas viven fuera del bloque `scenes`: son un catalogo global que cualquier 
 | `text_labels`     | array     | `[]`             | Ver "Etiquetas de texto" abajo.                                                                 |
 | `progress_bars`   | array     | `[]`             | Ver "Barras de progreso" abajo.                                                                 |
 | `pip_bars`        | array     | `[]`             | Ver "Barras de pips" abajo.                                                                     |
+| `sprites`         | array     | `[]`             | Ver "Iconos sprite" abajo.                                                                      |
 
 ### Rectangulos (`rects`)
 
@@ -143,6 +144,21 @@ N iconos discretos que muestran un valor entero — corazones de HP, llaves, med
 
 Maximo por capa: **4 pip bars**.
 
+### Iconos sprite (`sprites`)
+
+Un blit 1:1 de un sprite del bundle en una posicion fija. Pensado como *iconografia* del HUD (engranaje al lado de un contador, cabeza del jugador junto a las vidas, icono de estado junto a un timer) — no como pip repetido ni como relleno tileado. El sprite comparte la paleta de la escena (no hay paleta separada por capa GUI); pixeles con indice 31 son transparentes. Se pintan **despues** de `pip_bars` y **antes** de `text_labels`.
+
+| Campo          | Tipo    | Default        | Nota                                                                                              |
+|----------------|---------|----------------|---------------------------------------------------------------------------------------------------|
+| `id`           | string  | (obligatorio)  | Stem-name, max 32 char. Unico dentro de la capa. Usado por `gui_layer_set_sprite`.                |
+| `x`, `y`       | int     | `0`, `0`       | Relativos al `(x, y)` de la capa. Esquina superior-izquierda del blit.                            |
+| `sprite_id`    | string  | (obligatorio)  | Stem del sprite del bundle. Sus dimensiones y frame determinan lo dibujado.                       |
+| `frame_index`  | int     | `0`            | Fotograma del sprite (para sprites animados, la capa no anima — el cart puede rotar frames desde Lua). |
+| `flip_h`       | bool    | `false`        | Espejo horizontal en el momento del blit (util para reusar el mismo sprite mirando a otro lado).  |
+| `flip_v`       | bool    | `false`        | Espejo vertical.                                                                                  |
+
+Maximo por capa: **4 iconos sprite**.
+
 ### Bandas de valor (`ranges`)
 
 Ambos tipos de bar admiten un array `ranges` de hasta 3 elementos que **reemplazan** el color/sprite base cuando la fraccion actual (`value_num / value_den` para progress, `value / max_value` para pips) cae dentro de `[min_pct, max_pct)`. Sirve para el patron clasico "verde >50%, amarillo 25-50%, rojo <25%".
@@ -174,11 +190,12 @@ Todos actuan sobre el catalogo cargado del bundle actual. `id` es siempre el `id
 | `gui_layer_set_text(id, label_id, str)`            | Actualiza el texto de una etiqueta. Se trunca a 63 chars. Persiste hasta el proximo set. |
 | `gui_layer_set_progress(id, bar_id, num [, den])`  | Actualiza `value_num` de una progress bar. Si se pasa `den`, tambien reemplaza `value_den` (util cuando el maximo cambia en runtime — nivel-up sube HP max). Sin `den` solo se actualiza el numerador. |
 | `gui_layer_set_pips(id, bar_id, val [, max])`      | Actualiza `value` de un pip bar. `max` opcional reemplaza `max_value`. `val` se clampea a `[0, max_value]` despues.  |
+| `gui_layer_set_sprite(id, icon_id, sprite_id [, frame])` | Reemplaza el `sprite_id` (y opcionalmente el `frame_index`) de un icono sprite. Util para cambiar iconografia dinamica (llave sin/con, cara del jugador segun estado). |
 | `gui_layer_hide_all()`                             | Oculta todas las capas activas (util para transiciones/cambios de estado).          |
 
-`id`/`label_id`/`bar_id` que no existan: no-op silencioso (para que el cart pueda llamar sin chequear existencia). En Serial se loguea la primera falla por id/label para debug.
+`id`/`label_id`/`bar_id`/`icon_id` que no existan: no-op silencioso (para que el cart pueda llamar sin chequear existencia). En Serial se loguea la primera falla por id/label para debug.
 
-Fuera de estas 7 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto, valores de bars y visibilidad.
+Fuera de estas 8 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto, valores de bars, iconos y visibilidad.
 
 ## Auto-show por escena (`gui_layers_autoshow`)
 
@@ -252,7 +269,7 @@ Si `captures_input=false` (default), los actores siguen recibiendo input aunque 
 
 ## Fuera de alcance en v0
 
-- **Sprites arbitrarios en capas** (`gui_layer_sprite(id, sprite_id, x, y, frame)`): reservado. En v0 los sprites solo entran via `progress_bars` con `fill_mode="sprite"` (tileado) y `pip_bars` (repetidos discretamente).
+- **Sprites completamente dinamicos con blit directo desde Lua** (`gui_layer_blit_sprite(x, y, sprite_id)`): reservado. En v0 los sprites son declarativos: `sprites` en el manifest para iconos estaticos (posicion fija, cambio de sprite/frame desde Lua via `gui_layer_set_sprite`), `progress_bars` con `fill_mode="sprite"` para tileado, `pip_bars` para repetidos discretos.
 - **Tiles en capas**: reservado — patron muy usado en Semi (`.tortuguilayer` tiene un tile layer completo). Aca queda para v2 si aparece necesidad concreta.
 - **Animaciones dentro de la capa** (blink de texto, sprites animados): el cart lo puede simular con `gui_layer_set_text` desde el `_hud(dt)`.
 - **Transiciones/fade** de capa: fuera de scope. Cart lo puede simular tinteando texto o cambiando `bg_color_index` via campos futuros.

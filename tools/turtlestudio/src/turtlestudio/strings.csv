@@ -313,6 +313,7 @@ play.runtime_error_title,Error de ejecucion en Play,Play runtime error
 mainwindow.tab_guilayers,Capas GUI,GUI Layers
 mainwindow.section_guilayers,Capas GUI,GUI Layers
 guilayer.label,"Capa:","Layer:"
+guilayer.section_layer_props,Propiedades de capa,Layer properties
 guilayer.new_title,Nueva capa GUI,New GUI layer
 guilayer.new_id_label,ID de la capa (letras/digitos/_/-),Layer id (letters/digits/_/-)
 guilayer.new_id_invalid,ID invalido. Debe empezar con letra y usar solo letras/digitos/_/- (max 32).,Invalid id. Must start with a letter; letters/digits/_/- only (max 32).
@@ -379,6 +380,15 @@ guilayer.col_sprite_full,Sprite,Sprite
 guilayer.col_gap_px,Gap,Gap
 guilayer.col_value,Valor,Value
 guilayer.col_max_value,Max,Max
+guilayer.sprites_title,Iconos sprite,Sprite icons
+guilayer.add_sprite,Agregar icono,Add icon
+guilayer.remove_sprite,Quitar icono,Remove icon
+guilayer.sprite_cap_reached,"Limite de {cap} iconos sprite por capa alcanzado.","Sprite icon cap per layer reached ({cap})."
+guilayer.sprite_needs_project_sprite_msg,"Se necesita al menos un sprite en el proyecto para crear un icono.","At least one sprite is required in the project to create an icon."
+guilayer.col_sprite,Sprite,Sprite
+guilayer.col_frame_index,Frame,Frame
+guilayer.col_flip_h,Flip H,Flip H
+guilayer.col_flip_v,Flip V,Flip V
 scene.gui_layers_group,Capas GUI (auto-show),GUI layers (auto-show)
 scene.gui_layers_hint,"Capas GUI que se muestran automaticamente al entrar a esta escena (HUDs de nivel). Los menus modales (pausa, dialogo) se abren desde Lua, no se listan aca.","GUI layers auto-shown when entering this scene (level HUDs). Modal menus (pause, dialogs) open from Lua and don't belong here."
 scene.gui_layers_missing_suffix,capa faltante,missing layer

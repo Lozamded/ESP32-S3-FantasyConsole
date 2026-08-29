@@ -18,12 +18,14 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QTableWidget,
@@ -33,6 +35,7 @@ from PyQt6.QtWidgets import (
 )
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
+from turtlestudio.collapsible import CollapsibleSection
 from turtlestudio.fonts import (
     blit_text_scene,
     font_metrics_from_data,
@@ -50,6 +53,7 @@ from turtlestudio.guilayers import (
     MAX_GUI_LAYER_PIP_BARS,
     MAX_GUI_LAYER_PROGRESS_BARS,
     MAX_GUI_LAYER_RECTS,
+    MAX_GUI_LAYER_SPRITES,
     MAX_PIP_COUNT,
     PIP_DIRECTIONS,
     SCENE_PIXEL_H,
@@ -59,6 +63,7 @@ from turtlestudio.guilayers import (
     GuiPipBar,
     GuiProgressBar,
     GuiRect,
+    GuiSpriteIcon,
     GuiTextLabel,
     is_valid_gui_layer_id,
     list_gui_layer_stems,
@@ -96,6 +101,7 @@ class GuiLayerEditorWidget(QWidget):
         self.labels: list[GuiTextLabel] = []
         self.progress_bars: list[GuiProgressBar] = []
         self.pip_bars: list[GuiPipBar] = []
+        self.sprites: list[GuiSpriteIcon] = []
         self._dirty = False
         self._loading = False  # evita marcar dirty al reconstruir la UI desde disco
         self._build_ui()
@@ -174,11 +180,28 @@ class GuiLayerEditorWidget(QWidget):
         body = QHBoxLayout()
         outer.addLayout(body, stretch=1)
 
-        # ------------- LEFT: form + tables -------------
-        form_col = QVBoxLayout()
-        body.addLayout(form_col, stretch=1)
+        # ------------- LEFT: form + tables (scrollable, collapsible sections) -------------
+        # A medida que se agregan tipos (rects, labels, progress, pips, ...), la columna se
+        # hace demasiado alta para caber en la ventana. Envolvemos en QScrollArea y cada
+        # bloque va en un CollapsibleSection para que el autor colapse lo que no esta usando.
+        form_scroll = QScrollArea()
+        form_scroll.setWidgetResizable(True)
+        form_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        form_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        form_holder = QWidget()
+        form_col = QVBoxLayout(form_holder)
+        form_col.setContentsMargins(0, 0, 4, 0)
+        form_col.setSpacing(2)
+        form_scroll.setWidget(form_holder)
+        body.addWidget(form_scroll, stretch=1)
 
-        meta_form = QFormLayout()
+        # Layer properties (meta form) -- expandido por defecto: es lo primero que un autor toca.
+        sec_meta = CollapsibleSection(tr("guilayer.section_layer_props"), expanded=True)
+        form_col.addWidget(sec_meta)
+        meta_holder = QWidget()
+        meta_form = QFormLayout(meta_holder)
+        meta_form.setContentsMargins(0, 0, 0, 0)
+        sec_meta.content_layout().addWidget(meta_holder)
         self.spin_x = QSpinBox()
         self.spin_x.setRange(0, SCENE_PIXEL_W - 1)
         self.spin_x.valueChanged.connect(self._on_meta_changed)
@@ -214,10 +237,10 @@ class GuiLayerEditorWidget(QWidget):
         self.spin_z.setRange(-1000, 1000)
         self.spin_z.valueChanged.connect(self._on_meta_changed)
         meta_form.addRow(tr("guilayer.z_label"), self.spin_z)
-        form_col.addLayout(meta_form)
 
-        # Rects table
-        form_col.addWidget(QLabel(tr("guilayer.rects_title")))
+        # Rects section.
+        sec_rects = CollapsibleSection(tr("guilayer.rects_title"), expanded=False)
+        form_col.addWidget(sec_rects)
         self.rects_table = QTableWidget(0, 5)
         self.rects_table.setHorizontalHeaderLabels(
             [
@@ -230,8 +253,9 @@ class GuiLayerEditorWidget(QWidget):
         )
         self.rects_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.rects_table.verticalHeader().setDefaultSectionSize(22)
+        self.rects_table.setMinimumHeight(120)
         self.rects_table.itemChanged.connect(self._on_rects_item_changed)
-        form_col.addWidget(self.rects_table, stretch=1)
+        sec_rects.content_layout().addWidget(self.rects_table)
         rects_btns = QHBoxLayout()
         self.btn_rect_add = QPushButton(tr("guilayer.add_rect"))
         self.btn_rect_add.clicked.connect(self._action_add_rect)
@@ -240,10 +264,11 @@ class GuiLayerEditorWidget(QWidget):
         self.btn_rect_remove.clicked.connect(self._action_remove_rect)
         rects_btns.addWidget(self.btn_rect_remove)
         rects_btns.addStretch()
-        form_col.addLayout(rects_btns)
+        sec_rects.content_layout().addLayout(rects_btns)
 
-        # Labels table
-        form_col.addWidget(QLabel(tr("guilayer.labels_title")))
+        # Labels section.
+        sec_labels = CollapsibleSection(tr("guilayer.labels_title"), expanded=False)
+        form_col.addWidget(sec_labels)
         self.labels_table = QTableWidget(0, 6)
         self.labels_table.setHorizontalHeaderLabels(
             [
@@ -257,8 +282,9 @@ class GuiLayerEditorWidget(QWidget):
         )
         self.labels_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.labels_table.verticalHeader().setDefaultSectionSize(22)
+        self.labels_table.setMinimumHeight(120)
         self.labels_table.itemChanged.connect(self._on_labels_item_changed)
-        form_col.addWidget(self.labels_table, stretch=1)
+        sec_labels.content_layout().addWidget(self.labels_table)
         labels_btns = QHBoxLayout()
         self.btn_label_add = QPushButton(tr("guilayer.add_label"))
         self.btn_label_add.clicked.connect(self._action_add_label)
@@ -267,10 +293,11 @@ class GuiLayerEditorWidget(QWidget):
         self.btn_label_remove.clicked.connect(self._action_remove_label)
         labels_btns.addWidget(self.btn_label_remove)
         labels_btns.addStretch()
-        form_col.addLayout(labels_btns)
+        sec_labels.content_layout().addLayout(labels_btns)
 
-        # Progress bars table (spec/gui-layer-v0.md "Barras de progreso").
-        form_col.addWidget(QLabel(tr("guilayer.progress_bars_title")))
+        # Progress bars section (spec/gui-layer-v0.md "Barras de progreso").
+        sec_progress = CollapsibleSection(tr("guilayer.progress_bars_title"), expanded=False)
+        form_col.addWidget(sec_progress)
         # Columnas: id, x, y, w, h, direction, fill_mode, fill_color, fill_sprite, bg_color,
         # border_color, value_num, value_den, ranges (leido: cantidad).
         self.progress_table = QTableWidget(0, 14)
@@ -296,8 +323,9 @@ class GuiLayerEditorWidget(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.progress_table.verticalHeader().setDefaultSectionSize(24)
+        self.progress_table.setMinimumHeight(120)
         self.progress_table.itemChanged.connect(self._on_progress_item_changed)
-        form_col.addWidget(self.progress_table, stretch=1)
+        sec_progress.content_layout().addWidget(self.progress_table)
         prog_btns = QHBoxLayout()
         self.btn_progress_add = QPushButton(tr("guilayer.add_progress_bar"))
         self.btn_progress_add.clicked.connect(self._action_add_progress_bar)
@@ -309,10 +337,11 @@ class GuiLayerEditorWidget(QWidget):
         self.btn_progress_ranges.clicked.connect(self._action_edit_progress_ranges)
         prog_btns.addWidget(self.btn_progress_ranges)
         prog_btns.addStretch()
-        form_col.addLayout(prog_btns)
+        sec_progress.content_layout().addLayout(prog_btns)
 
-        # Pip bars table (spec/gui-layer-v0.md "Barras de pips").
-        form_col.addWidget(QLabel(tr("guilayer.pip_bars_title")))
+        # Pip bars section (spec/gui-layer-v0.md "Barras de pips").
+        sec_pip = CollapsibleSection(tr("guilayer.pip_bars_title"), expanded=False)
+        form_col.addWidget(sec_pip)
         # Columnas: id, x, y, sprite_full, direction, gap_px, value, max_value, ranges.
         self.pip_table = QTableWidget(0, 9)
         self.pip_table.setHorizontalHeaderLabels(
@@ -332,8 +361,9 @@ class GuiLayerEditorWidget(QWidget):
             QHeaderView.ResizeMode.ResizeToContents
         )
         self.pip_table.verticalHeader().setDefaultSectionSize(24)
+        self.pip_table.setMinimumHeight(120)
         self.pip_table.itemChanged.connect(self._on_pip_item_changed)
-        form_col.addWidget(self.pip_table, stretch=1)
+        sec_pip.content_layout().addWidget(self.pip_table)
         pip_btns = QHBoxLayout()
         self.btn_pip_add = QPushButton(tr("guilayer.add_pip_bar"))
         self.btn_pip_add.clicked.connect(self._action_add_pip_bar)
@@ -345,7 +375,47 @@ class GuiLayerEditorWidget(QWidget):
         self.btn_pip_ranges.clicked.connect(self._action_edit_pip_ranges)
         pip_btns.addWidget(self.btn_pip_ranges)
         pip_btns.addStretch()
-        form_col.addLayout(pip_btns)
+        sec_pip.content_layout().addLayout(pip_btns)
+
+        # Sprite icons section (spec/gui-layer-v0.md "Iconos sprite"). Blit 1:1 de un sprite del
+        # bundle en (x, y) fija. Pensado para iconografia estatica del HUD (engranaje al lado
+        # del contador, cara del jugador, icono de estado). El sprite comparte la paleta de la
+        # escena; no hay paleta separada por capa GUI.
+        sec_sprites = CollapsibleSection(tr("guilayer.sprites_title"), expanded=False)
+        form_col.addWidget(sec_sprites)
+        # Columnas: id, x, y, sprite (combo), frame_index, flip_h (bool), flip_v (bool).
+        self.sprites_table = QTableWidget(0, 7)
+        self.sprites_table.setHorizontalHeaderLabels(
+            [
+                tr("guilayer.col_id"),
+                tr("guilayer.col_x"),
+                tr("guilayer.col_y"),
+                tr("guilayer.col_sprite"),
+                tr("guilayer.col_frame_index"),
+                tr("guilayer.col_flip_h"),
+                tr("guilayer.col_flip_v"),
+            ]
+        )
+        self.sprites_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.sprites_table.verticalHeader().setDefaultSectionSize(24)
+        self.sprites_table.setMinimumHeight(120)
+        self.sprites_table.itemChanged.connect(self._on_sprite_item_changed)
+        sec_sprites.content_layout().addWidget(self.sprites_table)
+        sprites_btns = QHBoxLayout()
+        self.btn_sprite_add = QPushButton(tr("guilayer.add_sprite"))
+        self.btn_sprite_add.clicked.connect(self._action_add_sprite)
+        sprites_btns.addWidget(self.btn_sprite_add)
+        self.btn_sprite_remove = QPushButton(tr("guilayer.remove_sprite"))
+        self.btn_sprite_remove.clicked.connect(self._action_remove_sprite)
+        sprites_btns.addWidget(self.btn_sprite_remove)
+        sprites_btns.addStretch()
+        sec_sprites.content_layout().addLayout(sprites_btns)
+
+        # Empuja todas las secciones hacia arriba cuando colapsadas: sin esto el ultimo
+        # bloque se estira para llenar el area del scroll y el diseño se ve raro.
+        form_col.addStretch()
 
         # ------------- RIGHT: preview -------------
         preview_col = QVBoxLayout()
@@ -373,6 +443,7 @@ class GuiLayerEditorWidget(QWidget):
         self.labels = []
         self.progress_bars = []
         self.pip_bars = []
+        self.sprites = []
         self._loading = True
         try:
             self.spin_x.setValue(0)
@@ -388,6 +459,7 @@ class GuiLayerEditorWidget(QWidget):
             self.labels_table.setRowCount(0)
             self.progress_table.setRowCount(0)
             self.pip_table.setRowCount(0)
+            self.sprites_table.setRowCount(0)
         finally:
             self._loading = False
         self._dirty = False
@@ -416,10 +488,12 @@ class GuiLayerEditorWidget(QWidget):
             self.labels = list(layer.text_labels)
             self.progress_bars = list(layer.progress_bars)
             self.pip_bars = list(layer.pip_bars)
+            self.sprites = list(layer.sprites)
             self._rebuild_rects_table()
             self._rebuild_labels_table()
             self._rebuild_progress_table()
             self._rebuild_pip_table()
+            self._rebuild_sprites_table()
         finally:
             self._loading = False
         self._dirty = False
@@ -442,6 +516,7 @@ class GuiLayerEditorWidget(QWidget):
             text_labels=tuple(self.labels),
             progress_bars=tuple(self.progress_bars),
             pip_bars=tuple(self.pip_bars),
+            sprites=tuple(self.sprites),
         )
 
     def _mark_dirty(self) -> None:
@@ -1070,6 +1145,138 @@ class GuiLayerEditorWidget(QWidget):
         self._refresh_preview()
 
     # ------------------------------------------------------------------
+    # Sprite icons (spec/gui-layer-v0.md "Iconos sprite")
+    # ------------------------------------------------------------------
+
+    def _rebuild_sprites_table(self) -> None:
+        self.sprites_table.blockSignals(True)
+        try:
+            self.sprites_table.setRowCount(len(self.sprites))
+            for i, icon in enumerate(self.sprites):
+                self.sprites_table.setItem(i, 0, QTableWidgetItem(icon.id))
+                self._set_int_cell(self.sprites_table, i, 1, icon.x)
+                self._set_int_cell(self.sprites_table, i, 2, icon.y)
+                combo_sprite = self._new_sprite_combo(icon.sprite_id, allow_empty=False,
+                                                     on_change=lambda _t, row=i: self._on_sprite_icon_sprite_changed(row))
+                self.sprites_table.setCellWidget(i, 3, combo_sprite)
+                self._set_int_cell(self.sprites_table, i, 4, icon.frame_index)
+                chk_h = self._new_flip_checkbox(icon.flip_h,
+                                                lambda checked, row=i: self._on_sprite_icon_flip_h_changed(row, checked))
+                self.sprites_table.setCellWidget(i, 5, chk_h)
+                chk_v = self._new_flip_checkbox(icon.flip_v,
+                                                lambda checked, row=i: self._on_sprite_icon_flip_v_changed(row, checked))
+                self.sprites_table.setCellWidget(i, 6, chk_v)
+        finally:
+            self.sprites_table.blockSignals(False)
+
+    def _new_flip_checkbox(self, initial: bool, on_change) -> QCheckBox:
+        chk = QCheckBox()
+        chk.setChecked(initial)
+        chk.toggled.connect(on_change)
+        return chk
+
+    def _on_sprite_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._loading:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self.sprites):
+            return
+        icon = self.sprites[row]
+        col = item.column()
+        if col == 0:
+            new_id = item.text().strip()
+            if new_id and not is_valid_gui_layer_id(new_id):
+                QMessageBox.warning(self, tr("guilayer.label_id_error_title"),
+                                    tr("guilayer.label_id_error_msg"))
+                self.sprites_table.blockSignals(True)
+                try:
+                    item.setText(icon.id)
+                finally:
+                    self.sprites_table.blockSignals(False)
+                return
+            self.sprites[row] = replace(icon, id=new_id)
+            self._mark_dirty()
+            self._refresh_preview()
+            return
+        try:
+            v = int(item.text())
+        except (TypeError, ValueError):
+            v = 0
+        if col == 1:
+            v = max(0, min(SCENE_PIXEL_W, v))
+            self.sprites[row] = replace(icon, x=v)
+        elif col == 2:
+            v = max(0, min(SCENE_PIXEL_H, v))
+            self.sprites[row] = replace(icon, y=v)
+        elif col == 4:
+            v = max(0, min(255, v))
+            self.sprites[row] = replace(icon, frame_index=v)
+        self.sprites_table.blockSignals(True)
+        try:
+            item.setText(str(v))
+        finally:
+            self.sprites_table.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _on_sprite_icon_sprite_changed(self, row: int) -> None:
+        if self._loading or row >= len(self.sprites):
+            return
+        widget = self.sprites_table.cellWidget(row, 3)
+        if isinstance(widget, QComboBox):
+            self.sprites[row] = replace(self.sprites[row], sprite_id=widget.currentText().strip())
+            self._mark_dirty()
+            self._refresh_preview()
+
+    def _on_sprite_icon_flip_h_changed(self, row: int, checked: bool) -> None:
+        if self._loading or row >= len(self.sprites):
+            return
+        self.sprites[row] = replace(self.sprites[row], flip_h=checked)
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _on_sprite_icon_flip_v_changed(self, row: int, checked: bool) -> None:
+        if self._loading or row >= len(self.sprites):
+            return
+        self.sprites[row] = replace(self.sprites[row], flip_v=checked)
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _action_add_sprite(self) -> None:
+        if len(self.sprites) >= MAX_GUI_LAYER_SPRITES:
+            QMessageBox.information(self, tr("guilayer.sprites_title"),
+                                    tr("guilayer.sprite_cap_reached", cap=MAX_GUI_LAYER_SPRITES))
+            return
+        sprites = list_sprite_json_stems(self.project_root)
+        default_sprite = sprites[0] if sprites else ""
+        if not default_sprite:
+            QMessageBox.warning(self, tr("guilayer.sprites_title"),
+                                tr("guilayer.sprite_needs_project_sprite_msg"))
+            return
+        existing_ids = {icon.id for icon in self.sprites}
+        base = "icon"
+        i = 1
+        while f"{base}{i}" in existing_ids:
+            i += 1
+        self.sprites.append(GuiSpriteIcon(
+            id=f"{base}{i}",
+            sprite_id=default_sprite,
+            x=2, y=2,
+        ))
+        self._rebuild_sprites_table()
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _action_remove_sprite(self) -> None:
+        row = self.sprites_table.currentRow()
+        if row < 0 or row >= len(self.sprites):
+            return
+        del self.sprites[row]
+        self._rebuild_sprites_table()
+        self._mark_dirty()
+        self._refresh_preview()
+
+    # ------------------------------------------------------------------
     # Bar helpers
     # ------------------------------------------------------------------
 
@@ -1335,6 +1542,37 @@ class GuiLayerEditorWidget(QWidget):
                 if px + sw > lx + lw or py + sh > ly + lh:
                     break
                 blit_sprite(px, py, eff_sprite)
+
+        # Iconos sprite (spec/gui-layer-v0.md "Iconos sprite"): blit 1:1 estatico con soporte de
+        # frame_index y flip_h/flip_v. Se pintan despues de pip bars y antes de labels, igual que
+        # en el firmware.
+        for icon in self.sprites:
+            if not icon.sprite_id:
+                continue
+            try:
+                data = read_sprite_file(self.project_root, icon.sprite_id)
+            except ValueError:
+                paint_rect_absolute(lx + icon.x, ly + icon.y, 8, 8, 3)
+                continue
+            from turtlestudio.sprites import sprite_pixel_dimensions
+            _, sw, sh = sprite_pixel_dimensions(data)
+            frames = parse_sprite_all_frame_rows(data)
+            if not frames:
+                continue
+            frame_idx = max(0, min(len(frames) - 1, int(icon.frame_index)))
+            pixels = frames[frame_idx]
+            dx = lx + icon.x
+            dy = ly + icon.y
+            if dx + sw > lx + lw or dy + sh > ly + lh:
+                continue  # matchea el clamp del firmware
+            for yy in range(sh):
+                sy = (sh - 1 - yy) if icon.flip_v else yy
+                for xx in range(sw):
+                    sx = (sw - 1 - xx) if icon.flip_h else xx
+                    px = pixels[sy][sx]
+                    if px == PALETTE_SIZE - 1:
+                        continue
+                    paint_rect_absolute(dx + xx, dy + yy, 1, 1, px)
 
         # Labels: usan blit_text_scene (mismo pipeline que scene_editor para paridad con firmware).
         for lbl in self.labels:

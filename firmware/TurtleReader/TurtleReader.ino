@@ -263,6 +263,17 @@ static int l_gui_layer_set_pips(lua_State* L) {
   return 0;
 }
 
+/** gui_layer_set_sprite(id, icon_id, sprite_id [, frame_index]) */
+static int l_gui_layer_set_sprite(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  const char* icon_id = luaL_checkstring(L, 2);
+  const char* sprite_id = luaL_checkstring(L, 3);
+  const bool has_frame = !lua_isnoneornil(L, 4);
+  const int frame = has_frame ? static_cast<int>(luaL_checkinteger(L, 4)) : 0;
+  turtle_gui_layer_set_sprite(id, icon_id, sprite_id, has_frame, frame);
+  return 0;
+}
+
 static bool runCartEntryLua(const char* source, size_t source_len, const char* chunkName) {
   if (!source || source_len == 0) {
     Serial.println("Lua: ENTRY vacio");
@@ -317,6 +328,8 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_setglobal(L, "gui_layer_set_progress");
   lua_pushcfunction(L, l_gui_layer_set_pips);
   lua_setglobal(L, "gui_layer_set_pips");
+  lua_pushcfunction(L, l_gui_layer_set_sprite);
+  lua_setglobal(L, "gui_layer_set_sprite");
 
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {

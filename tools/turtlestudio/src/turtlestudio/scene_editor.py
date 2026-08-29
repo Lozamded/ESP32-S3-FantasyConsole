@@ -1395,7 +1395,7 @@ class SceneEditorWidget(QWidget):
         return section
 
     def _build_background_group(self) -> CollapsibleSection:
-        section = CollapsibleSection(tr("scene.background_group"))
+        section = CollapsibleSection(tr("scene.background_group"), expanded=False)
         layout = section.content_layout()
 
         hint = QLabel(tr("scene.bg_layer_image_hint"))
@@ -1556,7 +1556,7 @@ class SceneEditorWidget(QWidget):
         return box, widgets
 
     def _build_tile_layers_group(self) -> CollapsibleSection:
-        section = CollapsibleSection(tr("scene.tile_layers_group"))
+        section = CollapsibleSection(tr("scene.tile_layers_group"), expanded=False)
         layout = section.content_layout()
         self.tile_layer_rows: list[dict[str, Any]] = []
         for i in range(TILE_LAYER_COUNT):
@@ -1613,7 +1613,7 @@ class SceneEditorWidget(QWidget):
         warning.setVisible(True)
 
     def _build_objects_group(self) -> CollapsibleSection:
-        section = CollapsibleSection(tr("scene.objects_group"))
+        section = CollapsibleSection(tr("scene.objects_group"), expanded=False)
         layout = section.content_layout()
         self.list_objects = QListWidget()
         self.list_objects.setIconSize(QSize(20, 20))
@@ -1685,7 +1685,7 @@ class SceneEditorWidget(QWidget):
         spinbox (sin arrastre en canvas, a diferencia de _build_objects_group -- no hace
         falta un sprite/catalogo que arrastrar, y el texto/fuente/color ya necesitan sus
         propios campos, asi que el flujo de lista es mas directo aca)."""
-        section = CollapsibleSection(tr("scene.text_labels_group"))
+        section = CollapsibleSection(tr("scene.text_labels_group"), expanded=False)
         layout = section.content_layout()
         self.list_labels = QListWidget()
         self.list_labels.currentRowChanged.connect(self._on_label_selected)
@@ -1745,7 +1745,7 @@ class SceneEditorWidget(QWidget):
         return section
 
     def _build_camera_group(self) -> CollapsibleSection:
-        section = CollapsibleSection(tr("scene.camera_group"))
+        section = CollapsibleSection(tr("scene.camera_group"), expanded=False)
         form = QFormLayout()
         section.content_layout().addLayout(form)
         self.combo_camera_mode = QComboBox()
@@ -1827,7 +1827,7 @@ class SceneEditorWidget(QWidget):
     # id en `gui_layers_autoshow` de la escena; el firmware las muestra al arrancar sin codigo
     # Lua. Menus modales (pausa, dialogo) NO se marcan aca -- se disparan desde Lua.
     def _build_gui_layers_group(self) -> CollapsibleSection:
-        section = CollapsibleSection(tr("scene.gui_layers_group"))
+        section = CollapsibleSection(tr("scene.gui_layers_group"), expanded=False)
         v = QVBoxLayout()
         section.content_layout().addLayout(v)
         hint = QLabel(tr("scene.gui_layers_hint"))

@@ -23,6 +23,7 @@ MAX_GUI_LAYER_RECTS = 16
 MAX_GUI_LAYER_LABELS = 16
 MAX_GUI_LAYER_PROGRESS_BARS = 4
 MAX_GUI_LAYER_PIP_BARS = 4
+MAX_GUI_LAYER_SPRITES = 4
 MAX_GUI_BAR_RANGES = 3
 MAX_PIP_COUNT = 32
 GUI_LAYER_TEXT_MAX_CHARS = 63  # el buffer del firmware es 64 (63 + nul)
@@ -100,6 +101,20 @@ class GuiPipBar:
 
 
 @dataclass(frozen=True)
+class GuiSpriteIcon:
+    """spec/gui-layer-v0.md "Iconos sprite": un blit 1:1 de un sprite del bundle en (x, y)
+    coord relativa a la capa. Paleta compartida con la escena; index 31 = transparente."""
+
+    id: str
+    sprite_id: str
+    x: int = 0
+    y: int = 0
+    frame_index: int = 0
+    flip_h: bool = False
+    flip_v: bool = False
+
+
+@dataclass(frozen=True)
 class GuiLayer:
     id: str
     x: int = 0
@@ -115,6 +130,7 @@ class GuiLayer:
     text_labels: tuple[GuiTextLabel, ...] = field(default_factory=tuple)
     progress_bars: tuple[GuiProgressBar, ...] = field(default_factory=tuple)
     pip_bars: tuple[GuiPipBar, ...] = field(default_factory=tuple)
+    sprites: tuple[GuiSpriteIcon, ...] = field(default_factory=tuple)
 
 
 def _clamp_int(v: object, lo: int, hi: int, default: int) -> int:
@@ -281,6 +297,26 @@ def parse_gui_pip_bar(raw: Any) -> GuiPipBar | None:
     )
 
 
+def parse_gui_sprite_icon(raw: Any) -> GuiSpriteIcon | None:
+    if not isinstance(raw, dict):
+        return None
+    ident = str(raw.get("id", "") or "").strip()
+    if not is_valid_gui_layer_id(ident):
+        return None
+    sprite_id = _clamp_sprite_stem(raw.get("sprite_id", ""))
+    if not sprite_id:
+        return None
+    return GuiSpriteIcon(
+        id=ident,
+        sprite_id=sprite_id,
+        x=_clamp_int(raw.get("x", 0), 0, SCENE_PIXEL_W, default=0),
+        y=_clamp_int(raw.get("y", 0), 0, SCENE_PIXEL_H, default=0),
+        frame_index=_clamp_int(raw.get("frame_index", 0), 0, 255, default=0),
+        flip_h=bool(raw.get("flip_h", False)),
+        flip_v=bool(raw.get("flip_v", False)),
+    )
+
+
 def parse_gui_layer(raw: Any) -> GuiLayer | None:
     if not isinstance(raw, dict):
         return None
@@ -324,6 +360,13 @@ def parse_gui_layer(raw: Any) -> GuiLayer | None:
         parsed_pip = parse_gui_pip_bar(pip_raw)
         if parsed_pip is not None:
             pips.append(parsed_pip)
+    sprites: list[GuiSpriteIcon] = []
+    for sp_raw in (raw.get("sprites", []) or []):
+        if len(sprites) >= MAX_GUI_LAYER_SPRITES:
+            break
+        parsed_sp = parse_gui_sprite_icon(sp_raw)
+        if parsed_sp is not None:
+            sprites.append(parsed_sp)
     return GuiLayer(
         id=ident,
         x=x,
@@ -339,6 +382,7 @@ def parse_gui_layer(raw: Any) -> GuiLayer | None:
         text_labels=tuple(labels),
         progress_bars=tuple(progress),
         pip_bars=tuple(pips),
+        sprites=tuple(sprites),
     )
 
 
@@ -415,6 +459,22 @@ def gui_pip_bar_to_json(bar: GuiPipBar) -> dict[str, Any]:
     return out
 
 
+def gui_sprite_icon_to_json(icon: GuiSpriteIcon) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "id": icon.id,
+        "sprite_id": icon.sprite_id,
+        "x": int(icon.x),
+        "y": int(icon.y),
+    }
+    if icon.frame_index:
+        out["frame_index"] = int(icon.frame_index)
+    if icon.flip_h:
+        out["flip_h"] = True
+    if icon.flip_v:
+        out["flip_v"] = True
+    return out
+
+
 def gui_layer_to_json(ly: GuiLayer) -> dict[str, Any]:
     out: dict[str, Any] = {
         "id": ly.id,
@@ -436,14 +496,17 @@ def gui_layer_to_json(ly: GuiLayer) -> dict[str, Any]:
         out["progress_bars"] = [gui_progress_bar_to_json(b) for b in ly.progress_bars]
     if ly.pip_bars:
         out["pip_bars"] = [gui_pip_bar_to_json(b) for b in ly.pip_bars]
+    if ly.sprites:
+        out["sprites"] = [gui_sprite_icon_to_json(sp) for sp in ly.sprites]
     return out
 
 
 def collect_gui_layer_sprite_ids(layer: GuiLayer) -> set[str]:
     """Devuelve todos los stems de sprites referenciados por esta capa (fill_sprite_id de
-    progress bars con fill_mode="sprite", sprite_full_id de pip bars, alt_sprite_id de
-    ambos tipos de rango). El exportador usa esto para asegurarse de meter estos sprites en
-    el bundle aunque no esten referenciados por ningun objeto de escena.
+    progress bars con fill_mode="sprite", sprite_full_id de pip bars, sprite_id de iconos
+    sprite, y alt_sprite_id de rangos de progress/pip). El exportador usa esto para asegurarse
+    de meter estos sprites en el bundle aunque no esten referenciados por ningun objeto de
+    escena.
     """
     out: set[str] = set()
     for bar in layer.progress_bars:
@@ -458,6 +521,9 @@ def collect_gui_layer_sprite_ids(layer: GuiLayer) -> set[str]:
         for r in pb.ranges:
             if r.alt_sprite_id:
                 out.add(r.alt_sprite_id)
+    for icon in layer.sprites:
+        if icon.sprite_id:
+            out.add(icon.sprite_id)
     return out
 
 

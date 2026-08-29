@@ -2519,7 +2519,7 @@
           "bottom": 0,
           "left": 0,
           "right": 0,
-          "bg_color_index": 15,
+          "bg_color_index": 16,
           "overlay": true
         }
       },
@@ -2993,7 +2993,7 @@
       "camera_hud_border_right": 0
     }
   ],
-  "active_scene": "intro",
+  "active_scene": "Lvl_1",
   "transparent_index": 31,
   "target_fps": 30,
   "default_anim_fps": 8,
