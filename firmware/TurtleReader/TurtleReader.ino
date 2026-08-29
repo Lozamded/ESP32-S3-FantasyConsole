@@ -241,6 +241,28 @@ static int l_gui_layer_set_text(lua_State* L) {
   return 0;
 }
 
+/** gui_layer_set_progress(id, bar_id, value_num [, value_den]) */
+static int l_gui_layer_set_progress(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  const char* bar_id = luaL_checkstring(L, 2);
+  const int num = static_cast<int>(luaL_checkinteger(L, 3));
+  const bool has_den = !lua_isnoneornil(L, 4);
+  const int den = has_den ? static_cast<int>(luaL_checkinteger(L, 4)) : 1;
+  turtle_gui_layer_set_progress(id, bar_id, num, has_den, den);
+  return 0;
+}
+
+/** gui_layer_set_pips(id, bar_id, value [, max_value]) */
+static int l_gui_layer_set_pips(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  const char* bar_id = luaL_checkstring(L, 2);
+  const int val = static_cast<int>(luaL_checkinteger(L, 3));
+  const bool has_max = !lua_isnoneornil(L, 4);
+  const int maxv = has_max ? static_cast<int>(luaL_checkinteger(L, 4)) : 1;
+  turtle_gui_layer_set_pips(id, bar_id, val, has_max, maxv);
+  return 0;
+}
+
 static bool runCartEntryLua(const char* source, size_t source_len, const char* chunkName) {
   if (!source || source_len == 0) {
     Serial.println("Lua: ENTRY vacio");
@@ -291,6 +313,10 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_setglobal(L, "gui_layer_hide_all");
   lua_pushcfunction(L, l_gui_layer_set_text);
   lua_setglobal(L, "gui_layer_set_text");
+  lua_pushcfunction(L, l_gui_layer_set_progress);
+  lua_setglobal(L, "gui_layer_set_progress");
+  lua_pushcfunction(L, l_gui_layer_set_pips);
+  lua_setglobal(L, "gui_layer_set_pips");
 
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {

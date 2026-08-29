@@ -148,5 +148,99 @@ class PlayRuntimePlayfieldTests(unittest.TestCase):
         self.assertFalse(sess._scrolling())
 
 
+class HudBorderBgColorTests(unittest.TestCase):
+    """spec/hud-border-v0.md "bg_color_index": pintar la region HUD una vez al comenzar."""
+
+    def test_missing_field_defaults_to_no_paint(self) -> None:
+        b = parse_hud_border({"top": 16})
+        self.assertEqual(b.bg_color_index, -1)
+
+    def test_valid_color_parsed(self) -> None:
+        b = parse_hud_border({"top": 16, "bg_color_index": 5})
+        self.assertEqual(b.bg_color_index, 5)
+
+    def test_transparent_31_collapses_to_no_paint(self) -> None:
+        b = parse_hud_border({"top": 16, "bg_color_index": 31})
+        self.assertEqual(b.bg_color_index, -1)
+
+    def test_out_of_range_collapses_to_no_paint(self) -> None:
+        for bad in (-2, 40, 999):
+            b = parse_hud_border({"top": 16, "bg_color_index": bad})
+            self.assertEqual(b.bg_color_index, -1, f"input {bad}")
+
+    def test_is_zero_reflects_bg_field(self) -> None:
+        # Sin bordes pero con bg color -> NO es zero (queremos emitir el bloque hud_border).
+        b = HudBorder(bg_color_index=3)
+        self.assertFalse(b.is_zero())
+        # Con bordes y sin bg -> tampoco es zero (comportamiento pre-existente).
+        b2 = HudBorder(top=16)
+        self.assertFalse(b2.is_zero())
+        # Sin nada -> zero.
+        self.assertTrue(HudBorder().is_zero())
+
+    def test_scene_json_round_trip_preserves_bg(self) -> None:
+        cam = parse_scene_camera({
+            "mode": "fixed",
+            "hud_border": {"top": 16, "bottom": 0, "left": 0, "right": 0, "bg_color_index": 4},
+        })
+        out = scene_camera_to_json(cam)
+        self.assertIn("hud_border", out)
+        self.assertEqual(out["hud_border"].get("bg_color_index"), 4)
+        cam2 = parse_scene_camera(out)
+        self.assertEqual(cam2.hud_border.bg_color_index, 4)
+
+    def test_scene_json_omits_bg_when_not_set(self) -> None:
+        cam = parse_scene_camera({"mode": "fixed", "hud_border": {"top": 16}})
+        out = scene_camera_to_json(cam)
+        self.assertNotIn("bg_color_index", out.get("hud_border", {}))
+
+    def test_flat_row_carries_bg_field(self) -> None:
+        cam = parse_scene_camera({
+            "hud_border": {"top": 16, "bg_color_index": 7},
+        })
+        flat = scene_camera_flat_row_fields(cam)
+        self.assertEqual(flat["camera_hud_border_bg_color_index"], 7)
+        cam2 = parse_scene_camera_from_row(flat)
+        self.assertEqual(cam2.hud_border.bg_color_index, 7)
+
+
+class HudBorderOverlayTests(unittest.TestCase):
+    """spec/hud-border-v0.md "overlay": mundo mantiene tamano canonico, actor entra en HUD."""
+
+    def test_default_is_false(self) -> None:
+        self.assertFalse(HudBorder().overlay)
+        self.assertFalse(parse_hud_border({"top": 16}).overlay)
+
+    def test_true_parsed_and_preserved(self) -> None:
+        b = parse_hud_border({"top": 16, "overlay": True})
+        self.assertTrue(b.overlay)
+
+    def test_is_zero_reflects_overlay(self) -> None:
+        # Sin bordes, sin bg, pero con overlay -> NO es zero (mantener el bloque emitido).
+        self.assertFalse(HudBorder(overlay=True).is_zero())
+        self.assertTrue(HudBorder().is_zero())
+
+    def test_scene_json_round_trip_preserves_overlay(self) -> None:
+        cam = parse_scene_camera({
+            "hud_border": {"top": 16, "overlay": True},
+        })
+        out = scene_camera_to_json(cam)
+        self.assertTrue(out["hud_border"]["overlay"])
+        cam2 = parse_scene_camera(out)
+        self.assertTrue(cam2.hud_border.overlay)
+
+    def test_scene_json_omits_overlay_when_false(self) -> None:
+        cam = parse_scene_camera({"hud_border": {"top": 16}})
+        out = scene_camera_to_json(cam)
+        self.assertNotIn("overlay", out.get("hud_border", {}))
+
+    def test_flat_row_carries_overlay(self) -> None:
+        cam = parse_scene_camera({"hud_border": {"top": 16, "overlay": True}})
+        flat = scene_camera_flat_row_fields(cam)
+        self.assertTrue(flat["camera_hud_border_overlay"])
+        cam2 = parse_scene_camera_from_row(flat)
+        self.assertTrue(cam2.hud_border.overlay)
+
+
 if __name__ == "__main__":
     unittest.main()

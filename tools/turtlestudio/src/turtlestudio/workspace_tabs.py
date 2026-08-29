@@ -25,6 +25,7 @@ class TabKind(str, Enum):
     BACKGROUND_EDITOR = "background_editor"
     OBJECT_EDITOR = "object_editor"
     FONT_EDITOR = "font_editor"
+    GUILAYER_EDITOR = "guilayer_editor"
     PALETTE_EDITOR = "palette_editor"
     EXPORT = "export"
 
@@ -54,6 +55,7 @@ class WorkspaceTabs(QWidget):
         (TabKind.BACKGROUND_EDITOR, "mainwindow.tab_backgrounds"),
         (TabKind.OBJECT_EDITOR, "mainwindow.tab_objects"),
         (TabKind.FONT_EDITOR, "mainwindow.tab_fonts"),
+        (TabKind.GUILAYER_EDITOR, "mainwindow.tab_guilayers"),
         (TabKind.PALETTE_EDITOR, "mainwindow.tab_palette"),
         (TabKind.EXPORT, "mainwindow.tab_export"),
     )

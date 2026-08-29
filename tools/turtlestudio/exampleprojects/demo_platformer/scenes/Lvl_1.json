@@ -263,15 +263,6 @@
       "y": 0,
       "font": "default",
       "color_index": -1,
-      "blink_ms": 3
-    },
-    {
-      "id": "label2",
-      "text": "Lives",
-      "x": 3,
-      "y": 112,
-      "font": "default",
-      "color_index": -1,
       "blink_ms": 0
     }
   ],
@@ -2094,10 +2085,12 @@
     "margin_y": 0,
     "target": "player",
     "hud_border": {
-      "top": 16,
+      "top": 18,
       "bottom": 0,
       "left": 0,
-      "right": 0
+      "right": 0,
+      "bg_color_index": 15,
+      "overlay": true
     }
   }
 }

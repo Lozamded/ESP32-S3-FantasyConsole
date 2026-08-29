@@ -57,6 +57,7 @@ STANDARD_SUBDIRS: tuple[str, ...] = (
     "scripts",
     "backgrounds",
     "tiles",
+    "guilayers",
     "audio/json",
     "audio/effects",
     "audio/music",
@@ -169,6 +170,28 @@ def scene_world_pixel_size(
     sx = clamp_world_steps(steps_x)
     sy = clamp_world_steps(steps_y)
     return base_w * sx, base_h * sy
+
+
+def parse_gui_layers_autoshow(raw: object) -> tuple[str, ...]:
+    """spec/gui-layer-v0.md "Auto-show por escena". Filtra tokens no-string, stems invalidos
+    (por is_valid_gui_layer_id) y duplicados preservando el orden. La validacion de que cada
+    stem EXISTA en `guilayers/` NO se hace aca -- el firmware la resuelve en runtime, y aca
+    permitimos referenciar layers que se van a crear despues (evita bloquear la edicion)."""
+    from turtlestudio.guilayers import is_valid_gui_layer_id
+
+    if not isinstance(raw, list):
+        return ()
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        stem = item.strip()
+        if not stem or stem in seen or not is_valid_gui_layer_id(stem):
+            continue
+        seen.add(stem)
+        out.append(stem)
+    return tuple(out)
 
 
 @dataclass(frozen=True)
@@ -517,6 +540,10 @@ class SceneEntry:
     # Opcional: override por escena (si falta, usa target_fps/default_anim_fps del proyecto).
     target_fps: int | None = None
     default_anim_fps: int | None = None
+    # spec/gui-layer-v0.md "Auto-show por escena": ids de capas GUI a mostrar
+    # automaticamente al comenzar la escena. Solo stems -- el catalogo `guilayers` del bundle
+    # es el que provee el contenido. Duplicados/invalidos se filtran al parsear.
+    gui_layers_autoshow: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -919,6 +946,7 @@ def _parse_scenes_from_manifest(
             from turtlestudio.scene_camera import parse_scene_camera_from_row
 
             cam = parse_scene_camera_from_row(item)
+            autoshow = parse_gui_layers_autoshow(item.get("gui_layers_autoshow"))
             parsed.append(
                 SceneEntry(
                     id=sid,
@@ -935,6 +963,7 @@ def _parse_scenes_from_manifest(
                     target_fps=scene_tf,
                     default_anim_fps=scene_af,
                     camera=cam,
+                    gui_layers_autoshow=autoshow,
                 )
             )
         scenes_list = parsed
@@ -1393,6 +1422,7 @@ def _normalize_scenes_for_save(
             "collision_tile_layer": normalize_collision_tile_layer(item.get("collision_tile_layer", 0)),
             "world_steps_x": wsx,
             "world_steps_y": wsy,
+            "gui_layers_autoshow": list(parse_gui_layers_autoshow(item.get("gui_layers_autoshow"))),
         }
         from turtlestudio.project_runtime import clamp_default_anim_fps, clamp_target_fps
 

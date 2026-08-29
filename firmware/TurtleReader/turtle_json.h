@@ -3,9 +3,10 @@
 #include <stddef.h>
 
 /**
- * Helpers de parsing JSON usados por turtle_scene.cpp y turtle_gui_layer.cpp. Definidos en
- * turtle_scene.cpp (historicamente son sus propios helpers privados; se expusieron cuando
- * turtle_gui_layer.cpp los necesito para parsear el catalogo `guilayers` del bundle).
+ * Helpers de parsing JSON compartidos entre turtle_scene.cpp y turtle_gui_layer.cpp.
+ * Historicamente vivian como `static` dentro de turtle_scene.cpp; se extrajeron a este
+ * modulo cuando turtle_gui_layer.cpp los necesito para parsear el catalogo `guilayers` del
+ * bundle. Definidos en turtle_json.cpp.
  *
  * No es un parser JSON completo -- son extractores por-clave sobre un buffer plano, no
  * recorren el arbol. Suficiente para los bundles chatos (single-level objects, arrays de

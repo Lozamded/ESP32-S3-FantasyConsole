@@ -1,0 +1,64 @@
+{
+  "id": "gametstatus",
+  "x": 0,
+  "y": 0,
+  "w": 164,
+  "h": 20,
+  "bg_color_index": 0,
+  "transparent_bg": true,
+  "pauses_scene": false,
+  "captures_input": false,
+  "z": 2,
+  "text_labels": [
+    {
+      "id": "lifesamount",
+      "font": "default",
+      "text": "xN",
+      "x": 55,
+      "y": 10
+    },
+    {
+      "id": "labelshoot",
+      "font": "default",
+      "text": "shoot",
+      "x": 116,
+      "y": 1
+    },
+    {
+      "id": "gearsamount",
+      "font": "default",
+      "text": "xN",
+      "x": 90,
+      "y": 10
+    }
+  ],
+  "progress_bars": [
+    {
+      "id": "shootbar",
+      "x": 112,
+      "y": 10,
+      "w": 44,
+      "h": 6,
+      "direction": "left_to_right",
+      "fill_mode": "sprite",
+      "fill_color_index": 11,
+      "bg_color_index": 3,
+      "border_color_index": -1,
+      "value_num": 16,
+      "value_den": 32,
+      "fill_sprite_id": "bar_sprite"
+    }
+  ],
+  "pip_bars": [
+    {
+      "id": "pips1",
+      "x": 2,
+      "y": 1,
+      "sprite_full_id": "shell",
+      "direction": "horizontal",
+      "gap_px": 1,
+      "value": 3,
+      "max_value": 3
+    }
+  ]
+}

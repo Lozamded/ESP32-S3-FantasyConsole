@@ -27,15 +27,28 @@ _HUD_BORDER_RGBA = (0.15, 0.7, 1.0, 0.55)
 
 @dataclass(frozen=True)
 class HudBorder:
-    """spec/hud-border-v0.md: cuatro bordes HUD en px de framebuffer. Todo cero = sin HUD."""
+    """spec/hud-border-v0.md: cuatro bordes HUD en px de framebuffer. Todo cero = sin HUD.
+
+    `bg_color_index`: -1 = no pintar (firmware deja los pixels HUD como los dejo `cls`).
+    0..30 = pintar la region HUD una vez al comenzar la escena con ese indice de paleta.
+    31 (transparente) se colapsa a -1 al parsear.
+    `overlay`: false = mundo se encoge al playfield (comportamiento previo). true = mundo mantiene
+    tamano canonico completo, camara no scrollea a revelar al actor detras del HUD (Metroid-style,
+    el sprite del actor en la region HUD queda invisible por el clip de playfield)."""
 
     top: int = 0
     bottom: int = 0
     left: int = 0
     right: int = 0
+    bg_color_index: int = -1
+    overlay: bool = False
 
     def is_zero(self) -> bool:
-        return self.top == 0 and self.bottom == 0 and self.left == 0 and self.right == 0
+        """True cuando NO hay HUD para pintar: los cuatro bordes en 0, sin bg color, sin overlay.
+        La serializacion omite el bloque completo cuando esto es true (evita ensuciar diffs de
+        escenas legado)."""
+        return (self.top == 0 and self.bottom == 0 and self.left == 0 and self.right == 0
+                and self.bg_color_index < 0 and not self.overlay)
 
     def playfield_size(
         self,
@@ -75,11 +88,14 @@ def clamp_hud_border(
     left: int,
     right: int,
     *,
+    bg_color_index: int = -1,
+    overlay: bool = False,
     viewport_w: int = VIEWPORT_PIXEL_W,
     viewport_h: int = VIEWPORT_PIXEL_H,
 ) -> HudBorder:
     """spec/hud-border-v0.md: mismos limites que en firmware (parse_scene_hud_border):
-    cada borde en [0, viewport/2 - 1]; garantia de HUD_MIN_PLAYFIELD px de playfield por eje."""
+    cada borde en [0, viewport/2 - 1]; garantia de HUD_MIN_PLAYFIELD px de playfield por eje.
+    `bg_color_index` -1..30 (31 se colapsa a -1 = no pintar). `overlay` es un simple bool."""
     max_v = max(0, viewport_h // 2 - 1)
     max_h = max(0, viewport_w // 2 - 1)
     t = max(0, min(max_v, int(top)))
@@ -96,7 +112,11 @@ def clamp_hud_border(
         if r < 0:
             l = max(0, viewport_w - HUD_MIN_PLAYFIELD)
             r = 0
-    return HudBorder(top=t, bottom=b, left=l, right=r)
+    bg = int(bg_color_index)
+    if bg < 0 or bg > 30:
+        bg = -1
+    return HudBorder(top=t, bottom=b, left=l, right=r, bg_color_index=bg,
+                     overlay=bool(overlay))
 
 
 def parse_hud_border(raw: Any) -> HudBorder:
@@ -107,6 +127,8 @@ def parse_hud_border(raw: Any) -> HudBorder:
         _clamp_int(raw.get("bottom", 0), 0, VIEWPORT_PIXEL_H, default=0),
         _clamp_int(raw.get("left", 0), 0, VIEWPORT_PIXEL_W, default=0),
         _clamp_int(raw.get("right", 0), 0, VIEWPORT_PIXEL_W, default=0),
+        bg_color_index=_clamp_int(raw.get("bg_color_index", -1), -1, 31, default=-1),
+        overlay=bool(raw.get("overlay", False)),
     )
 
 
@@ -191,8 +213,15 @@ def parse_scene_camera_from_row(row: dict[str, Any]) -> SceneCameraConfig:
         "left": row.get("camera_hud_border_left"),
         "right": row.get("camera_hud_border_right"),
     }
-    if any(v is not None for v in flat_hud.values()):
-        flat["hud_border"] = {k: (0 if v is None else v) for k, v in flat_hud.items()}
+    flat_bg = row.get("camera_hud_border_bg_color_index")
+    flat_overlay = row.get("camera_hud_border_overlay")
+    if any(v is not None for v in flat_hud.values()) or flat_bg is not None or flat_overlay is not None:
+        hud_flat: dict[str, Any] = {k: (0 if v is None else v) for k, v in flat_hud.items()}
+        if flat_bg is not None:
+            hud_flat["bg_color_index"] = flat_bg
+        if flat_overlay is not None:
+            hud_flat["overlay"] = flat_overlay
+        flat["hud_border"] = hud_flat
     if any(v is not None for v in flat.values()):
         return parse_scene_camera(flat)
     return SceneCameraConfig()
@@ -208,15 +237,20 @@ def scene_camera_to_json(cam: SceneCameraConfig) -> dict[str, Any]:
     }
     if cam.target.strip():
         out["target"] = cam.target.strip()
-    # spec/hud-border-v0.md: se omite si es todo cero (comportamiento pre-v0) para no ensuciar
-    # diffs de escenas viejas; se emite si hay algun borde no cero.
+    # spec/hud-border-v0.md: se omite si es todo cero + sin bg (comportamiento pre-v0) para no
+    # ensuciar diffs de escenas viejas; se emite si hay algun borde no cero o bg_color_index >= 0.
     if not cam.hud_border.is_zero():
-        out["hud_border"] = {
+        hb: dict[str, Any] = {
             "top": int(cam.hud_border.top),
             "bottom": int(cam.hud_border.bottom),
             "left": int(cam.hud_border.left),
             "right": int(cam.hud_border.right),
         }
+        if cam.hud_border.bg_color_index >= 0:
+            hb["bg_color_index"] = int(cam.hud_border.bg_color_index)
+        if cam.hud_border.overlay:
+            hb["overlay"] = True
+        out["hud_border"] = hb
     return out
 
 
@@ -232,6 +266,8 @@ def scene_camera_flat_row_fields(cam: SceneCameraConfig) -> dict[str, Any]:
         "camera_hud_border_bottom": int(cam.hud_border.bottom),
         "camera_hud_border_left": int(cam.hud_border.left),
         "camera_hud_border_right": int(cam.hud_border.right),
+        "camera_hud_border_bg_color_index": int(cam.hud_border.bg_color_index),
+        "camera_hud_border_overlay": bool(cam.hud_border.overlay),
     }
     if cam.target.strip():
         out["camera_target"] = cam.target.strip()
@@ -355,11 +391,17 @@ def draw_scene_hud_border_on_rgba(
     viewport_w: int = VIEWPORT_PIXEL_W,
     viewport_h: int = VIEWPORT_PIXEL_H,
     fill_rgba: tuple[float, float, float, float] = _HUD_BORDER_RGBA,
+    bg_solid_rgba: tuple[float, float, float, float] | None = None,
 ) -> None:
     """spec/hud-border-v0.md: tinte semitransparente sobre las cuatro franjas HUD dentro del
     viewport de camara actual. Marca visualmente al autor que area del framebuffer queda
     reservada para el HUD -- el codigo del cart no puede pintar el playfield desde hud_*,
-    y los actores no se derraman a estas franjas."""
+    y los actores no se derraman a estas franjas.
+
+    Si `bg_solid_rgba` viene, pinta las franjas SOLIDAS con ese color (opaco, no blend) -- eso
+    refleja el `hud_border.bg_color_index` que el firmware pinta una vez al comenzar la escena.
+    En ese caso NO se aplica el tinte azul semitransparente encima, para que el autor vea el
+    color HUD real."""
     if fw <= 0 or fh <= 0 or len(rgba) < fw * fh * 4:
         return
     if hud_border.is_zero():
@@ -377,20 +419,35 @@ def draw_scene_hud_border_on_rgba(
     bottom = int(hud_border.bottom)
     left = int(hud_border.left)
     right = int(hud_border.right)
+    # Modo solido (bg_color_index configurado): sobrescribe cada pixel HUD con el color, sin
+    # blend. Alpha = 1 en la salida para que el fondo checker/damero del preview no se filtre.
+    solid = bg_solid_rgba is not None
+    if solid:
+        sr, sg, sb, _sa = bg_solid_rgba  # type: ignore[misc]
+
+    def paint_pixel(offset: int) -> None:
+        if solid:
+            rgba[offset] = sr
+            rgba[offset + 1] = sg
+            rgba[offset + 2] = sb
+            rgba[offset + 3] = 1.0
+        else:
+            _blend_rgba_pixel_inplace(rgba, offset, r, g, b, a)
+
     # Franja arriba (fb): filas scene_y en [y1 - top + 1, y1].
     top_scene_lo = max(y0, y1 - top + 1)
     for sy in range(top_scene_lo, y1 + 1):
         y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
         row_base = y_fb * fw * 4
         for x in range(x0, x1 + 1):
-            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+            paint_pixel(row_base + x * 4)
     # Franja abajo (fb): scene_y en [y0, y0 + bottom - 1].
     bot_scene_hi = min(y1, y0 + bottom - 1)
     for sy in range(y0, bot_scene_hi + 1):
         y_fb = scene_y_to_framebuffer_y(sy, fb_h=fh)
         row_base = y_fb * fw * 4
         for x in range(x0, x1 + 1):
-            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+            paint_pixel(row_base + x * 4)
     # Franjas laterales solo cubren las filas del playfield (no repintan esquinas ya
     # pintadas arriba/abajo -- se ven mas oscuras si se acumulan dos capas del mismo tinte).
     inner_lo = min(y1, y0 + bottom)
@@ -400,10 +457,10 @@ def draw_scene_hud_border_on_rgba(
         row_base = y_fb * fw * 4
         left_hi = min(x1, x0 + left - 1)
         for x in range(x0, left_hi + 1):
-            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+            paint_pixel(row_base + x * 4)
         right_lo = max(x0, x1 - right + 1)
         for x in range(right_lo, x1 + 1):
-            _blend_rgba_pixel_inplace(rgba, row_base + x * 4, r, g, b, a)
+            paint_pixel(row_base + x * 4)
 
 
 def draw_scene_camera_viewport_on_rgba(

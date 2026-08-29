@@ -372,6 +372,31 @@ def collect_studio_bundle_files(
     sidecar: list[tuple[str, str | bytes]] = []
     sids: set[str] = set()
 
+    # spec/gui-layer-v0.md: capas GUI apilables. Cargamos temprano para descubrir sprites
+    # referenciados por progress bars (fill_mode="sprite") y pip bars, y meterlos en el
+    # bundle igual que los sprites de objetos. Sin esto, un pip_bar apunta a un sprite que
+    # no viaja al paquete SD y el firmware loguea "sprite X no encontrado".
+    from turtlestudio.guilayers import (
+        MAX_GUI_LAYERS,
+        collect_gui_layer_sprite_ids,
+        gui_layer_to_json,
+        list_gui_layer_stems,
+        read_gui_layer_file,
+    )
+
+    gui_stems = list_gui_layer_stems(root)
+    if len(gui_stems) > MAX_GUI_LAYERS:
+        gui_stems = gui_stems[:MAX_GUI_LAYERS]
+    guilayers_loaded = []
+    for stem in gui_stems:
+        try:
+            ly = read_gui_layer_file(root, stem)
+        except ValueError:
+            continue
+        guilayers_loaded.append(ly)
+        for sp in collect_gui_layer_sprite_ids(ly):
+            sids.add(sp)
+
     objects_map: dict[str, Any] = {}
     for oid in sorted(oids):
         try:
@@ -465,27 +490,10 @@ def collect_studio_bundle_files(
     target_fps, default_anim_fps = parse_runtime_from_manifest(manifest_data)
 
     # spec/gui-layer-v0.md: catalogo de capas GUI apilables. Cada archivo `guilayers/*.json`
-    # aporta una entrada al array top-level `guilayers` del bundle. Orden estable (alfabetico
-    # por stem) para que el desempate por z-manifest sea reproducible entre exports.
-    from turtlestudio.guilayers import (
-        MAX_GUI_LAYERS,
-        gui_layer_to_json,
-        list_gui_layer_stems,
-        read_gui_layer_file,
-    )
-
-    guilayers_list: list[dict[str, Any]] = []
-    gui_stems = list_gui_layer_stems(root)
-    if len(gui_stems) > MAX_GUI_LAYERS:
-        # Truncar al maximo del firmware. Cartuchos con >8 capas emiten un aviso pero
-        # exportan las primeras 8 (orden alfabetico -- documentado en spec/gui-layer-v0.md).
-        gui_stems = gui_stems[:MAX_GUI_LAYERS]
-    for stem in gui_stems:
-        try:
-            ly = read_gui_layer_file(root, stem)
-        except ValueError:
-            continue  # archivos rotos no rompen el build, solo se descartan
-        guilayers_list.append(gui_layer_to_json(ly))
+    # aporta una entrada al array top-level `guilayers` del bundle. Se cargaron mas arriba
+    # para poder descubrir sus sprites; aca solo se serializan al bundle. Orden estable
+    # (alfabetico por stem) para que el desempate por z-manifest sea reproducible entre exports.
+    guilayers_list: list[dict[str, Any]] = [gui_layer_to_json(ly) for ly in guilayers_loaded]
 
     bundle: dict[str, Any] = {
         "format_version": 1,

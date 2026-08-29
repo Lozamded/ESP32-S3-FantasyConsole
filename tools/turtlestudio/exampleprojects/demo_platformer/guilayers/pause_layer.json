@@ -1,0 +1,30 @@
+{
+  "id": "pause_layer",
+  "x": 0,
+  "y": 0,
+  "w": 164,
+  "h": 124,
+  "bg_color_index": 0,
+  "transparent_bg": true,
+  "pauses_scene": true,
+  "captures_input": false,
+  "z": 0,
+  "rects": [
+    {
+      "x": 50,
+      "y": 50,
+      "w": 65,
+      "h": 20,
+      "color_index": 25
+    }
+  ],
+  "text_labels": [
+    {
+      "id": "pausetext",
+      "font": "default",
+      "text": "PAUSE",
+      "x": 64,
+      "y": 56
+    }
+  ]
+}

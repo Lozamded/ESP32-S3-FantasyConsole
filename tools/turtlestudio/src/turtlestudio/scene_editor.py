@@ -63,6 +63,12 @@ from turtlestudio.fonts import (
     parse_font_glyphs,
     read_font_file,
 )
+from turtlestudio.guilayers import (
+    GuiLayer,
+    is_valid_gui_layer_id,
+    list_gui_layer_stems,
+    write_gui_layer_file,
+)
 from turtlestudio.i18n import tr
 from turtlestudio.objects import list_object_ids_for_scene_palette, read_object_file
 from turtlestudio.palette_editor import PaletteGridWidget
@@ -606,9 +612,18 @@ def render_scene_rgba(
     else:
         cam_x, cam_y = 0, 0
     if not hud_cam.hud_border.is_zero():
+        # spec/hud-border-v0.md: si `bg_color_index >= 0`, mostrar el color HUD solido (mismo
+        # que el firmware pinta al arrancar la escena) en vez del tinte azul semitransparente.
+        bg_solid = None
+        bg_idx = int(hud_cam.hud_border.bg_color_index)
+        if bg_idx >= 0:
+            col = resolve_palette_color(bg_idx, rgbs)
+            if col is not None:
+                bg_solid = (col[0], col[1], col[2], 1.0)
         draw_scene_hud_border_on_rgba(
             rgba, fw, fh, cam_x, cam_y, hud_cam.hud_border,
             viewport_w=viewport_w, viewport_h=viewport_h,
+            bg_solid_rgba=bg_solid,
         )
 
     # Se dibuja al final, encima de todo (tiles, capas, limites de mundo, viewport de
@@ -1078,8 +1093,51 @@ def _normalize_row(
     return r
 
 
+HUD_LAYER_DEFAULT_BG_COLOR_INDEX = 0
+HUD_LAYER_DEFAULT_Z = 50
+
+
+def compute_hud_layer_rect(
+    side: str,
+    hud_top: int,
+    hud_bottom: int,
+    hud_left: int,
+    hud_right: int,
+    *,
+    w: int = SCENE_PIXEL_W,
+    h: int = SCENE_PIXEL_H,
+) -> tuple[int, int, int, int]:
+    """(x, y, w, h) para una capa GUI que cubre EXACTAMENTE la franja HUD del lado `side`.
+
+    Layout no solapante: `top` y `bottom` toman el ancho completo; `left` y `right` toman
+    solo la franja central (excluyendo top/bottom) para que las esquinas queden en la capa
+    horizontal, no en las verticales -- el patron NES-style habitual. Si el usuario mueve
+    otro borde despues, el layer NO se re-ajusta solo; para eso re-clickean el boton (que
+    lo abre en el editor, no lo recrea)."""
+    if side == "top":
+        return (0, 0, w, max(1, hud_top))
+    if side == "bottom":
+        return (0, h - max(1, hud_bottom), w, max(1, hud_bottom))
+    mid_y = max(0, min(h - 1, hud_top))
+    mid_h = max(1, h - hud_top - hud_bottom)
+    if side == "left":
+        return (0, mid_y, max(1, hud_left), mid_h)
+    if side == "right":
+        return (w - max(1, hud_right), mid_y, max(1, hud_right), mid_h)
+    raise ValueError(f"lado HUD desconocido: {side}")
+
+
+def hud_layer_stem(scene_id: str, side: str) -> str:
+    """Nombre estable de la capa scaffold para un lado de HUD de una escena.
+
+    Determinista para poder ser idempotente (dos clicks NO crean dos archivos)."""
+    base = scene_id if is_valid_gui_layer_id(scene_id) else "scene"
+    return f"{base}_hud_{side}"
+
+
 class SceneEditorWidget(QWidget):
     saved = pyqtSignal(Path)
+    request_open_gui_layer = pyqtSignal(str)
 
     def __init__(self, project_root: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -1208,6 +1266,7 @@ class SceneEditorWidget(QWidget):
         left_layout.addWidget(self._build_objects_group())
         left_layout.addWidget(self._build_text_labels_group())
         left_layout.addWidget(self._build_camera_group())
+        left_layout.addWidget(self._build_gui_layers_group())
         left_layout.addStretch()
 
         left_scroll.setWidget(left_inner)
@@ -1721,19 +1780,63 @@ class SceneEditorWidget(QWidget):
         self.spin_hud_top = QSpinBox()
         self.spin_hud_top.setRange(0, max_v)
         self.spin_hud_top.valueChanged.connect(self._on_camera_changed)
-        form.addRow(tr("scene.hud_border_top_label"), self.spin_hud_top)
+        form.addRow(tr("scene.hud_border_top_label"), self._hud_border_row(self.spin_hud_top, "top"))
         self.spin_hud_bottom = QSpinBox()
         self.spin_hud_bottom.setRange(0, max_v)
         self.spin_hud_bottom.valueChanged.connect(self._on_camera_changed)
-        form.addRow(tr("scene.hud_border_bottom_label"), self.spin_hud_bottom)
+        form.addRow(tr("scene.hud_border_bottom_label"), self._hud_border_row(self.spin_hud_bottom, "bottom"))
         self.spin_hud_left = QSpinBox()
         self.spin_hud_left.setRange(0, max_h)
         self.spin_hud_left.valueChanged.connect(self._on_camera_changed)
-        form.addRow(tr("scene.hud_border_left_label"), self.spin_hud_left)
+        form.addRow(tr("scene.hud_border_left_label"), self._hud_border_row(self.spin_hud_left, "left"))
         self.spin_hud_right = QSpinBox()
         self.spin_hud_right.setRange(0, max_h)
         self.spin_hud_right.valueChanged.connect(self._on_camera_changed)
-        form.addRow(tr("scene.hud_border_right_label"), self.spin_hud_right)
+        form.addRow(tr("scene.hud_border_right_label"), self._hud_border_row(self.spin_hud_right, "right"))
+        # spec/hud-border-v0.md: color de la region HUD (pintada una sola vez al comenzar la
+        # escena, antes de _hud_init). -1 = no pintar (comportamiento pre-v0), 0..30 = color plano.
+        self.spin_hud_bg = QSpinBox()
+        self.spin_hud_bg.setRange(-1, 30)
+        self.spin_hud_bg.setSpecialValueText(tr("scene.hud_border_bg_none"))
+        self.spin_hud_bg.valueChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_bg_label"), self.spin_hud_bg)
+        # spec/hud-border-v0.md "overlay": permite que el actor entre a la region HUD sin que
+        # el mundo se encoja al playfield. Su sprite en la franja HUD queda invisible por el
+        # clip de playfield -- efecto Metroid.
+        self.chk_hud_overlay = QCheckBox()
+        self.chk_hud_overlay.setToolTip(tr("scene.hud_border_overlay_tooltip"))
+        self.chk_hud_overlay.stateChanged.connect(self._on_camera_changed)
+        form.addRow(tr("scene.hud_border_overlay_label"), self.chk_hud_overlay)
+        return section
+
+    def _hud_border_row(self, spin: QSpinBox, side: str) -> QWidget:
+        """Fila spinbox + boton "+" que crea o abre la capa GUI para ese lado."""
+        row = QWidget()
+        h = QHBoxLayout(row)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(4)
+        h.addWidget(spin, stretch=1)
+        btn = QPushButton("+")
+        btn.setFixedWidth(24)
+        btn.setToolTip(tr("scene.hud_scaffold_tooltip"))
+        btn.clicked.connect(lambda _c=False, s=side: self._action_scaffold_hud_layer(s))
+        h.addWidget(btn)
+        return row
+
+    # spec/gui-layer-v0.md "Auto-show por escena": checklist de capas GUI. Marcar = incluir el
+    # id en `gui_layers_autoshow` de la escena; el firmware las muestra al arrancar sin codigo
+    # Lua. Menus modales (pausa, dialogo) NO se marcan aca -- se disparan desde Lua.
+    def _build_gui_layers_group(self) -> CollapsibleSection:
+        section = CollapsibleSection(tr("scene.gui_layers_group"))
+        v = QVBoxLayout()
+        section.content_layout().addLayout(v)
+        hint = QLabel(tr("scene.gui_layers_hint"))
+        hint.setStyleSheet("color: #888;")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+        self.list_gui_layers_autoshow = QListWidget()
+        self.list_gui_layers_autoshow.itemChanged.connect(self._on_gui_layers_autoshow_changed)
+        v.addWidget(self.list_gui_layers_autoshow)
         return section
 
     def _build_parallax_bands_group(self) -> QGroupBox:
@@ -1848,6 +1951,7 @@ class SceneEditorWidget(QWidget):
             self._refresh_label_color_grid(palette_rel)
             self._load_text_labels(row)
             self._load_camera(row)
+            self._load_gui_layers_autoshow(row)
             self._load_parallax_bands(row)
         finally:
             self._suspend = False
@@ -2029,6 +2133,8 @@ class SceneEditorWidget(QWidget):
         self.spin_hud_bottom.blockSignals(True)
         self.spin_hud_left.blockSignals(True)
         self.spin_hud_right.blockSignals(True)
+        self.spin_hud_bg.blockSignals(True)
+        self.chk_hud_overlay.blockSignals(True)
         idx = self.combo_camera_mode.findText(str(cam.get("mode", CAMERA_MODE_FOLLOW)))
         self.combo_camera_mode.setCurrentIndex(max(0, idx))
         self.spin_cam_x.setValue(int(cam.get("x", 0)))
@@ -2040,6 +2146,15 @@ class SceneEditorWidget(QWidget):
         self.spin_hud_bottom.setValue(int(hud.get("bottom", 0) or 0))
         self.spin_hud_left.setValue(int(hud.get("left", 0) or 0))
         self.spin_hud_right.setValue(int(hud.get("right", 0) or 0))
+        hud_bg_raw = hud.get("bg_color_index", -1)
+        try:
+            hud_bg = int(hud_bg_raw)
+        except (TypeError, ValueError):
+            hud_bg = -1
+        if hud_bg < -1 or hud_bg > 30:
+            hud_bg = -1
+        self.spin_hud_bg.setValue(hud_bg)
+        self.chk_hud_overlay.setChecked(bool(hud.get("overlay", False)))
         self.combo_camera_mode.blockSignals(False)
         self.spin_cam_x.blockSignals(False)
         self.spin_cam_y.blockSignals(False)
@@ -2050,6 +2165,125 @@ class SceneEditorWidget(QWidget):
         self.spin_hud_bottom.blockSignals(False)
         self.spin_hud_left.blockSignals(False)
         self.spin_hud_right.blockSignals(False)
+        self.spin_hud_bg.blockSignals(False)
+        self.chk_hud_overlay.blockSignals(False)
+
+    def _load_gui_layers_autoshow(self, row: dict[str, Any]) -> None:
+        """Reconstruye el checklist de capas GUI para la escena activa.
+        La lista de stems se re-consulta cada vez (una capa nueva creada en el editor de GUI
+        aparece al reabrir la escena sin necesidad de reiniciar la app)."""
+        raw = row.get("gui_layers_autoshow") or []
+        selected: set[str] = set()
+        if isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    selected.add(item.strip())
+        self.list_gui_layers_autoshow.blockSignals(True)
+        try:
+            self.list_gui_layers_autoshow.clear()
+            for stem in list_gui_layer_stems(self.project_root):
+                lwi = QListWidgetItem(stem)
+                lwi.setFlags(lwi.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                lwi.setCheckState(
+                    Qt.CheckState.Checked if stem in selected else Qt.CheckState.Unchecked
+                )
+                self.list_gui_layers_autoshow.addItem(lwi)
+            # Preserva ids seleccionados que ya no existen en el proyecto -- mostrados con
+            # aviso para que el autor los limpie o cree la capa faltante. Sin este renglon,
+            # abrir + guardar los borraria silenciosamente.
+            existing = {
+                self.list_gui_layers_autoshow.item(i).text()
+                for i in range(self.list_gui_layers_autoshow.count())
+            }
+            for missing in sorted(selected - existing):
+                lwi = QListWidgetItem(f"{missing}  ({tr('scene.gui_layers_missing_suffix')})")
+                lwi.setData(Qt.ItemDataRole.UserRole, missing)
+                lwi.setFlags(lwi.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                lwi.setCheckState(Qt.CheckState.Checked)
+                lwi.setForeground(Qt.GlobalColor.darkYellow)
+                self.list_gui_layers_autoshow.addItem(lwi)
+        finally:
+            self.list_gui_layers_autoshow.blockSignals(False)
+
+    def _collect_gui_layers_autoshow(self) -> list[str]:
+        out: list[str] = []
+        for i in range(self.list_gui_layers_autoshow.count()):
+            lwi = self.list_gui_layers_autoshow.item(i)
+            if lwi.checkState() != Qt.CheckState.Checked:
+                continue
+            # Items faltantes guardan el id real en UserRole; los normales lo llevan en text().
+            raw = lwi.data(Qt.ItemDataRole.UserRole)
+            stem = raw if isinstance(raw, str) and raw else lwi.text()
+            out.append(str(stem))
+        return out
+
+    def _on_gui_layers_autoshow_changed(self, _item: QListWidgetItem) -> None:
+        if self._suspend:
+            return
+        row = self._current_row()
+        if row is None:
+            return
+        row["gui_layers_autoshow"] = self._collect_gui_layers_autoshow()
+        self._mark_dirty()
+
+    def _action_scaffold_hud_layer(self, side: str) -> None:
+        """Crea (o abre, si ya existe) la capa GUI que rellena la franja HUD del lado `side`
+        para la escena activa. Idempotente: si el archivo ya existe se reutiliza, no se
+        sobreescribe (para no perder cambios que el autor haya hecho a mano en el editor
+        de capas GUI)."""
+        row = self._current_row()
+        if row is None:
+            return
+        hud_top = self.spin_hud_top.value()
+        hud_bottom = self.spin_hud_bottom.value()
+        hud_left = self.spin_hud_left.value()
+        hud_right = self.spin_hud_right.value()
+        size_map = {"top": hud_top, "bottom": hud_bottom, "left": hud_left, "right": hud_right}
+        if size_map.get(side, 0) <= 0:
+            QMessageBox.information(
+                self,
+                tr("scene.hud_scaffold_title"),
+                tr("scene.hud_scaffold_zero_border", side=side),
+            )
+            return
+        scene_id = str(row.get("id") or "").strip()
+        stem = hud_layer_stem(scene_id, side)
+        target = self.project_root / "guilayers" / f"{stem}.json"
+        created = False
+        if not target.is_file():
+            x, y, w, h = compute_hud_layer_rect(
+                side,
+                hud_top,
+                hud_bottom,
+                hud_left,
+                hud_right,
+                w=self._viewport_w,
+                h=self._viewport_h,
+            )
+            layer = GuiLayer(
+                id=stem,
+                x=x, y=y, w=w, h=h,
+                bg_color_index=HUD_LAYER_DEFAULT_BG_COLOR_INDEX,
+                z=HUD_LAYER_DEFAULT_Z,
+            )
+            try:
+                write_gui_layer_file(self.project_root, layer)
+            except OSError as e:
+                QMessageBox.warning(self, tr("scene.hud_scaffold_title"), str(e))
+                return
+            created = True
+        # Asegurar que el stem este en la lista auto-show de esta escena (idempotente).
+        current = list(row.get("gui_layers_autoshow") or [])
+        if stem not in current:
+            current.append(stem)
+            row["gui_layers_autoshow"] = current
+            self._mark_dirty()
+        self._load_gui_layers_autoshow(row)
+        # Log discreto en el status bar (evita popup que interrumpa el flujo cuando existia
+        # pero interrumpe SI se acaba de crear para confirmar la accion).
+        if created:
+            self.lbl_status.setText(tr("scene.hud_scaffold_created", stem=stem))
+        self.request_open_gui_layer.emit(stem)
 
     @staticmethod
     def _parallax_band_summary(d: dict[str, Any]) -> str:
@@ -3090,6 +3324,8 @@ class SceneEditorWidget(QWidget):
                 "bottom": self.spin_hud_bottom.value(),
                 "left": self.spin_hud_left.value(),
                 "right": self.spin_hud_right.value(),
+                "bg_color_index": self.spin_hud_bg.value(),
+                "overlay": self.chk_hud_overlay.isChecked(),
             },
         }
         self._mark_dirty()

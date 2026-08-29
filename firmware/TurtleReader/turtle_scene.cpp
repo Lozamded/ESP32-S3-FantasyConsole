@@ -282,6 +282,16 @@ static int s_hud_top = 0;
 static int s_hud_bottom = 0;
 static int s_hud_left = 0;
 static int s_hud_right = 0;
+// spec/hud-border-v0.md "bg_color_index": -1 = no pintar; 0..30 = pintar la region HUD una
+// vez al comenzar la escena con ese indice de paleta. Se aplica en turtle_scene_begin_runtime
+// tras set_playfield y antes del snapshot_static / primer _hud_init.
+static int s_hud_bg_color_index = -1;
+// spec/hud-border-v0.md "overlay": false = mundo se encoge al playfield (comportamiento pre-v1).
+// true = mundo mantiene tamano canonico completo (kSceneW x kSceneH x steps); la camara se
+// clampea contra kSceneH/kSceneW, no contra playfield_h/w, asi no scrollea hacia arriba para
+// revelar al actor que se metio detras del HUD. El sprite del actor en la region HUD queda
+// invisible por el clip de playfield que aplican los blits de escena (blit_indexed_scene*).
+static bool s_hud_overlay = false;
 static int s_playfield_w = kSceneW;
 static int s_playfield_h = kSceneH;
 static int s_runtime_bg = 0;
@@ -552,115 +562,6 @@ static bool sprite_cache_add_move(const char* sprite_id, TurtleCartBuffer* buf) 
   return true;
 }
 
-const char* strstr_bounded(const char* s, const char* e, const char* needle) {
-  const size_t nl = strlen(needle);
-  if (nl == 0 || s + nl > e) {
-    return nullptr;
-  }
-  for (const char* p = s; p + nl <= e; ++p) {
-    if (memcmp(p, needle, nl) == 0) {
-      return p;
-    }
-  }
-  return nullptr;
-}
-
-const char* json_object_end(const char* p) {
-  if (!p || *p != '{') {
-    return nullptr;
-  }
-  int depth = 1;
-  ++p;
-  while (*p && depth > 0) {
-    if (*p == '"') {
-      ++p;
-      while (*p && *p != '"') {
-        if (*p == '\\' && p[1]) {
-          p += 2;
-        } else {
-          ++p;
-        }
-      }
-      if (*p == '"') {
-        ++p;
-      }
-      continue;
-    }
-    if (*p == '{') {
-      ++depth;
-    } else if (*p == '}') {
-      --depth;
-    }
-    if (depth > 0) {
-      ++p;
-    }
-  }
-  if (depth == 0) {
-    return p + 1;
-  }
-  return nullptr;
-}
-
-/** Analogo a json_object_end pero para `[...]`: usado para acotar el array
- *  `background_layers` y excluirlo de la busqueda del `parallax_bands` de escena
- *  (capa 1) una vez que las capas 2-4 pueden declarar su propio `parallax_bands`
- *  anidado (spec/scene-v1.md "Bandas propias por capas 2-4"). */
-const char* json_array_end(const char* p) {
-  if (!p || *p != '[') {
-    return nullptr;
-  }
-  int depth = 1;
-  ++p;
-  while (*p && depth > 0) {
-    if (*p == '"') {
-      ++p;
-      while (*p && *p != '"') {
-        if (*p == '\\' && p[1]) {
-          p += 2;
-        } else {
-          ++p;
-        }
-      }
-      if (*p == '"') {
-        ++p;
-      }
-      continue;
-    }
-    if (*p == '[') {
-      ++depth;
-    } else if (*p == ']') {
-      --depth;
-    }
-    if (depth > 0) {
-      ++p;
-    }
-  }
-  if (depth == 0) {
-    return p + 1;
-  }
-  return nullptr;
-}
-
-bool parse_int_bounded(const char* p, const char* e, int* out) {
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e) {
-    return false;
-  }
-  char buf[16];
-  size_t i = 0;
-  while (p < e && i + 1 < sizeof(buf) && (*p == '-' || isdigit(static_cast<unsigned char>(*p)))) {
-    buf[i++] = *p++;
-  }
-  if (i == 0) {
-    return false;
-  }
-  buf[i] = '\0';
-  *out = atoi(buf);
-  return true;
-}
-
 static bool parse_float_bounded(const char* p, const char* e, float* out) {
   while (p < e && isspace(static_cast<unsigned char>(*p))) {
     ++p;
@@ -679,41 +580,6 @@ static bool parse_float_bounded(const char* p, const char* e, float* out) {
   }
   buf[i] = '\0';
   *out = static_cast<float>(atof(buf));
-  return true;
-}
-
-bool json_extract_string_for_key(const char* s, const char* e, const char* key_name,
-                                 char* out, size_t outsz) {
-  char pattern[40];
-  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
-  const char* p = strstr_bounded(s, e, pattern);
-  if (!p) {
-    return false;
-  }
-  p += strlen(pattern);
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e || *p != ':') {
-    return false;
-  }
-  ++p;
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e || *p != '"') {
-    return false;
-  }
-  ++p;
-  size_t i = 0;
-  while (p < e && *p != '"' && i + 1 < outsz) {
-    if (*p == '\\' && p + 1 < e) {
-      p += 2;
-      continue;
-    }
-    out[i++] = *p++;
-  }
-  out[i] = '\0';
   return true;
 }
 
@@ -813,49 +679,6 @@ static bool tags_csv_has(const char* csv, const char* tag) {
     }
   }
   return false;
-}
-
-bool json_extract_int_for_key(const char* s, const char* e, const char* key_name, int* outv) {
-  char pattern[40];
-  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
-  const char* p = strstr_bounded(s, e, pattern);
-  if (!p) {
-    return false;
-  }
-  p += strlen(pattern);
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e || *p != ':') {
-    return false;
-  }
-  ++p;
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  return parse_int_bounded(p, e, outv);
-}
-
-bool json_extract_float_for_key(const char* s, const char* e, const char* key_name,
-                                float* outv) {
-  char pattern[40];
-  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
-  const char* p = strstr_bounded(s, e, pattern);
-  if (!p) {
-    return false;
-  }
-  p += strlen(pattern);
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e || *p != ':') {
-    return false;
-  }
-  ++p;
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  return parse_float_bounded(p, e, outv);
 }
 
 static bool extract_palette_index_sprite(const char* inner, const char* inner_end, int* pal_idx) {
@@ -2151,40 +1974,6 @@ static bool draw_actor_runtime(int actor_index) {
   return true;
 }
 
-bool json_extract_bool_for_key(const char* s, const char* e, const char* key_name, bool* out) {
-  char pattern[40];
-  snprintf(pattern, sizeof pattern, "\"%s\"", key_name);
-  const char* p = strstr_bounded(s, e, pattern);
-  if (!p) {
-    return false;
-  }
-  p += strlen(pattern);
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p >= e || *p != ':') {
-    return false;
-  }
-  ++p;
-  while (p < e && isspace(static_cast<unsigned char>(*p))) {
-    ++p;
-  }
-  if (p + 4 <= e && memcmp(p, "true", 4) == 0) {
-    *out = true;
-    return true;
-  }
-  if (p + 5 <= e && memcmp(p, "false", 5) == 0) {
-    *out = false;
-    return true;
-  }
-  int v = 0;
-  if (parse_int_bounded(p, e, &v)) {
-    *out = v != 0;
-    return true;
-  }
-  return false;
-}
-
 static bool scene_uses_scrolling(void) {
   return s_world_w > s_playfield_w || s_world_h > s_playfield_h;
 }
@@ -2196,8 +1985,13 @@ static void parse_scene_world(const char* sc_start, const char* sc_end) {
   // scene y > playfield_h se pierden -- el mismo comportamiento que reducir la resolucion
   // logica desde el borde superior. `s_world_steps_x/y` se guardan aparte para que la
   // rejilla de tiles pueda medirse contra el viewport canonico, no contra el playfield.
-  s_world_w = s_playfield_w;
-  s_world_h = s_playfield_h;
+  // spec/hud-border-v0.md "overlay=true": el mundo mantiene el tamano canonico completo
+  // (kSceneW/kSceneH x steps). El actor puede llegar a filas scene y > playfield_h; su sprite
+  // dibujado en la region HUD queda invisible por el clip de playfield (blit_indexed_scene).
+  const int base_w = s_hud_overlay ? kSceneW : s_playfield_w;
+  const int base_h = s_hud_overlay ? kSceneH : s_playfield_h;
+  s_world_w = base_w;
+  s_world_h = base_h;
   int sx = 1;
   int sy = 1;
   if (json_extract_int_for_key(sc_start, sc_end, "world_steps_x", &sx)) {
@@ -2218,8 +2012,8 @@ static void parse_scene_world(const char* sc_start, const char* sc_end) {
   }
   s_world_steps_x = sx;
   s_world_steps_y = sy;
-  s_world_w = s_playfield_w * sx;
-  s_world_h = s_playfield_h * sy;
+  s_world_w = base_w * sx;
+  s_world_h = base_h * sy;
 }
 
 /** spec/scene-v0.md "Capa de colision". Sin campo (carts viejos) -> capa 0. */
@@ -2250,8 +2044,16 @@ static int clamp_camera_margin(int margin, int viewport_size) {
 }
 
 static void clamp_camera_to_world(int* cx, int* cy) {
-  const int max_x = s_world_w - s_playfield_w;
-  const int max_y = s_world_h - s_playfield_h;
+  // spec/hud-border-v0.md "overlay=true": el mundo mide contra kSceneW/kSceneH (framebuffer
+  // completo) en vez de playfield, asi la camara NO scrollea para revelar al actor que se
+  // metio detras del HUD. Con ws=1 esto deja max=0 y la camara queda fija en (0, 0), y el
+  // sprite del actor arriba del playfield queda invisible por el clip de blit_indexed_scene.
+  const int viewport_w = s_hud_overlay ? kSceneW : s_playfield_w;
+  const int viewport_h = s_hud_overlay ? kSceneH : s_playfield_h;
+  int max_x = s_world_w - viewport_w;
+  int max_y = s_world_h - viewport_h;
+  if (max_x < 0) max_x = 0;
+  if (max_y < 0) max_y = 0;
   if (*cx < 0) {
     *cx = 0;
   } else if (*cx > max_x) {
@@ -2303,6 +2105,8 @@ static void parse_scene_hud_border(const char* cam_s, const char* cam_e) {
   s_hud_bottom = 0;
   s_hud_left = 0;
   s_hud_right = 0;
+  s_hud_bg_color_index = -1;
+  s_hud_overlay = false;
   const char* hb_s = nullptr;
   const char* hb_e = nullptr;
   if (find_scene_nested_object(cam_s, cam_e, "hud_border", &hb_s, &hb_e)) {
@@ -2318,6 +2122,14 @@ static void parse_scene_hud_border(const char* cam_s, const char* cam_e) {
     }
     if (json_extract_int_for_key(hb_s, hb_e, "right", &v)) {
       s_hud_right = v;
+    }
+    if (json_extract_int_for_key(hb_s, hb_e, "bg_color_index", &v)) {
+      // -1 = no pintar; 0..30 valido; 31 (transparente) o >30 se colapsan a "no pintar".
+      s_hud_bg_color_index = (v >= 0 && v <= 30) ? v : -1;
+    }
+    bool ov = false;
+    if (json_extract_bool_for_key(hb_s, hb_e, "overlay", &ov)) {
+      s_hud_overlay = ov;
     }
   }
   // Reglas de spec/hud-border-v0.md: cada borde en [0, kSceneH/2 - 1] o [0, kSceneW/2 - 1];
@@ -4796,8 +4608,10 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
     Serial.printf("turtle_scene: escena \"%s\" no encontrada en bundle\n", scene_id);
     return false;
   }
-  parse_scene_world(sc_start, sc_end);
+  // parse_scene_camera antes que parse_scene_world: setea s_playfield_w/h + s_hud_overlay
+  // via parse_scene_hud_border, y parse_scene_world usa esos para calcular s_world_w/h.
   parse_scene_camera(sc_start, sc_end);
+  parse_scene_world(sc_start, sc_end);
   parse_scene_parallax_bands(sc_start, sc_end);
   parse_scene_bg_image_layers(sc_start, sc_end);
 
@@ -4876,6 +4690,53 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   // spec/gui-layer-v0.md: parsear catalogo global de capas (top-level "guilayers") ANTES
   // que campos de escena. Todas arrancan ocultas; el cart las muestra desde _hud_init/_hud.
   turtle_gui_layer_begin_scene(json, json_len);
+  // spec/gui-layer-v0.md "Auto-show por escena": aplicar `gui_layers_autoshow` (array de
+  // ids) despues del reset y antes del primer frame. Ids ausentes en el catalogo cuentan
+  // como no-op silencioso (turtle_gui_layer_show devuelve false y no se loguea aca -- el
+  // aviso de "faltante" ya lo dio turtle_gui_layer_begin_scene si el catalogo tuvo errores).
+  {
+    const char* k = strstr_bounded(sc_start, sc_end, "\"gui_layers_autoshow\"");
+    if (k) {
+      const char* p = k + strlen("\"gui_layers_autoshow\"");
+      while (p < sc_end && *p != '[') {
+        ++p;
+      }
+      if (p < sc_end && *p == '[') {
+        const char* arr_end = json_array_end(p);
+        if (arr_end) {
+          ++p;  // saltar '['
+          int shown = 0;
+          while (p < arr_end && shown < 8) {  // spec: max 8 capas visibles simultaneas
+            while (p < arr_end && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+              ++p;
+            }
+            if (p >= arr_end || *p == ']') break;
+            if (*p != '"') break;
+            ++p;  // saltar comilla de apertura
+            char id[40];
+            size_t i = 0;
+            while (p < arr_end && *p != '"' && i + 1 < sizeof(id)) {
+              if (*p == '\\' && p + 1 < arr_end) {
+                p += 2;
+                continue;
+              }
+              id[i++] = *p++;
+            }
+            id[i] = '\0';
+            while (p < arr_end && *p != '"') {  // token demasiado largo: consumir resto
+              ++p;
+            }
+            if (p < arr_end && *p == '"') {
+              ++p;
+            }
+            if (id[0] && turtle_gui_layer_show(id, false, 0)) {
+              ++shown;
+            }
+          }
+        }
+      }
+    }
+  }
   parse_scene_timing(json, json_end, sc_start, sc_end);
   // spec/hud-border-v0.md: parse_scene_camera SET s_playfield_w/h via parse_scene_hud_border;
   // parse_scene_world depende de esos valores para calcular s_world_w/h. Antes de v0 estas
@@ -4922,6 +4783,16 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   s_runtime_sc_end = sc_end;
   turtle_gpu_set_camera(0, 0);
   turtle_gpu_cls(static_cast<uint8_t>(bg));
+  // spec/hud-border-v0.md "bg_color_index": pintar la region HUD (fuera del playfield) con el
+  // color declarado en el manifest, UNA vez al comenzar la escena. fill_rect_absolute con un
+  // rect que cubre todo el framebuffer es no-op dentro del playfield, asi que solo pinta las
+  // franjas HUD. Se hace despues de cls (que rellena todo con el bg color) y antes de
+  // draw_background/tiles (que clipean al playfield, no tocan HUD). Bordes cero = HUD vacio,
+  // fill queda como no-op puro; -1 = feature deshabilitado, mantenemos comportamiento pre-v0.
+  if (s_hud_bg_color_index >= 0) {
+    turtle_gpu_fill_rect_absolute(0, 0, kSceneW, kSceneH,
+                                  static_cast<uint8_t>(s_hud_bg_color_index));
+  }
   {
     int tile_px = 16;
     if (!json_extract_int_for_key(json, json_end, "tile_px", &tile_px) || tile_px < 4 ||
@@ -5404,4 +5275,20 @@ int turtle_scene_draw_text_raw(const char* bundle_json, size_t bundle_json_len,
   }
   return turtle_font_draw_fb_raw(font, xfb, yfb_top, str,
                                  static_cast<uint8_t>(kDefaultTransparentIndex), color_index);
+}
+
+bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uint8_t* out_pixels,
+                                     size_t out_cap, int* out_w, int* out_h) {
+  if (!s_runtime_json || !s_runtime_json_end || !sprite_id || !*sprite_id || !out_pixels) {
+    return false;
+  }
+  int pw = 0;
+  int ph = 0;
+  if (!load_sprite_pixels_by_id(s_runtime_json, s_runtime_json_end, sprite_id, frame_index,
+                                out_pixels, out_cap, &pw, &ph)) {
+    return false;
+  }
+  if (out_w) *out_w = pw;
+  if (out_h) *out_h = ph;
+  return true;
 }

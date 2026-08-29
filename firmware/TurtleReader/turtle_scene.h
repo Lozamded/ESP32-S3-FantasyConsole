@@ -154,3 +154,16 @@ int turtle_scene_draw_text_absolute(const char* bundle_json, size_t bundle_json_
 int turtle_scene_draw_text_raw(const char* bundle_json, size_t bundle_json_len,
                                const char* font_id, int xfb, int yfb_top, const char* str,
                                int color_index = -1);
+
+/**
+ * spec/gui-layer-v0.md: variante compartida por barras de progreso (fill_mode="sprite") y
+ * barras de pips. Decodifica los pixeles indexados del sprite `sprite_id` (frame 0 o
+ * `frame_index`) del bundle actual en el buffer del llamador y devuelve el tamano real. Comparte
+ * el cache interno de sprites (mismo que `draw_sprite_for_object` / actores) para no re-parsear.
+ * Devuelve `false` si el bundle no esta activo, si `sprite_id` no existe, si `out_cap` es menor
+ * que `pw*ph`, o si el sprite es "solido" (sin pixeles indexados; ver
+ * extract_palette_index_sprite -- no soportado por capas GUI). Pixeles con indice de paleta 31
+ * son transparentes.
+ */
+bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uint8_t* out_pixels,
+                                     size_t out_cap, int* out_w, int* out_h);

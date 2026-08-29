@@ -129,6 +129,10 @@ scene.hud_border_top_label,HUD arriba (px):,HUD top (px):
 scene.hud_border_bottom_label,HUD abajo (px):,HUD bottom (px):
 scene.hud_border_left_label,HUD izq. (px):,HUD left (px):
 scene.hud_border_right_label,HUD der. (px):,HUD right (px):
+scene.hud_border_bg_label,HUD color de fondo:,HUD background color:
+scene.hud_border_bg_none,ninguno,none
+scene.hud_border_overlay_label,HUD superpuesto:,HUD overlay:
+scene.hud_border_overlay_tooltip,"El mundo mantiene su tamaño canonico completo. El actor puede jugar/saltar detras del HUD; su sprite queda invisible en la franja HUD (efecto Metroid). Sin marcar: el mundo se encoge al playfield y el actor rebota contra el borde interno del HUD.","World keeps full canonical size. The actor can play/jump behind the HUD; his sprite is hidden in the HUD strip (Metroid-style). Unchecked: the world shrinks to the playfield and the actor bumps against the inner HUD edge."
 scene.parallax_group,Bandas de parallax (Capa 1),Parallax bands (Layer 1)
 scene.parallax_hint,"Controla el scroll horizontal de la Capa 1 (base) por rango Y de escena (parallax_x). Sin banda activa para una fila: comportamiento de hoy (1.0, sin repetir).","Controls Layer 1's (base) horizontal scroll by scene Y-range (parallax_x). Rows with no active band behave as today (1.0, no repeat)."
 scene.parallax_enabled_label,Activar bandas de parallax,Enable parallax bands
@@ -306,3 +310,79 @@ play.read_error_title,Error leyendo el manifest,Error reading manifest
 play.read_error_msg,"No se pudo leer {manifest}: {e}","Could not read {manifest}: {e}"
 play.start_error_title,Error al iniciar Play,Error starting Play
 play.runtime_error_title,Error de ejecucion en Play,Play runtime error
+mainwindow.tab_guilayers,Capas GUI,GUI Layers
+mainwindow.section_guilayers,Capas GUI,GUI Layers
+guilayer.label,"Capa:","Layer:"
+guilayer.new_title,Nueva capa GUI,New GUI layer
+guilayer.new_id_label,ID de la capa (letras/digitos/_/-),Layer id (letters/digits/_/-)
+guilayer.new_id_invalid,ID invalido. Debe empezar con letra y usar solo letras/digitos/_/- (max 32).,Invalid id. Must start with a letter; letters/digits/_/- only (max 32).
+guilayer.new_id_exists,"Ya existe una capa con id {id}.","A layer with id {id} already exists."
+guilayer.delete_button,Borrar,Delete
+guilayer.delete_title,Borrar capa,Delete layer
+guilayer.delete_confirm,"Borrar la capa {id}? Esta accion no se puede deshacer.","Delete layer {id}? This cannot be undone."
+guilayer.open_error_title,Error abriendo capa,Error opening layer
+guilayer.save_error_title,Error guardando capa,Error saving layer
+guilayer.no_layer_open,Ninguna capa abierta.,No layer open.
+guilayer.preview_title,Vista previa,Preview
+guilayer.preview_hint,"El fondo cuadriculado indica pixels transparentes. En runtime la capa se pinta sobre la escena activa.","The checker background marks transparent pixels. At runtime the layer paints over the active scene."
+guilayer.preview_palette_label,"Paleta preview:","Preview palette:"
+guilayer.x_label,"X:","X:"
+guilayer.y_label,"Y:","Y:"
+guilayer.w_label,"Ancho:","Width:"
+guilayer.h_label,"Alto:","Height:"
+guilayer.bg_color_label,"Color de fondo:","Background color:"
+guilayer.transparent_bg_label,"Fondo transparente","Transparent background"
+guilayer.pauses_scene_label,"Pausa la escena","Pauses scene"
+guilayer.captures_input_label,"Captura el input de actores","Captures actor input"
+guilayer.z_label,"Z (orden):","Z (order):"
+guilayer.rects_title,Rectangulos,Rects
+guilayer.add_rect,Agregar rect,Add rect
+guilayer.remove_rect,Quitar rect,Remove rect
+guilayer.rect_cap_reached,"Limite de {cap} rects por capa alcanzado.","Rect cap per layer reached ({cap})."
+guilayer.labels_title,Etiquetas de texto,Text labels
+guilayer.add_label,Agregar etiqueta,Add label
+guilayer.remove_label,Quitar etiqueta,Remove label
+guilayer.label_cap_reached,"Limite de {cap} etiquetas por capa alcanzado.","Label cap per layer reached ({cap})."
+guilayer.label_id_error_title,ID invalido,Invalid id
+guilayer.label_id_error_msg,El ID debe empezar con letra y usar solo letras/digitos/_/- (max 32).,ID must start with a letter; letters/digits/_/- only (max 32).
+guilayer.col_id,ID,ID
+guilayer.col_x,X,X
+guilayer.col_y,Y,Y
+guilayer.col_w,W,W
+guilayer.col_h,H,H
+guilayer.col_color,Color,Color
+guilayer.col_font,Fuente,Font
+guilayer.col_text,Texto,Text
+guilayer.progress_bars_title,Barras de progreso,Progress bars
+guilayer.pip_bars_title,Barras de pips,Pip bars
+guilayer.add_progress_bar,Agregar barra,Add bar
+guilayer.remove_progress_bar,Quitar barra,Remove bar
+guilayer.add_pip_bar,Agregar bar de pips,Add pip bar
+guilayer.remove_pip_bar,Quitar bar de pips,Remove pip bar
+guilayer.progress_cap_reached,"Limite de {cap} barras de progreso por capa alcanzado.","Progress bar cap per layer reached ({cap})."
+guilayer.pip_cap_reached,"Limite de {cap} barras de pips por capa alcanzado.","Pip bar cap per layer reached ({cap})."
+guilayer.pip_needs_sprite_msg,"Se necesita al menos un sprite en el proyecto para crear un bar de pips.","At least one sprite is required in the project to create a pip bar."
+guilayer.edit_ranges,Editar bandas...,Edit ranges...
+guilayer.edit_ranges_hint,"Lista JSON de bandas de valor (max 3). Ver spec/gui-layer-v0.md 'Bandas de valor'.","JSON list of value ranges (max 3). See spec/gui-layer-v0.md 'Value ranges'."
+guilayer.edit_ranges_not_list,"El JSON debe ser una lista de objetos.","JSON must be a list of objects."
+guilayer.no_row_selected,"Seleccionar primero una fila.","Select a row first."
+guilayer.col_direction,Direccion,Direction
+guilayer.col_fill_mode,Modo,Fill mode
+guilayer.col_fill_color,Color relleno,Fill color
+guilayer.col_fill_sprite,Sprite relleno,Fill sprite
+guilayer.col_bg_color,Color fondo bar,Bar bg color
+guilayer.col_border_color,Marco,Border
+guilayer.col_value_num,Valor,Value
+guilayer.col_value_den,Max,Max
+guilayer.col_ranges,#Bandas,#Ranges
+guilayer.col_sprite_full,Sprite,Sprite
+guilayer.col_gap_px,Gap,Gap
+guilayer.col_value,Valor,Value
+guilayer.col_max_value,Max,Max
+scene.gui_layers_group,Capas GUI (auto-show),GUI layers (auto-show)
+scene.gui_layers_hint,"Capas GUI que se muestran automaticamente al entrar a esta escena (HUDs de nivel). Los menus modales (pausa, dialogo) se abren desde Lua, no se listan aca.","GUI layers auto-shown when entering this scene (level HUDs). Modal menus (pause, dialogs) open from Lua and don't belong here."
+scene.gui_layers_missing_suffix,capa faltante,missing layer
+scene.hud_scaffold_tooltip,"Crea (o abre) una capa GUI que rellena esta franja HUD","Create (or open) a GUI layer filling this HUD strip"
+scene.hud_scaffold_title,Capa HUD,HUD layer
+scene.hud_scaffold_zero_border,"Antes de crear la capa poner el borde {side} en un valor mayor a 0.","Set the {side} border to a value greater than 0 before creating the layer."
+scene.hud_scaffold_created,"Capa {stem} creada.","Layer {stem} created."

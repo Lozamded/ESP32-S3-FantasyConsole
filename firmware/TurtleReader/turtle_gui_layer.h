@@ -49,3 +49,18 @@ bool turtle_gui_layer_hide(const char* id);
 bool turtle_gui_layer_is_visible(const char* id);
 void turtle_gui_layer_hide_all(void);
 bool turtle_gui_layer_set_text(const char* id, const char* label_id, const char* str);
+
+/**
+ * Actualiza el valor de una barra de progreso. `value_num` reemplaza siempre; si `has_max`
+ * es true, `value_den` se reemplaza tambien (util cuando el maximo cambia en runtime, por
+ * ejemplo un nivel-up que sube el HP maximo). Devuelve false si la capa o el bar no existen.
+ */
+bool turtle_gui_layer_set_progress(const char* id, const char* bar_id, int value_num,
+                                   bool has_max, int value_den);
+
+/**
+ * Actualiza el valor de un pip bar. `value` se clampea a [0, max_value] final. Si `has_max`,
+ * `max_value` tambien se reemplaza (clampeado a [1, 32]).
+ */
+bool turtle_gui_layer_set_pips(const char* id, const char* bar_id, int value, bool has_max,
+                               int max_value);

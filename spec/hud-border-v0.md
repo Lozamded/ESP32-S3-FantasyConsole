@@ -14,13 +14,16 @@ Este es el **metodo 1** de GUI (`spec/hud-border-v0.md`, permanente durante el j
     "top":    16,
     "bottom":  0,
     "left":    0,
-    "right":   0
+    "right":   0,
+    "bg_color_index": 3
   }
 }
 ```
 
 - Anidado bajo `camera` (misma familia de opciones que `mode`/`margin_x`/`margin_y`).
 - Cuatro enteros en **pixeles del framebuffer** (no de escena logica): `top`, `bottom`, `left`, `right`. Cada uno indica **cuantos pixeles de ese borde se apartan del area de camara** para reservarlos como HUD.
+- `bg_color_index` (opcional, default `-1`): indice de paleta con el que el firmware pinta la franja HUD **una vez** al comenzar la escena, ANTES de `_hud_init`. `-1` = no pintar (comportamiento previo, el HUD arranca con lo que dejo el `cls()`). `0..30` = color plano. `31` (transparente) se colapsa a `-1`. Ahorra a la mayoria de HUDs de escribir un `hud_clear(...)` manual en cada `_hud_init`.
+- `overlay` (opcional, default `false`): cuando es `true`, el **mundo mantiene el tamano canonico completo** (`kSceneW × world_steps_x`, `kSceneH × world_steps_y`) en lugar de encogerse al playfield. El actor puede moverse a coords de escena que caen fuera del playfield visible; sus pixeles que caen en la region HUD **quedan invisibles** (el clip por playfield en los blits de escena los oculta), y el HUD se pinta encima. La camara se clampea contra el framebuffer completo en vez del playfield, asi no scrollea automaticamente para "revelar" al personaje que entro debajo del HUD (comportamiento tipo Metroid: el jugador salta arriba y desaparece detras de la franja HUD sin que la vista se corra). Default `false` conserva el comportamiento previo (mundo = playfield, actor rebota contra el borde interno).
 - Ausente / `null` / cualquier campo ausente = **`0`** (comportamiento identico al de antes de este spec). Cartuchos ya exportados no se ven afectados y no requieren re-exportacion.
 - Rangos validos:
   - `top`, `bottom` ∈ `[0, kSceneH/2 - 1]` (es decir 0..61 con `kSceneH=124`).
@@ -37,6 +40,8 @@ Definiendo `T=top, B=bottom, L=left, R=right`, la **camara logica** de la escena
 - Ancla en el framebuffer: esquina **superior izquierda del playfield = `(L, T)`** (framebuffer es Y-abajo).
 
 El **mundo efectivo se dimensiona sobre el playfield**, no sobre el viewport canonico: `world_w = playfield_w × world_steps_x`, `world_h = playfield_h × world_steps_y`. Con `hud_border.top=16` y `world_steps_y=1` el mundo queda `164×108` — la fila 0 del mundo (piso) queda anclada al borde inferior del playfield, sin scroll automatico en Y. Las filas de scene y que quedarian sobre `playfield_h` sencillamente no existen para efectos de camara/mundo.
+
+**Excepcion con `overlay=true`**: el mundo mantiene el tamano canonico (`kSceneW × world_steps_x`, `kSceneH × world_steps_y`) — como si `hud_border` no encogiera el mundo. La camara se clampea contra el framebuffer completo (`world - kSceneH`) en vez del playfield, asi `cam_y=0` fijo cuando `world_steps_y=1` (mundo = 124, viewport = 124). El actor puede posicionarse en filas `scene y > playfield_h` (por ejemplo saltar arriba del borde del HUD) y su sprite dibujado en la region HUD queda **invisible** por el clip de playfield que aplican los blits de escena (`blit_indexed_scene*`, `fill_rect_scene`). El HUD, pintado despues, no se ve afectado. Efecto visual: el personaje "desaparece detras" del HUD estilo Metroid.
 
 - `W` y `H` expuestos a las VMs siguen valiendo `164` y `124` (dimensiones del framebuffer fisico). No se retocan por escena.
 - El **playfield** es el subrectangulo del framebuffer donde pinta la camara: `(left, top)` a `(kSceneW - right, kSceneH - bottom)`, tamano `playfield_w × playfield_h`. La franja HUD es el complemento — jamas la toca ningun blit de escena.

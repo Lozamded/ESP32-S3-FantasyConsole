@@ -436,6 +436,7 @@
       "collision_tile_layer": 0,
       "world_steps_x": 1,
       "world_steps_y": 1,
+      "gui_layers_autoshow": [],
       "camera": {
         "mode": "follow",
         "x": 0,
@@ -714,15 +715,6 @@
           "text": "Mechaturtle",
           "x": 0,
           "y": 0,
-          "font": "default",
-          "color_index": -1,
-          "blink_ms": 3
-        },
-        {
-          "id": "label2",
-          "text": "Lives",
-          "x": 3,
-          "y": 112,
           "font": "default",
           "color_index": -1,
           "blink_ms": 0
@@ -2521,6 +2513,9 @@
       "collision_tile_layer": 0,
       "world_steps_x": 6,
       "world_steps_y": 1,
+      "gui_layers_autoshow": [
+        "gametstatus"
+      ],
       "camera": {
         "mode": "follow",
         "x": 0,
@@ -2529,10 +2524,12 @@
         "margin_y": 0,
         "target": "player",
         "hud_border": {
-          "top": 16,
+          "top": 18,
           "bottom": 0,
           "left": 0,
-          "right": 0
+          "right": 0,
+          "bg_color_index": 15,
+          "overlay": true
         }
       },
       "parallax_bands": [
@@ -2560,7 +2557,7 @@
       "camera_y": 0,
       "camera_margin_x": 81,
       "camera_margin_y": 0,
-      "camera_hud_border_top": 16,
+      "camera_hud_border_top": 18,
       "camera_hud_border_bottom": 0,
       "camera_hud_border_left": 0,
       "camera_hud_border_right": 0,

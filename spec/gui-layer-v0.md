@@ -6,10 +6,10 @@ Documento **complementario a `spec/scene-v0.md` y `spec/hud-border-v0.md`**: des
 
 ## Alcance v0
 
-- **Contenido**: solo **rectangulos solidos** (fondo, marcos) y **etiquetas de texto** (fuente `.tfn` del bundle, con opcional tinte por color de paleta). Sin sprites, sin tiles.
+- **Contenido**: **rectangulos solidos** (fondo, marcos), **etiquetas de texto** (fuente `.tfn` del bundle, con opcional tinte por color de paleta), **barras de progreso** (relleno fraccional en una direccion, con color solido o sprite tileado + marco opcional de 1 px + bandas de valor que cambian color/sprite) y **barras de pips** (N iconos discretos que muestran un valor entero, con opcional swap de sprite por bandas de valor). Sin tiles.
 - **Posicion/tamano**: rectangulo axis-aligned en coord de framebuffer (Y-abajo, top-left = `(0,0)`), independiente de la camara y del playfield. Una capa puede ir sobre el playfield, sobre la region HUD, o cubrir el framebuffer entero.
 - **Apilamiento**: hasta **8 capas simultaneamente visibles** en el firmware. Cada capa tiene un `z` (default 0); las capas con `z` mayor se pintan encima. Empate por orden de aparicion en el manifest.
-- **Persistencia entre escenas**: la visibilidad se **resetea a "oculto" al comenzar cada escena** (`turtle_scene_begin_runtime` limpia la lista de capas visibles). Un cartucho que quiere el mismo HUD/menu en dos escenas vuelve a llamar `gui_layer_show(id)` en el `_hud_init` o `_update` correspondiente.
+- **Persistencia entre escenas**: la visibilidad se **resetea a "oculto" al comenzar cada escena** (`turtle_scene_begin_runtime` limpia la lista de capas visibles) y luego se aplica el campo `gui_layers_autoshow` de la escena (ver seccion "Auto-show por escena"). Un cartucho que quiere el mismo HUD/menu en dos escenas puede listarlas en `gui_layers_autoshow` (declarativo, sin codigo Lua) o llamar `gui_layer_show(id)` desde `_hud_init` / `_update`.
 - **Sin animacion/blink** de contenido en v0: para actualizar dinamicamente un texto (contador, timer, tiempo restante), el codigo del cart usa `gui_layer_set_text(id, label_id, str)` cada fotograma (o cuando cambie).
 - **Sin transparencia por-pixel** dentro del contenido de la capa: el "fondo transparente" (`transparent_bg`) simplemente no pinta el rectangulo de fondo — deja pasar la escena de abajo. Los rectangulos y texto pintados dentro sobrescriben (con transparencia solo por indice, indice 31 = transparente en glifos).
 
@@ -38,6 +38,22 @@ Las capas viven fuera del bloque `scenes`: son un catalogo global que cualquier 
           "text": "PAUSED", "color_index": 7 },
         { "id": "hint",  "x": 30, "y": 70, "font": "font_main",
           "text": "PRESS A TO RESUME" }
+      ],
+      "progress_bars": [
+        { "id": "hp", "x": 6, "y": 6, "w": 60, "h": 6,
+          "direction": "left_to_right", "fill_mode": "color",
+          "fill_color_index": 11, "bg_color_index": 3,
+          "border_color_index": 0, "value_num": 8, "value_den": 10,
+          "ranges": [
+            { "min_pct": 0, "max_pct": 25, "alt_color_index": 8 },
+            { "min_pct": 25, "max_pct": 50, "alt_color_index": 9 }
+          ]
+        }
+      ],
+      "pip_bars": [
+        { "id": "lives", "x": 6, "y": 16,
+          "sprite_full_id": "heart_full", "direction": "horizontal",
+          "gap_px": 1, "value": 3, "max_value": 5 }
       ]
     }
   ]
@@ -58,6 +74,8 @@ Las capas viven fuera del bloque `scenes`: son un catalogo global que cualquier 
 | `z`               | int       | `0`              | Orden de pintado. Mayor = mas arriba. Empate resuelve por orden de aparicion en el manifest.    |
 | `rects`           | array     | `[]`             | Ver "Rectangulos" abajo.                                                                        |
 | `text_labels`     | array     | `[]`             | Ver "Etiquetas de texto" abajo.                                                                 |
+| `progress_bars`   | array     | `[]`             | Ver "Barras de progreso" abajo.                                                                 |
+| `pip_bars`        | array     | `[]`             | Ver "Barras de pips" abajo.                                                                     |
 
 ### Rectangulos (`rects`)
 
@@ -85,6 +103,59 @@ Igual espiritu que las `scene.text_labels` (`spec/scene-text-labels-v0.md`) pero
 
 Maximo por capa: **16 text labels**. Texto en runtime: buffer de 64 bytes (63 chars + nul) por etiqueta.
 
+### Barras de progreso (`progress_bars`)
+
+Relleno fraccional en una direccion. El valor se expresa como `value_num / value_den` (dos enteros para evitar coma flotante en el firmware); la fraccion resultante se clampea a `[0.0, 1.0]`. El area rellena es `round(fill_dim * fraction)`, donde `fill_dim` es `w` para direcciones horizontales o `h` para verticales.
+
+Se pintan **despues** de `rects` y **antes** de `text_labels` (asi el texto puede quedar encima del bar como etiqueta visible del valor).
+
+| Campo                | Tipo    | Default        | Nota                                                                                              |
+|----------------------|---------|----------------|---------------------------------------------------------------------------------------------------|
+| `id`                 | string  | (obligatorio)  | Stem-name, max 32 char. Unico dentro de la capa. Usado por `gui_layer_set_progress`.              |
+| `x`, `y`             | int     | `0`, `0`       | Relativos al `(x, y)` de la capa. Clampeados al rect de la capa.                                  |
+| `w`, `h`             | int     | `1`, `1`       | Tamano del rect del bar en px.                                                                    |
+| `direction`          | string  | `left_to_right`| Uno de: `left_to_right`, `right_to_left`, `top_to_bottom`, `bottom_to_top`.                       |
+| `fill_mode`          | string  | `color`        | `color` (fill_color_index) o `sprite` (tiled fill_sprite_id).                                     |
+| `fill_color_index`   | int     | `11`           | Indice de paleta (0..30) del relleno cuando `fill_mode="color"`. `31` (transparente) es no-op.    |
+| `fill_sprite_id`     | string  | `""`           | Stem del sprite del bundle cuando `fill_mode="sprite"`. El sprite se **tilea** sobre el rect rellenado (repetido tanto horizontal como verticalmente); las porciones parciales del ultimo tile se recortan al borde del area rellenada. Pixeles con indice de paleta 31 son transparentes. |
+| `bg_color_index`     | int     | `3`            | Indice de paleta del fondo del bar (parte "vacia"). Usar `31` para dejar la escena/capa debajo visible en el area no rellenada. |
+| `border_color_index` | int     | `-1`           | `-1` = sin marco. `0..30` = pinta un contorno de 1 px alrededor del rect completo del bar.        |
+| `value_num`          | int     | `0`            | Numerador del valor actual. Runtime lo actualiza via `gui_layer_set_progress`. `[-32768, 32767]`. |
+| `value_den`          | int     | `1`            | Denominador (valor maximo del bar). `[1, 32767]`. `0` o negativo se colapsa a `1`.                |
+| `ranges`             | array   | `[]`           | Ver "Bandas de valor" abajo. Max 3 por bar.                                                       |
+
+Maximo por capa: **4 progress bars**.
+
+### Barras de pips (`pip_bars`)
+
+N iconos discretos que muestran un valor entero — corazones de HP, llaves, medallas. Cada pip visible es el `sprite_full_id` completo; los pips "vacios" (posiciones `>= value`) **no se pintan** (la escena/capa debajo se ve), asi el autor puede usar un rect o sprite estatico en `rects` para simular la version apagada, o simplemente dejar el fondo.
+
+| Campo             | Tipo    | Default        | Nota                                                                                              |
+|-------------------|---------|----------------|---------------------------------------------------------------------------------------------------|
+| `id`              | string  | (obligatorio)  | Stem-name, max 32 char. Unico dentro de la capa. Usado por `gui_layer_set_pips`.                  |
+| `x`, `y`          | int     | `0`, `0`       | Relativos al `(x, y)` de la capa. Esquina superior-izquierda del PRIMER pip.                      |
+| `sprite_full_id`  | string  | (obligatorio)  | Stem del sprite del bundle para el estado "encendido". Sus dimensiones determinan el ancho/alto de cada pip. Pixeles con indice 31 son transparentes. |
+| `direction`       | string  | `horizontal`   | `horizontal` (pips crecen hacia +x) o `vertical` (pips crecen hacia +y).                          |
+| `gap_px`          | int     | `0`            | Separacion en px entre pips consecutivos. Rango `[0, 32]`.                                        |
+| `value`           | int     | `0`            | Cantidad de pips "encendidos" a pintar. Se clampea a `[0, max_value]`.                            |
+| `max_value`       | int     | `1`            | Total de pips del bar. Rango `[1, 32]`. Solo se pintan los primeros `value`; los demas quedan invisibles. |
+| `ranges`          | array   | `[]`           | Ver "Bandas de valor" abajo. Cuando aplica, el rango puede reemplazar el `sprite_full_id` via `alt_sprite_id`. Max 3 por bar. |
+
+Maximo por capa: **4 pip bars**.
+
+### Bandas de valor (`ranges`)
+
+Ambos tipos de bar admiten un array `ranges` de hasta 3 elementos que **reemplazan** el color/sprite base cuando la fraccion actual (`value_num / value_den` para progress, `value / max_value` para pips) cae dentro de `[min_pct, max_pct)`. Sirve para el patron clasico "verde >50%, amarillo 25-50%, rojo <25%".
+
+| Campo              | Tipo   | Default | Nota                                                                                              |
+|--------------------|--------|---------|---------------------------------------------------------------------------------------------------|
+| `min_pct`          | int    | `0`     | Inclusivo. `[0, 100]`.                                                                            |
+| `max_pct`          | int    | `100`   | Exclusivo (salvo cuando `max_pct=100`, entonces inclusivo — asi el rango 100 nunca queda huerfano). |
+| `alt_color_index`  | int    | `-1`    | Solo aplica a progress bars con `fill_mode="color"`. `-1` = no reemplazar. `0..30` = usar este color. |
+| `alt_sprite_id`    | string | `""`    | Progress con `fill_mode="sprite"`: reemplaza `fill_sprite_id`. Pip bar: reemplaza `sprite_full_id`. `""` = no reemplazar. |
+
+Ordenamiento: los rangos se evaluan en el orden del array; el **primer** rango cuyo intervalo cubre la fraccion actual gana. Si ningun rango matchea, se usa el color/sprite base del bar. Rangos con `min_pct >= max_pct` se descartan al parsear.
+
 ## Runtime (VM ENTRY)
 
 Estado global mantenido por el firmware (`turtle_gui_layer.h/.cpp`):
@@ -101,11 +172,42 @@ Todos actuan sobre el catalogo cargado del bundle actual. `id` es siempre el `id
 | `gui_layer_hide(id)`                               | Marca oculta. Sin efecto si ya lo estaba.                                           |
 | `gui_layer_visible(id)` → bool                     | Consulta.                                                                           |
 | `gui_layer_set_text(id, label_id, str)`            | Actualiza el texto de una etiqueta. Se trunca a 63 chars. Persiste hasta el proximo set. |
+| `gui_layer_set_progress(id, bar_id, num [, den])`  | Actualiza `value_num` de una progress bar. Si se pasa `den`, tambien reemplaza `value_den` (util cuando el maximo cambia en runtime — nivel-up sube HP max). Sin `den` solo se actualiza el numerador. |
+| `gui_layer_set_pips(id, bar_id, val [, max])`      | Actualiza `value` de un pip bar. `max` opcional reemplaza `max_value`. `val` se clampea a `[0, max_value]` despues.  |
 | `gui_layer_hide_all()`                             | Oculta todas las capas activas (util para transiciones/cambios de estado).          |
 
-`id`/`label_id` que no existan: no-op silencioso (para que el cart pueda usar `gui_layer_show` sin chequear existencia). En Serial se loguea la primera falla por id/label para debug.
+`id`/`label_id`/`bar_id` que no existan: no-op silencioso (para que el cart pueda llamar sin chequear existencia). En Serial se loguea la primera falla por id/label para debug.
 
-Fuera de estas 5 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto y visibilidad.
+Fuera de estas 7 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto, valores de bars y visibilidad.
+
+## Auto-show por escena (`gui_layers_autoshow`)
+
+Cada escena puede declarar en su manifest un array de ids de capas GUI que el firmware debe
+mostrar automaticamente al comenzar la escena — sin necesidad de codigo Lua. Pensado para
+HUDs de nivel (score, vidas, radar) que **siempre** estan arriba en esa escena. Los menus
+tipo pausa/dialogo siguen siendo Lua-triggered y NO se listan aca.
+
+```json
+{
+  "scenes": [
+    {
+      "id": "level_1",
+      "gui_layers_autoshow": ["hud_score", "hud_lives"],
+      ...
+    }
+  ]
+}
+```
+
+Semantica:
+
+- Se aplica **despues** del reset de visibilidad de `turtle_scene_begin_runtime`, y **antes** del primer `_hud(dt)`. Efecto identico a haber llamado `gui_layer_show(id)` desde ENTRY VM sin `z` override.
+- El z-order es el propio del manifest de cada capa. No hay override por escena (mantener el modelo simple; si se necesita, editar el `z` de la capa).
+- Ids repetidos en el array se ignoran silenciosamente. Ids que no existen en el catalogo `guilayers` del bundle: no-op y aviso en Serial (mismo comportamiento que `gui_layer_show` con id invalido).
+- Compatibilidad: escenas antiguas sin el campo se comportan como antes (ninguna capa auto-mostrada). Default: `[]`.
+- El cart puede llamar `gui_layer_hide(id)` en cualquier momento para ocultar una capa auto-mostrada (por ejemplo esconder el HUD durante una cutscene).
+
+Autor: el editor de escenas de TurtleStudio muestra un checkbox por cada `guilayers/*.json` del proyecto; marcar = incluir el id en `gui_layers_autoshow` de la escena.
 
 ## Pausa
 
@@ -150,7 +252,7 @@ Si `captures_input=false` (default), los actores siguen recibiendo input aunque 
 
 ## Fuera de alcance en v0
 
-- **Sprites en capas**: reservado para v1 (probablemente `gui_layer_sprite(id, sprite_id, x, y, frame)`).
+- **Sprites arbitrarios en capas** (`gui_layer_sprite(id, sprite_id, x, y, frame)`): reservado. En v0 los sprites solo entran via `progress_bars` con `fill_mode="sprite"` (tileado) y `pip_bars` (repetidos discretamente).
 - **Tiles en capas**: reservado — patron muy usado en Semi (`.tortuguilayer` tiene un tile layer completo). Aca queda para v2 si aparece necesidad concreta.
 - **Animaciones dentro de la capa** (blink de texto, sprites animados): el cart lo puede simular con `gui_layer_set_text` desde el `_hud(dt)`.
 - **Transiciones/fade** de capa: fuera de scope. Cart lo puede simular tinteando texto o cambiando `bg_color_index` via campos futuros.

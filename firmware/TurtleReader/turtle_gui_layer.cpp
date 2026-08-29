@@ -7,13 +7,11 @@
 
 #include <Arduino.h>
 #include <ctype.h>
+#include <stdlib.h>
 #include <string.h>
 
 #if defined(ESP32) || defined(ESP_PLATFORM)
-#include <esp_attr.h>
-#define TURTLE_GUI_BSS_PSRAM EXT_RAM_ATTR
-#else
-#define TURTLE_GUI_BSS_PSRAM
+#include <esp_heap_caps.h>
 #endif
 
 namespace {
@@ -21,16 +19,52 @@ namespace {
 constexpr int kMaxGuiLayers = 8;
 constexpr int kMaxGuiLayerRects = 16;
 constexpr int kMaxGuiLayerLabels = 16;
+constexpr int kMaxGuiLayerProgressBars = 4;
+constexpr int kMaxGuiLayerPipBars = 4;
+constexpr int kMaxGuiBarRanges = 3;
+constexpr int kMaxPipCount = 32;
 constexpr size_t kGuiLayerTextCap = 64;   // 63 chars + nul
 constexpr size_t kGuiLayerFontIdCap = 48;
 constexpr size_t kGuiLayerIdCap = 40;
 constexpr size_t kGuiLayerLabelIdCap = 40;
+constexpr size_t kGuiSpriteIdCap = 40;
 
 // Framebuffer canonico (spec/scene-v0.md). Duplicado aca; parametrizarlo tampoco tendria
 // sentido -- si cambia, todo el pipeline visual cambia.
 constexpr int kSceneW = 164;
 constexpr int kSceneH = 124;
 constexpr uint8_t kDefaultTransparentIndex = 31;
+
+// Tamano maximo de un sprite decodificado para las capas GUI. Compartido con
+// turtle_scene (kMaxSpriteW * kMaxSpriteH); duplicarlo aca evita depender de la constante
+// interna de esa unidad de compilacion. Si cambia alla, actualizar aca tambien.
+constexpr int kGuiSpriteMaxW = 32;
+constexpr int kGuiSpriteMaxH = 32;
+constexpr size_t kGuiSpriteScratchCap = kGuiSpriteMaxW * kGuiSpriteMaxH;
+
+enum class GuiBarDir : uint8_t {
+  LeftToRight = 0,
+  RightToLeft,
+  TopToBottom,
+  BottomToTop,
+};
+
+enum class GuiFillMode : uint8_t {
+  Color = 0,
+  Sprite,
+};
+
+enum class GuiPipDir : uint8_t {
+  Horizontal = 0,
+  Vertical,
+};
+
+struct GuiBarRange {
+  uint8_t min_pct;         // 0..100 inclusivo
+  uint8_t max_pct;         // 0..100 exclusivo (excepto 100 que es inclusivo, ver spec)
+  int8_t alt_color_index;  // -1 = no override
+  char alt_sprite_id[kGuiSpriteIdCap];  // "" = no override
+};
 
 struct GuiRect {
   int16_t x;
@@ -49,6 +83,37 @@ struct GuiLabel {
   int8_t color_index;  // -1 = sin tinte, 0..30 = tinte plano
 };
 
+struct GuiProgressBar {
+  char id[kGuiLayerLabelIdCap];
+  int16_t x;
+  int16_t y;
+  int16_t w;
+  int16_t h;
+  GuiBarDir direction;
+  GuiFillMode fill_mode;
+  uint8_t fill_color_index;   // usado con GuiFillMode::Color
+  char fill_sprite_id[kGuiSpriteIdCap];  // usado con GuiFillMode::Sprite
+  uint8_t bg_color_index;     // fondo del bar (parte vacia). 31 = transparente
+  int8_t border_color_index;  // -1 = sin marco, 0..30 = color del marco 1 px
+  int16_t value_num;
+  int16_t value_den;
+  int range_count;
+  GuiBarRange ranges[kMaxGuiBarRanges];
+};
+
+struct GuiPipBar {
+  char id[kGuiLayerLabelIdCap];
+  int16_t x;
+  int16_t y;
+  char sprite_full_id[kGuiSpriteIdCap];
+  GuiPipDir direction;
+  uint8_t gap_px;
+  int16_t value;
+  int16_t max_value;
+  int range_count;
+  GuiBarRange ranges[kMaxGuiBarRanges];
+};
+
 struct GuiLayer {
   char id[kGuiLayerIdCap];
   int16_t x;
@@ -65,17 +130,98 @@ struct GuiLayer {
   bool visible;
   int rect_count;
   int label_count;
+  int progress_bar_count;
+  int pip_bar_count;
   GuiRect rects[kMaxGuiLayerRects];
   GuiLabel labels[kMaxGuiLayerLabels];
+  GuiProgressBar progress_bars[kMaxGuiLayerProgressBars];
+  GuiPipBar pip_bars[kMaxGuiLayerPipBars];
 };
 
-TURTLE_GUI_BSS_PSRAM GuiLayer s_layers[kMaxGuiLayers];
+// El array vive en el heap (preferentemente PSRAM). sizeof(GuiLayer) * 8 ~= 38 KB con
+// progress + pip bars incluidos (rects + labels + progress + pip + rangos por bar). Se aloja
+// una sola vez la primera vez que se carga una escena y se conserva por el resto de la vida
+// del console (release() solo resetea el contenido, no libera el buffer -- churn innecesario).
+GuiLayer* s_layers = nullptr;
 int s_layer_count = 0;
 const char* s_bundle_json = nullptr;
 size_t s_bundle_json_len = 0;
 
+// Scratch de decodificacion de sprites (progress bars con sprite tileado + pip bars). ~1 KB
+// PSRAM. Reutilizado entre bars dentro del mismo paint (cache de sprites de turtle_scene se
+// encarga de no re-parsear el mismo sprite). Se aloja perezosamente igual que s_layers.
+uint8_t* s_gui_sprite_scratch = nullptr;
+
+// Cache de sprites que fallaron al cargar (id no existe en bundle ni SD). El pipeline de
+// turtle_scene NO cachea misses: reintenta el fopen cada vez. Como el pintado de capas GUI
+// corre cada frame, un sprite faltante inundaria Serial y triggerearia SD reads inutiles.
+// Este ring buffer (8 slots) hace que se logue UNA vez por id y se short-circuit despues.
+// Se resetea al comenzar cada escena (turtle_gui_layer_begin_scene).
+constexpr int kMissingSpriteCacheSize = 8;
+char s_missing_sprite_cache[kMissingSpriteCacheSize][kGuiSpriteIdCap];
+int s_missing_sprite_head = 0;
+
+bool is_sprite_known_missing(const char* id) {
+  if (!id || !*id) return false;
+  for (int i = 0; i < kMissingSpriteCacheSize; ++i) {
+    if (s_missing_sprite_cache[i][0] && strcmp(s_missing_sprite_cache[i], id) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void mark_sprite_missing(const char* id) {
+  if (!id || !*id) return;
+  strncpy(s_missing_sprite_cache[s_missing_sprite_head], id, kGuiSpriteIdCap - 1);
+  s_missing_sprite_cache[s_missing_sprite_head][kGuiSpriteIdCap - 1] = '\0';
+  s_missing_sprite_head = (s_missing_sprite_head + 1) % kMissingSpriteCacheSize;
+  Serial.printf("turtle_gui_layer: sprite \"%s\" no encontrado (bar invisible)\n", id);
+}
+
+void reset_missing_sprite_cache(void) {
+  memset(s_missing_sprite_cache, 0, sizeof s_missing_sprite_cache);
+  s_missing_sprite_head = 0;
+}
+
+bool ensure_layers_allocated(void) {
+  if (s_layers) return true;
+  const size_t need = sizeof(GuiLayer) * kMaxGuiLayers;
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  s_layers = static_cast<GuiLayer*>(
+      heap_caps_malloc(need, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!s_layers) {
+    s_layers = static_cast<GuiLayer*>(
+        heap_caps_malloc(need, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+#else
+  s_layers = static_cast<GuiLayer*>(malloc(need));
+#endif
+  if (!s_layers) {
+    Serial.println("turtle_gui_layer: sin memoria para el buffer de capas");
+    return false;
+  }
+  memset(s_layers, 0, need);
+  return true;
+}
+
+bool ensure_sprite_scratch_allocated(void) {
+  if (s_gui_sprite_scratch) return true;
+#if defined(ESP32) || defined(ESP_PLATFORM)
+  s_gui_sprite_scratch = static_cast<uint8_t*>(
+      heap_caps_malloc(kGuiSpriteScratchCap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (!s_gui_sprite_scratch) {
+    s_gui_sprite_scratch = static_cast<uint8_t*>(
+        heap_caps_malloc(kGuiSpriteScratchCap, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+#else
+  s_gui_sprite_scratch = static_cast<uint8_t*>(malloc(kGuiSpriteScratchCap));
+#endif
+  return s_gui_sprite_scratch != nullptr;
+}
+
 int find_layer_index(const char* id) {
-  if (!id || !*id) {
+  if (!s_layers || !id || !*id) {
     return -1;
   }
   for (int i = 0; i < s_layer_count; ++i) {
@@ -183,6 +329,189 @@ void parse_labels_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
   }
 }
 
+GuiBarDir parse_bar_direction(const char* obj_s, const char* obj_e, GuiBarDir def) {
+  char buf[24] = {0};
+  if (!json_extract_string_for_key(obj_s, obj_e, "direction", buf, sizeof buf)) {
+    return def;
+  }
+  if (strcmp(buf, "left_to_right") == 0) return GuiBarDir::LeftToRight;
+  if (strcmp(buf, "right_to_left") == 0) return GuiBarDir::RightToLeft;
+  if (strcmp(buf, "top_to_bottom") == 0) return GuiBarDir::TopToBottom;
+  if (strcmp(buf, "bottom_to_top") == 0) return GuiBarDir::BottomToTop;
+  return def;
+}
+
+GuiFillMode parse_fill_mode(const char* obj_s, const char* obj_e, GuiFillMode def) {
+  char buf[16] = {0};
+  if (!json_extract_string_for_key(obj_s, obj_e, "fill_mode", buf, sizeof buf)) {
+    return def;
+  }
+  if (strcmp(buf, "sprite") == 0) return GuiFillMode::Sprite;
+  return GuiFillMode::Color;
+}
+
+GuiPipDir parse_pip_direction(const char* obj_s, const char* obj_e, GuiPipDir def) {
+  char buf[16] = {0};
+  if (!json_extract_string_for_key(obj_s, obj_e, "direction", buf, sizeof buf)) {
+    return def;
+  }
+  if (strcmp(buf, "vertical") == 0) return GuiPipDir::Vertical;
+  return GuiPipDir::Horizontal;
+}
+
+void parse_ranges_array(const char* arr_s, const char* arr_e, GuiBarRange* out, int* out_count) {
+  *out_count = 0;
+  const char* p = arr_s;
+  while (p < arr_e && *out_count < kMaxGuiBarRanges) {
+    while (p < arr_e && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= arr_e || *p == ']') break;
+    if (*p != '{') break;
+    const char* oe = json_object_end(p);
+    if (!oe) break;
+    GuiBarRange r{};
+    r.alt_color_index = -1;
+    r.alt_sprite_id[0] = '\0';
+    int v = 0;
+    r.min_pct = json_extract_int_for_key(p, oe, "min_pct", &v)
+                    ? static_cast<uint8_t>(clamp_int(v, 0, 100))
+                    : 0;
+    r.max_pct = json_extract_int_for_key(p, oe, "max_pct", &v)
+                    ? static_cast<uint8_t>(clamp_int(v, 0, 100))
+                    : 100;
+    if (json_extract_int_for_key(p, oe, "alt_color_index", &v)) {
+      if (v >= 0 && v <= 30) {
+        r.alt_color_index = static_cast<int8_t>(v);
+      }
+    }
+    json_extract_string_for_key(p, oe, "alt_sprite_id", r.alt_sprite_id, sizeof r.alt_sprite_id);
+    p = oe;
+    if (r.min_pct >= r.max_pct) {
+      continue;  // rango degenerado: descartar silenciosamente
+    }
+    out[*out_count] = r;
+    ++(*out_count);
+  }
+}
+
+void parse_progress_bars_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
+  ly->progress_bar_count = 0;
+  const char* p = arr_s;
+  while (p < arr_e && ly->progress_bar_count < kMaxGuiLayerProgressBars) {
+    while (p < arr_e && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= arr_e || *p == ']') break;
+    if (*p != '{') break;
+    const char* oe = json_object_end(p);
+    if (!oe) break;
+    GuiProgressBar bar{};
+    bar.id[0] = '\0';
+    bar.fill_sprite_id[0] = '\0';
+    bar.direction = GuiBarDir::LeftToRight;
+    bar.fill_mode = GuiFillMode::Color;
+    bar.fill_color_index = 11;
+    bar.bg_color_index = 3;
+    bar.border_color_index = -1;
+    bar.value_num = 0;
+    bar.value_den = 1;
+    json_extract_string_for_key(p, oe, "id", bar.id, sizeof bar.id);
+    int v = 0;
+    bar.x = json_extract_int_for_key(p, oe, "x", &v) ? static_cast<int16_t>(v) : 0;
+    bar.y = json_extract_int_for_key(p, oe, "y", &v) ? static_cast<int16_t>(v) : 0;
+    bar.w = json_extract_int_for_key(p, oe, "w", &v) ? static_cast<int16_t>(clamp_int(v, 1, kSceneW)) : 1;
+    bar.h = json_extract_int_for_key(p, oe, "h", &v) ? static_cast<int16_t>(clamp_int(v, 1, kSceneH)) : 1;
+    bar.direction = parse_bar_direction(p, oe, GuiBarDir::LeftToRight);
+    bar.fill_mode = parse_fill_mode(p, oe, GuiFillMode::Color);
+    if (json_extract_int_for_key(p, oe, "fill_color_index", &v)) {
+      bar.fill_color_index = static_cast<uint8_t>(clamp_int(v, 0, 31));
+    }
+    json_extract_string_for_key(p, oe, "fill_sprite_id", bar.fill_sprite_id,
+                                sizeof bar.fill_sprite_id);
+    if (json_extract_int_for_key(p, oe, "bg_color_index", &v)) {
+      bar.bg_color_index = static_cast<uint8_t>(clamp_int(v, 0, 31));
+    }
+    if (json_extract_int_for_key(p, oe, "border_color_index", &v)) {
+      bar.border_color_index = (v < 0 || v > 30) ? -1 : static_cast<int8_t>(v);
+    }
+    if (json_extract_int_for_key(p, oe, "value_num", &v)) {
+      bar.value_num = static_cast<int16_t>(clamp_int(v, -32768, 32767));
+    }
+    if (json_extract_int_for_key(p, oe, "value_den", &v)) {
+      bar.value_den = static_cast<int16_t>(clamp_int(v, 1, 32767));
+    }
+    if (bar.value_den <= 0) bar.value_den = 1;
+    bar.range_count = 0;
+    const char* rk = strstr_bounded(p, oe, "\"ranges\"");
+    if (rk) {
+      const char* rp = rk + 8;
+      while (rp < oe && *rp != '[') ++rp;
+      if (rp < oe && *rp == '[') {
+        const char* re = json_array_end(rp);
+        if (re) {
+          parse_ranges_array(rp + 1, re, bar.ranges, &bar.range_count);
+        }
+      }
+    }
+    p = oe;
+    if (!bar.id[0]) continue;  // sin id, bar invalido
+    ly->progress_bars[ly->progress_bar_count++] = bar;
+  }
+}
+
+void parse_pip_bars_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
+  ly->pip_bar_count = 0;
+  const char* p = arr_s;
+  while (p < arr_e && ly->pip_bar_count < kMaxGuiLayerPipBars) {
+    while (p < arr_e && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= arr_e || *p == ']') break;
+    if (*p != '{') break;
+    const char* oe = json_object_end(p);
+    if (!oe) break;
+    GuiPipBar bar{};
+    bar.id[0] = '\0';
+    bar.sprite_full_id[0] = '\0';
+    bar.direction = GuiPipDir::Horizontal;
+    bar.gap_px = 0;
+    bar.value = 0;
+    bar.max_value = 1;
+    json_extract_string_for_key(p, oe, "id", bar.id, sizeof bar.id);
+    int v = 0;
+    bar.x = json_extract_int_for_key(p, oe, "x", &v) ? static_cast<int16_t>(v) : 0;
+    bar.y = json_extract_int_for_key(p, oe, "y", &v) ? static_cast<int16_t>(v) : 0;
+    json_extract_string_for_key(p, oe, "sprite_full_id", bar.sprite_full_id,
+                                sizeof bar.sprite_full_id);
+    bar.direction = parse_pip_direction(p, oe, GuiPipDir::Horizontal);
+    if (json_extract_int_for_key(p, oe, "gap_px", &v)) {
+      bar.gap_px = static_cast<uint8_t>(clamp_int(v, 0, 32));
+    }
+    if (json_extract_int_for_key(p, oe, "max_value", &v)) {
+      bar.max_value = static_cast<int16_t>(clamp_int(v, 1, kMaxPipCount));
+    }
+    if (json_extract_int_for_key(p, oe, "value", &v)) {
+      bar.value = static_cast<int16_t>(clamp_int(v, 0, bar.max_value));
+    }
+    bar.range_count = 0;
+    const char* rk = strstr_bounded(p, oe, "\"ranges\"");
+    if (rk) {
+      const char* rp = rk + 8;
+      while (rp < oe && *rp != '[') ++rp;
+      if (rp < oe && *rp == '[') {
+        const char* re = json_array_end(rp);
+        if (re) {
+          parse_ranges_array(rp + 1, re, bar.ranges, &bar.range_count);
+        }
+      }
+    }
+    p = oe;
+    if (!bar.id[0] || !bar.sprite_full_id[0]) continue;
+    ly->pip_bars[ly->pip_bar_count++] = bar;
+  }
+}
+
 bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
   memset(ly, 0, sizeof(*ly));
   ly->w = kSceneW;
@@ -237,11 +566,215 @@ bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
       }
     }
   }
+  const char* pk = strstr_bounded(obj_s, obj_e, "\"progress_bars\"");
+  if (pk) {
+    const char* pp = pk + 15;
+    while (pp < obj_e && *pp != '[') ++pp;
+    if (pp < obj_e && *pp == '[') {
+      const char* pe = json_array_end(pp);
+      if (pe) {
+        parse_progress_bars_array(pp + 1, pe, ly);
+      }
+    }
+  }
+  const char* qk = strstr_bounded(obj_s, obj_e, "\"pip_bars\"");
+  if (qk) {
+    const char* qp = qk + 10;
+    while (qp < obj_e && *qp != '[') ++qp;
+    if (qp < obj_e && *qp == '[') {
+      const char* qe = json_array_end(qp);
+      if (qe) {
+        parse_pip_bars_array(qp + 1, qe, ly);
+      }
+    }
+  }
   return true;
 }
 
 int effective_z(const GuiLayer* ly) {
   return ly->z_override_set ? ly->z_override : ly->z_manifest;
+}
+
+/**
+ * Resuelve el rango activo (si alguno) para una fraccion actual y un array de rangos.
+ * `frac_pct` es 0..100. Devuelve puntero al primer rango que cubre el porcentaje (spec:
+ * el primero gana), o nullptr si ninguno matchea. Convencion: [min, max) salvo max=100
+ * que es [min, 100] (asi el 100% nunca queda huerfano).
+ */
+const GuiBarRange* resolve_active_range(int frac_pct, const GuiBarRange* ranges, int count) {
+  for (int i = 0; i < count; ++i) {
+    const GuiBarRange& r = ranges[i];
+    const bool hit =
+        (frac_pct >= r.min_pct) &&
+        ((r.max_pct >= 100) ? (frac_pct <= r.max_pct) : (frac_pct < r.max_pct));
+    if (hit) return &r;
+  }
+  return nullptr;
+}
+
+/**
+ * Blit tileado de un sprite dentro de un rect en coord de framebuffer. `src_pixels` es
+ * row-first, dimensiones sw x sh. Recorta el ultimo tile parcial en cada eje al borde del rect.
+ * Pixeles con indice de paleta 31 (kDefaultTransparentIndex) se saltan. Usa turtle_gpu_pixel_raw
+ * (no clipea al playfield y trabaja en coord de framebuffer, no de escena) igual que el resto
+ * del pintado de capas GUI.
+ */
+void blit_tiled_sprite_raw(int rx, int ry, int rw, int rh, const uint8_t* src_pixels, int sw,
+                           int sh) {
+  if (!src_pixels || sw <= 0 || sh <= 0 || rw <= 0 || rh <= 0) return;
+  for (int dy = 0; dy < rh; ++dy) {
+    const int sy = dy % sh;
+    for (int dx = 0; dx < rw; ++dx) {
+      const int sx = dx % sw;
+      const uint8_t px = src_pixels[sy * sw + sx];
+      if (px == kDefaultTransparentIndex) continue;
+      turtle_gpu_pixel_raw(rx + dx, ry + dy, px);
+    }
+  }
+}
+
+/**
+ * Blit 1:1 (sin escala ni tiling) de un sprite en coord de framebuffer. Contraparte de
+ * turtle_gpu_blit_indexed_scene pero sin proteccion de playfield y con coord fb, para pip bars.
+ */
+void blit_sprite_raw(int dx, int dy, const uint8_t* src_pixels, int sw, int sh) {
+  if (!src_pixels || sw <= 0 || sh <= 0) return;
+  for (int y = 0; y < sh; ++y) {
+    for (int x = 0; x < sw; ++x) {
+      const uint8_t px = src_pixels[y * sw + x];
+      if (px == kDefaultTransparentIndex) continue;
+      turtle_gpu_pixel_raw(dx + x, dy + y, px);
+    }
+  }
+}
+
+void paint_progress_bar(const GuiLayer* ly, const GuiProgressBar* bar) {
+  const int bx = ly->x + bar->x;
+  const int by = ly->y + bar->y;
+  int bw = bar->w;
+  int bh = bar->h;
+  // Clampeo defensivo al rect de la capa.
+  if (bx + bw > ly->x + ly->w) bw = (ly->x + ly->w) - bx;
+  if (by + bh > ly->y + ly->h) bh = (ly->y + ly->h) - by;
+  if (bw <= 0 || bh <= 0) return;
+
+  // Fondo del bar (parte vacia). 31 = transparente, no pintar.
+  if (bar->bg_color_index != kDefaultTransparentIndex) {
+    turtle_gpu_fill_rect_raw(bx, by, bw, bh, bar->bg_color_index);
+  }
+
+  // Fraccion 0..1 -> pixeles rellenados en el eje de direction.
+  int num = bar->value_num;
+  int den = bar->value_den > 0 ? bar->value_den : 1;
+  if (num < 0) num = 0;
+  if (num > den) num = den;
+  const int frac_pct = (num * 100) / den;
+
+  // Rango activo (si alguno). Puede reemplazar color y/o sprite base.
+  const GuiBarRange* active = resolve_active_range(frac_pct, bar->ranges, bar->range_count);
+  uint8_t eff_color = bar->fill_color_index;
+  const char* eff_sprite = bar->fill_sprite_id;
+  if (active) {
+    if (active->alt_color_index >= 0) eff_color = static_cast<uint8_t>(active->alt_color_index);
+    if (active->alt_sprite_id[0] != '\0') eff_sprite = active->alt_sprite_id;
+  }
+
+  // Sub-rect rellenado segun direction.
+  int fx = bx, fy = by, fw = bw, fh = bh;
+  switch (bar->direction) {
+    case GuiBarDir::LeftToRight: {
+      fw = (bw * num) / den;
+      break;
+    }
+    case GuiBarDir::RightToLeft: {
+      const int w_filled = (bw * num) / den;
+      fx = bx + (bw - w_filled);
+      fw = w_filled;
+      break;
+    }
+    case GuiBarDir::TopToBottom: {
+      fh = (bh * num) / den;
+      break;
+    }
+    case GuiBarDir::BottomToTop: {
+      const int h_filled = (bh * num) / den;
+      fy = by + (bh - h_filled);
+      fh = h_filled;
+      break;
+    }
+  }
+
+  if (fw > 0 && fh > 0) {
+    if (bar->fill_mode == GuiFillMode::Color) {
+      if (eff_color != kDefaultTransparentIndex) {
+        turtle_gpu_fill_rect_raw(fx, fy, fw, fh, eff_color);
+      }
+    } else if (eff_sprite[0] != '\0' && !is_sprite_known_missing(eff_sprite)) {
+      if (ensure_sprite_scratch_allocated()) {
+        int sw = 0;
+        int sh = 0;
+        if (turtle_scene_load_sprite_pixels(eff_sprite, 0, s_gui_sprite_scratch,
+                                            kGuiSpriteScratchCap, &sw, &sh)) {
+          blit_tiled_sprite_raw(fx, fy, fw, fh, s_gui_sprite_scratch, sw, sh);
+        } else {
+          mark_sprite_missing(eff_sprite);
+        }
+      }
+    }
+  }
+
+  // Marco opcional de 1 px (dibujado por encima del relleno).
+  if (bar->border_color_index >= 0) {
+    const uint8_t bc = static_cast<uint8_t>(bar->border_color_index);
+    turtle_gpu_fill_rect_raw(bx, by, bw, 1, bc);              // top
+    turtle_gpu_fill_rect_raw(bx, by + bh - 1, bw, 1, bc);     // bottom
+    turtle_gpu_fill_rect_raw(bx, by, 1, bh, bc);              // left
+    turtle_gpu_fill_rect_raw(bx + bw - 1, by, 1, bh, bc);     // right
+  }
+}
+
+void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
+  int val = bar->value;
+  int maxv = bar->max_value > 0 ? bar->max_value : 1;
+  if (val < 0) val = 0;
+  if (val > maxv) val = maxv;
+  if (val == 0) return;  // sin pips que pintar
+
+  // Rango activo puede reemplazar el sprite full.
+  const int frac_pct = (val * 100) / maxv;
+  const GuiBarRange* active = resolve_active_range(frac_pct, bar->ranges, bar->range_count);
+  const char* eff_sprite = bar->sprite_full_id;
+  if (active && active->alt_sprite_id[0] != '\0') {
+    eff_sprite = active->alt_sprite_id;
+  }
+  if (!eff_sprite[0]) return;
+  if (is_sprite_known_missing(eff_sprite)) return;
+
+  if (!ensure_sprite_scratch_allocated()) return;
+  int sw = 0;
+  int sh = 0;
+  if (!turtle_scene_load_sprite_pixels(eff_sprite, 0, s_gui_sprite_scratch, kGuiSpriteScratchCap,
+                                       &sw, &sh)) {
+    mark_sprite_missing(eff_sprite);
+    return;
+  }
+  if (sw <= 0 || sh <= 0) return;
+
+  const int step = (bar->direction == GuiPipDir::Horizontal ? sw : sh) + bar->gap_px;
+  for (int i = 0; i < val; ++i) {
+    int px = ly->x + bar->x;
+    int py = ly->y + bar->y;
+    if (bar->direction == GuiPipDir::Horizontal) {
+      px += i * step;
+    } else {
+      py += i * step;
+    }
+    // Clamp: si el proximo pip cae fuera del rect de la capa, cortar el loop -- es error de
+    // autoria pintar mas pips de los que caben. Silencioso; el editor debe advertir.
+    if (px + sw > ly->x + ly->w) break;
+    if (py + sh > ly->y + ly->h) break;
+    blit_sprite_raw(px, py, s_gui_sprite_scratch, sw, sh);
+  }
 }
 
 void paint_one_layer(const GuiLayer* ly) {
@@ -262,6 +795,15 @@ void paint_one_layer(const GuiLayer* ly) {
     if (rw <= 0 || rh <= 0) continue;
     turtle_gpu_fill_rect_raw(rx, ry, rw, rh, r.color_index);
   }
+  // Barras de progreso -- se pintan despues de rects (asi los rects pueden servir de marco
+  // externo) y antes de labels (asi un label puede quedar encima como texto del valor).
+  for (int i = 0; i < ly->progress_bar_count; ++i) {
+    paint_progress_bar(ly, &ly->progress_bars[i]);
+  }
+  // Barras de pips -- mismo orden. Cada pip es un blit 1:1 del sprite full (o su swap por rango).
+  for (int i = 0; i < ly->pip_bar_count; ++i) {
+    paint_pip_bar(ly, &ly->pip_bars[i]);
+  }
   // Etiquetas de texto. Usan turtle_scene_draw_text_absolute-like pero sin
   // proteccion de playfield -- ver turtle_font_draw_fb_raw.
   for (int i = 0; i < ly->label_count; ++i) {
@@ -281,6 +823,7 @@ void turtle_gui_layer_begin_scene(const char* bundle_json, size_t bundle_json_le
   s_layer_count = 0;
   s_bundle_json = bundle_json;
   s_bundle_json_len = bundle_json_len;
+  reset_missing_sprite_cache();
   if (!bundle_json || bundle_json_len == 0) {
     return;
   }
@@ -293,6 +836,9 @@ void turtle_gui_layer_begin_scene(const char* bundle_json, size_t bundle_json_le
   while (p < end && *p != '[') ++p;
   if (p >= end || *p != '[') {
     return;
+  }
+  if (!ensure_layers_allocated()) {
+    return;  // sin memoria: se ignora el catalogo silenciosamente
   }
   ++p;
   int discarded = 0;
@@ -322,6 +868,7 @@ void turtle_gui_layer_release(void) {
   s_layer_count = 0;
   s_bundle_json = nullptr;
   s_bundle_json_len = 0;
+  reset_missing_sprite_cache();
 }
 
 bool turtle_gui_layer_any_pauses(void) {
@@ -414,5 +961,52 @@ bool turtle_gui_layer_set_text(const char* id, const char* label_id, const char*
   const size_t maxlen = sizeof lbl.text - 1;
   strncpy(lbl.text, str, maxlen);
   lbl.text[maxlen] = '\0';
+  return true;
+}
+
+namespace {
+int find_progress_bar_index(const GuiLayer* ly, const char* bar_id) {
+  if (!ly || !bar_id || !*bar_id) return -1;
+  for (int i = 0; i < ly->progress_bar_count; ++i) {
+    if (strcmp(ly->progress_bars[i].id, bar_id) == 0) return i;
+  }
+  return -1;
+}
+int find_pip_bar_index(const GuiLayer* ly, const char* bar_id) {
+  if (!ly || !bar_id || !*bar_id) return -1;
+  for (int i = 0; i < ly->pip_bar_count; ++i) {
+    if (strcmp(ly->pip_bars[i].id, bar_id) == 0) return i;
+  }
+  return -1;
+}
+}  // namespace
+
+bool turtle_gui_layer_set_progress(const char* id, const char* bar_id, int value_num,
+                                   bool has_max, int value_den) {
+  const int idx = find_layer_index(id);
+  if (idx < 0) return false;
+  GuiLayer* ly = &s_layers[idx];
+  const int bi = find_progress_bar_index(ly, bar_id);
+  if (bi < 0) return false;
+  GuiProgressBar& bar = ly->progress_bars[bi];
+  if (has_max) {
+    bar.value_den = static_cast<int16_t>(clamp_int(value_den, 1, 32767));
+  }
+  bar.value_num = static_cast<int16_t>(clamp_int(value_num, -32768, 32767));
+  return true;
+}
+
+bool turtle_gui_layer_set_pips(const char* id, const char* bar_id, int value, bool has_max,
+                               int max_value) {
+  const int idx = find_layer_index(id);
+  if (idx < 0) return false;
+  GuiLayer* ly = &s_layers[idx];
+  const int bi = find_pip_bar_index(ly, bar_id);
+  if (bi < 0) return false;
+  GuiPipBar& bar = ly->pip_bars[bi];
+  if (has_max) {
+    bar.max_value = static_cast<int16_t>(clamp_int(max_value, 1, kMaxPipCount));
+  }
+  bar.value = static_cast<int16_t>(clamp_int(value, 0, bar.max_value));
   return true;
 }

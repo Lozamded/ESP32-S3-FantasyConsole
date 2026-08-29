@@ -28,6 +28,7 @@ from turtlestudio.palette_editor import PaletteEditorWidget
 from turtlestudio.background_editor import BackgroundEditorWidget
 from turtlestudio.build_dialog import BuildDialogWidget
 from turtlestudio.font_editor import FontEditorWidget
+from turtlestudio.gui_layer_editor import GuiLayerEditorWidget
 from turtlestudio.i18n import tr
 from turtlestudio.new_project_dialog import NewProjectDialog
 from turtlestudio.object_editor import ObjectEditorWidget
@@ -55,6 +56,7 @@ _ASSET_SECTIONS: tuple[tuple[str, str], ...] = (
     (tr("mainwindow.section_fonts"), "objects/Fonts"),
     (tr("mainwindow.section_backgrounds"), "backgrounds"),
     (tr("mainwindow.section_tiles"), "tiles"),
+    (tr("mainwindow.section_guilayers"), "guilayers"),
     (tr("mainwindow.section_scenes"), "scenes"),
     (tr("mainwindow.section_palettes"), "palettes"),
     (tr("mainwindow.section_scripts"), "scripts"),
@@ -185,6 +187,7 @@ class MainWindow(QMainWindow):
         self.center_stack.addWidget(self.sprite_editor)
 
         self.scene_editor = SceneEditorWidget(Path("."))
+        self.scene_editor.request_open_gui_layer.connect(self._on_scene_request_open_gui_layer)
         self.center_stack.addWidget(self.scene_editor)
 
         self.play_widget = PlayWidget(Path("."))
@@ -202,6 +205,9 @@ class MainWindow(QMainWindow):
         self.font_editor = FontEditorWidget(Path("."))
         self.center_stack.addWidget(self.font_editor)
 
+        self.guilayer_editor = GuiLayerEditorWidget(Path("."))
+        self.center_stack.addWidget(self.guilayer_editor)
+
         self.build_dialog = BuildDialogWidget(Path("."))
         self.center_stack.addWidget(self.build_dialog)
 
@@ -213,6 +219,7 @@ class MainWindow(QMainWindow):
             TabKind.BACKGROUND_EDITOR: self.background_editor,
             TabKind.OBJECT_EDITOR: self.object_editor,
             TabKind.FONT_EDITOR: self.font_editor,
+            TabKind.GUILAYER_EDITOR: self.guilayer_editor,
             TabKind.PALETTE_EDITOR: self.palette_editor,
             TabKind.EXPORT: self.build_dialog,
         }
@@ -373,6 +380,7 @@ class MainWindow(QMainWindow):
         self.background_editor.set_project_root(root)
         self.object_editor.set_project_root(root)
         self.font_editor.set_project_root(root)
+        self.guilayer_editor.set_project_root(root)
         self.build_dialog.set_project_root(root)
         self._refresh_project_tree()
         # WorkspaceTabs auto-selects its first tab (Scene) during construction, before
@@ -412,6 +420,16 @@ class MainWindow(QMainWindow):
         if raw is None:
             return
         self._open_asset_path(Path(raw))
+
+    def _on_scene_request_open_gui_layer(self, stem: str) -> None:
+        """Callback disparado por scene_editor tras crear/abrir una capa HUD scaffold: salta
+        al editor de capas GUI y la abre. Refresca la lista para que el `stem` recien creado
+        aparezca en el combo."""
+        if not stem:
+            return
+        self.guilayer_editor.refresh_layer_list()
+        self.guilayer_editor.open_layer(stem)
+        self.workspace_tabs.select(TabKind.GUILAYER_EDITOR)
 
     def _open_asset_path(self, path: Path) -> None:
         """Dispatch a double-clicked asset to its editor, by parent directory.
@@ -462,6 +480,11 @@ class MainWindow(QMainWindow):
         if rel.startswith("objects/Fonts/"):
             self.font_editor.open_font(path.stem)
             self.workspace_tabs.select(TabKind.FONT_EDITOR)
+            return
+
+        if rel.startswith("guilayers/"):
+            self.guilayer_editor.open_layer(path.stem)
+            self.workspace_tabs.select(TabKind.GUILAYER_EDITOR)
             return
 
         placeholder = _PlaceholderPage(tr("mainwindow.placeholder_not_ported", rel=rel))
