@@ -694,8 +694,8 @@
         {
           "object": "directional_block",
           "id": "directional_block_5",
-          "x": 335,
-          "y": 16,
+          "x": 336,
+          "y": 18,
           "tags": [],
           "visible": false
         }
@@ -3000,5 +3000,19 @@
   "target_board": "esp32s3_n16r8",
   "viewport_w": 164,
   "viewport_h": 124,
-  "short_name": "demoplat"
+  "short_name": "demoplat",
+  "global_vars": [
+    {
+      "name": "gears",
+      "type": "int",
+      "is_array": false,
+      "default": ""
+    },
+    {
+      "name": "lifes",
+      "type": "int",
+      "is_array": false,
+      "default": "4"
+    }
+  ]
 }

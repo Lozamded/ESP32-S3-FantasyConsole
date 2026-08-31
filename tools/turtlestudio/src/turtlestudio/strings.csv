@@ -286,6 +286,14 @@ build.no_scenes_msg,El proyecto no tiene escenas.,The project has no scenes.
 build.lua_notes_header,Avisos de scripts Lua:,Lua script notes:
 build.verify_failed_header,Verificacion: {n} problema(s):,Verification: {n} problem(s):
 build.verify_ok,Verificacion: OK (referencias y sidecars coherentes).,Verification: OK (refs and sidecars consistent).
+build.global_vars_group,Variables globales del cartucho,Cartridge global variables
+build.gv_col_name,Nombre,Name
+build.gv_col_type,Tipo,Type
+build.gv_col_array,[],[]
+build.gv_add,+ Variable,+ Variable
+build.gv_col_default,Valor inicial,Initial value
+build.gv_name_placeholder,nombre_variable,variable_name
+build.gv_delete_tooltip,Eliminar variable,Delete variable
 mainwindow.menu_export,&Exportar cartucho…,&Export cartridge…
 mainwindow.tab_scene,Escena,Scene
 mainwindow.tab_sprites,Sprites,Sprites

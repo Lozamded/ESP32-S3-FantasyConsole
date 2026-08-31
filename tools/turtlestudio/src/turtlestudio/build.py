@@ -26,6 +26,49 @@ LUA_SCRIPT_EXPORT_WARN_BYTES = 32 * 1024
 _CART_VERSION = "0"
 _END_MARKER = "---END---"
 
+_GLOBALS_START = "-- [GLOBALS START]"
+_GLOBALS_END = "-- [GLOBALS END]"
+_GV_TYPE_DEFAULTS: dict[str, str] = {
+    "int": "0",
+    "float": "0.0",
+    "string": '""',
+    "bool": "false",
+}
+
+
+def generate_globals_block(global_vars: Sequence[dict[str, Any]]) -> str:
+    """Build the sentinel Lua block from the project's global_vars list."""
+    lines = [_GLOBALS_START + " auto-generado por TurtleStudio -- no editar manualmente"]
+    for v in global_vars:
+        name = str(v.get("name", "")).strip()
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            continue
+        typ = str(v.get("type", "int"))
+        is_array = bool(v.get("is_array", False))
+        stored = str(v.get("default", "")).strip()
+        fallback = "{}" if is_array else _GV_TYPE_DEFAULTS.get(typ, "0")
+        default = stored if stored else fallback
+        lines.append(f"{name} = {default}")
+        if typ == "int" and not is_array:
+            lines.append(f'state_set("{name}", {name})')
+    lines.append(_GLOBALS_END)
+    return "\n".join(lines) + "\n"
+
+
+def inject_globals_into_lua(source: str, global_vars: Sequence[dict[str, Any]]) -> str:
+    """Insert or replace the sentinel globals block at the top of a Lua source string."""
+    si = source.find(_GLOBALS_START)
+    ei = source.find(_GLOBALS_END)
+    if si != -1 and ei > si:
+        tail = ei + len(_GLOBALS_END)
+        if tail < len(source) and source[tail] == "\n":
+            tail += 1
+        source = source[:si] + source[tail:]
+    source = source.lstrip("\n")
+    if not global_vars:
+        return source
+    return generate_globals_block(global_vars) + source
+
 
 def _normalize_entry_path(name: str) -> str:
     s = name.strip().replace("\\", "/")

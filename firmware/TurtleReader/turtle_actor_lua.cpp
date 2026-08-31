@@ -2,6 +2,7 @@
 
 #include "turtle_input.h"
 #include "turtle_scene.h"
+#include "turtle_state.h"
 
 #include <Arduino.h>
 #include <SD.h>
@@ -422,6 +423,8 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_obj_flip_v);
   lua_setglobal(L, "obj_flip_v");
+
+  turtle_state_register_lua(L);
 }
 
 /**

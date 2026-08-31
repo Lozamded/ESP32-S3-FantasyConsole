@@ -14,6 +14,7 @@
 #include "turtle_gui_layer.h"
 #include "turtle_input.h"
 #include "turtle_scene.h"
+#include "turtle_state.h"
 
 extern "C" {
 #include <lua.h>
@@ -331,6 +332,8 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_pushcfunction(L, l_gui_layer_set_sprite);
   lua_setglobal(L, "gui_layer_set_sprite");
 
+  turtle_state_register_lua(L);
+
   int st = luaL_loadbuffer(L, source, source_len, chunkName);
   if (st != LUA_OK) {
     Serial.print("Lua (carga): ");
@@ -362,6 +365,7 @@ static bool loadCartRunLua(const char* path) {
   turtle_entry_lua_release();
   // spec/gui-layer-v0.md: el catalogo GUI apunta a g_bundle; liberarlo tambien antes.
   turtle_gui_layer_release();
+  turtle_state_reset();
   turtle_cart_free(&g_cart);
   turtle_cart_free(&g_bundle);
   g_has_bundle = false;

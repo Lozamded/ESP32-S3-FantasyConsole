@@ -50,6 +50,8 @@ local jumping = false  -- true durante la ventana de decision del salto binario
 local jump_hold_time = 0.0
 local jump_start_y = 0
 
+local hp = 3
+
 local function set_facing(dx)
   if dx < 0 and not facing_left then
     flip_h(true)

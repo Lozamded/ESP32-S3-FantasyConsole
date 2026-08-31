@@ -1,8 +1,7 @@
 -- Recolectable estatico. Cuando el AABB del jugador solapa con el de esta
--- pieza, se apaga (set_visible false). Sin fisica ni animacion -- el sprite
--- default (objects/Sprites/gear.json) se pinta hasta el frame en que se
--- recolecta y despues nunca mas. No hay contador de piezas todavia (esa parte
--- viene despues con el HUD).
+-- pieza, se apaga (set_visible false) y suma 1 al contador compartido "gears"
+-- (state_add). global.lua lee ese contador en _hud(dt) y actualiza la etiqueta
+-- "gearsamount" de la capa GUI "gametstatus".
 
 local collected = false
 local player_h = nil
@@ -35,6 +34,7 @@ function _update(dt)
   local overlap_y = (sy + gear_y1) > (py + player_y0) and (sy + gear_y0) < (py + player_y1)
   if overlap_x and overlap_y then
     collected = true
+    state_add("gears", 1)
     set_visible(false)
   end
 end
