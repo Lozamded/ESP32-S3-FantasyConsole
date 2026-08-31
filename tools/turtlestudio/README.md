@@ -1,122 +1,109 @@
 # TurtleStudio
 
-Herramientas en **Python** para autoría de cartuchos `.turtlecart` (y, más adelante, escenas, paletas y empaquetado).
+Python authoring tool (GUI + CLI) for creating `.turtlecart` cartridges for the FantasyConsole ESP32-S3.
 
-## Requisitos
+---
 
-- Python **3.10+** recomendado.
+## Requirements
 
-## Instalacion (entorno virtual recomendado)
+- Python **3.10+**
+- `g++` and `python3` on PATH (only for host tests)
 
-El codigo vive en `src/turtlestudio/`; hay que **instalar el paquete en el venv** (no basta con `pip install -r requirements.txt`).
+---
+
+## Installation
 
 ```bash
 cd tools/turtlestudio
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -U pip setuptools
 pip install -e .
 ```
 
-Eso instala **turtlestudio** + **dearpygui** (segun `pyproject.toml`). Luego:
+This installs **turtlestudio** and **dearpygui** (the GUI backend).
+
+> If you see `No module named turtlestudio`, run `pip install -e .` inside the active venv from the `tools/turtlestudio` directory.
+
+---
+
+## GUI
 
 ```bash
+source .venv/bin/activate
 python -m turtlestudio gui
-# o
+# or:
 turtlestudio gui
 ```
 
-**Si ves `No module named turtlestudio`:** ejecuta `pip install -e .` dentro del venv desde `tools/turtlestudio`.
+The GUI window has two panels:
 
-**Sin instalar el paquete** (solo para una prueba rapida):
+- **Left panel:** export folder, initial scene selector, optional palette, and the **Export SD package** button.
+- **Right panel:** 164×124 canvas editor and Lua editor for the ENTRY script (`scripts/global.lua`).
 
-```bash
-PYTHONPATH=src python3 -m turtlestudio gui
-```
+**Export** writes the full `build/` folder — `main.turtlecart`, binary assets (`.tbg`, `.tsp`, `.tts`, `.tfn`), `objects/`, `scripts/`, and `COPIAR_A_SD.txt`. Copy the entire `build/` to the root of the microSD.
 
-## Convenciones
+---
 
-- Espacio de escena y coordenadas: ver `spec/scene-v0.md` (164×124, origen abajo-izquierda, Y hacia arriba).
-- Formato cartucho: `spec/turtlecart-v0.md`.
-- Sprites y celdas (`cell_px` default **4**): `spec/sprite-v0.md`. Indice de paleta **31** = transparente (no seleccionable como pincel/fondo).
-- Proyecto TurtleStudio: el Lua de arranque se edita como `scripts/global.lua` (`entry` en `turtlestudio.json`) y forma el **ENTRY** embebido en **`main.turtlecart`**. Al exportar el paquete SD tambien se copia a **`scripts/`** junto con los Lua de escenas y de objetos con `"script"`. El cart embebe un **bundle delgado** (`studio/project_bundle.json`). Assets graficos: **`backgrounds/*.tbg`**, **`sprites/*.tsp`**, etc. (ver `spec/asset-bin-v0.md`). Copia **`build/`** entera a la SD.
-- **Objetos** (`objects/Objects/<id>.json`): campo opcional **`script`** (stem → `scripts/<stem>.lua`). Ver `spec/lua/object-script-v0.md`.
+## CLI
 
-## Comando `gui` (Dear PyGui)
-
-Ventana minima: panel izquierdo (carpeta de export, escena inicial, paleta opcional, **Exportar**). Panel derecho: canvas y editor Lua (ENTRY = `scripts/global.lua` del proyecto). **Exportar paquete SD** escribe `build/` con cartucho, assets binarios, `objects/`, `scripts/` y `COPIAR_A_SD.txt`.
+### Build a cartridge
 
 ```bash
 cd tools/turtlestudio
-source .venv/bin/activate   # si usas venv
-python -m turtlestudio gui
+PYTHONPATH=src python3 -m turtlestudio build path/to/main.lua -o out.turtlecart
 ```
 
-## Comando `build`
-
-Ensambla un cartucho **v0** (texto plano) segun `spec/turtlecart-v0.md`:
+With a custom palette (one `#RRGGBB` per line; lines starting with `#` that aren't valid hex are treated as comments):
 
 ```bash
-cd tools/turtlestudio
-PYTHONPATH=src python3 -m turtlestudio build ruta/al/main.lua -o salida.turtlecart
+PYTHONPATH=src python3 -m turtlestudio build main.lua -o cart.turtlecart --palette palette.txt
 ```
 
-Con paleta (archivo de texto, una linea `#RRGGBB` o `#RGB` por color; lineas que empiezan por `#` y no son hex se ignoran como comentario):
+With a different logical entry name from the file name:
 
 ```bash
-PYTHONPATH=src python3 -m turtlestudio build main.lua -o cart.turtlecart --palette paleta.txt
+PYTHONPATH=src python3 -m turtlestudio build src/game.lua --entry main.lua -o cart.turtlecart
 ```
 
-Nombre logico distinto del archivo (ENTRY / `---FILE:...---`):
+> **Warning:** if the Lua source contains the literal string `---END---`, the firmware will truncate the script. The builder emits a `warnings.warn` in that case.
+
+### Initialize a project
 
 ```bash
-PYTHONPATH=src python3 -m turtlestudio build src/juego.lua --entry main.lua -o cart.turtlecart
+PYTHONPATH=src python3 -m turtlestudio project init path/to/project [--name X] [--force]
 ```
 
-Ejemplo minimo en `examples/minimal/`.
+### Help
 
-**Nota:** si el Lua contiene la cadena literal `---END---`, el firmware podria truncar el script; el builder emite un `warnings.warn`.
+```bash
+PYTHONPATH=src python3 -m turtlestudio --help
+```
 
-## Play (playtest en vivo, opcional)
+---
 
-El tab **Play** de la ventana (`turtlestudio gui`) corre la logica real de un proyecto
--- scripts de actor/ENTRY en Lua 5.4, colision, camara -- directamente sobre el estado
-en memoria del proyecto, sin build/flash/SD ni emulador. No requiere instalarlo para
-usar el resto de TurtleStudio; si `lupa` no esta disponible el tab se deshabilita
-mostrando por que, en vez de romper el arranque de la app.
+## Play tab (live playtest, optional)
 
-El mismo build de `lupa` de abajo tambien habilita, en `build` (CLI o GUI), exportar los
-scripts de actor/escena de `scripts/*.lua` como bytecode Lua 5.4 precompilado en vez de
-texto plano (ver `lua_bytecode.py`) -- mas chico y no legible a simple vista, sin cambios
-en el firmware (`luaL_loadbuffer` ya acepta texto o binario indistintamente). Si `lupa`
-no esta disponible, `build` sigue funcionando y exporta los scripts como texto, igual que
-siempre.
+The **Play** tab in the GUI runs the full project logic — actor/ENTRY Lua scripts, collision, camera — directly in memory, without building or flashing a board. It requires `lupa` compiled against the vendored Lua 5.4.6 sources (see below). If `lupa` is not available the tab is disabled with an explanation; the rest of TurtleStudio still works normally.
 
-**`pip install lupa` a secas NO sirve**: el wheel de PyPI trae Lua 5.5, una version
-distinta a la vendorizada en `firmware/libraries/lua54` (5.4.6) contra la que estan
-escritos los scripts de actor. Hay que compilar `lupa` a mano contra esos mismos
-fuentes de Lua 5.4.6, para tener paridad exacta con lo que corre en el ESP32-S3:
+### Installing lupa (Lua 5.4.6, 32-bit, matching the firmware)
+
+`pip install lupa` alone **will not work** — the PyPI wheel ships Lua 5.5, which is incompatible with the actor scripts written for 5.4. You must build `lupa` from source against the vendored Lua 5.4.6:
 
 ```bash
 cd tools/turtlestudio
 source .venv/bin/activate
 
-# 1. Compilar el Lua 5.4.6 vendorizado como libreria estatica de host.
-#    -DESP_PLATFORM es OBLIGATORIO: activa LUA_32BITS en luaconf.h (enteros/floats de
-#    32 bits), igual que el firmware real (ver firmware/libraries/lua54/src/luaconf.h).
-#    Sin este flag el host compila Lua de 64 bits: Play sigue "funcionando" (corre scripts
-#    localmente sin tocar el firmware), pero el bytecode que exporta `build` para
-#    scripts/*.lua (ver lua_bytecode.py) NO pasa el checkHeader del firmware (lundump.c) y
-#    el script simplemente no carga en el dispositivo -- turtlestudio detecta este
-#    desajuste y cae de vuelta a exportar texto plano con un aviso, pero es mas facil
-#    evitarlo de entrada con el flag correcto.
+# Step 1: compile the vendored Lua 5.4.6 as a static host library.
+# -DESP_PLATFORM is REQUIRED: it enables LUA_32BITS in luaconf.h (32-bit
+# integers and floats), matching what runs on the ESP32-S3.
 LUA_SRC=../../firmware/libraries/lua54/src
 mkdir -p /tmp/liblua54 && cd /tmp/liblua54
 gcc -std=c99 -O1 -DESP_PLATFORM -c "$LUA_SRC"/*.c
 ar rcs liblua54.a *.o
 cd -
 
-# 2. Bajar el sdist de lupa (NO el wheel) y compilarlo apuntando a esa libreria.
+# Step 2: download the lupa sdist (not the wheel) and build it against that library.
 pip download --no-binary lupa --no-deps -d /tmp/lupa_src lupa
 cd /tmp/lupa_src && tar xf lupa-*.tar.gz && cd lupa-*/
 python3 setup.py build_ext \
@@ -125,8 +112,7 @@ python3 setup.py build_ext \
   install
 ```
 
-Verificacion rapida (debe decir `Lua 5.4`, no `5.5`, y `LUA_32BITS: True` -- si dice
-`False` faltó `-DESP_PLATFORM` en el paso 1 y hay que recompilar `liblua54.a`):
+Verify the result (must say `Lua 5.4` and `LUA_32BITS: True`):
 
 ```bash
 python3 -c "
@@ -137,29 +123,37 @@ print('LUA_32BITS:', rt.eval('math.maxinteger') == 2**31 - 1)
 "
 ```
 
-Luego `pip install -e ".[play]"` queda como referencia de la dependencia opcional en
-`pyproject.toml`, pero el paso que realmente importa es el build de arriba -- un
-`pip install -e ".[play]"` normal, sin este build previo, instalaria el wheel 5.5 y
-seria incorrecto para este proyecto.
+If `LUA_32BITS: False`, `-DESP_PLATFORM` was missing from Step 1 — recompile `liblua54.a`.
 
-## Proximos pasos (roadmap interno)
+When `lupa` is correctly installed, the **Play** tab is enabled, and the CLI `build` command can also export actor scripts as pre-compiled Lua 5.4 bytecode (smaller, not human-readable) instead of plain text. The firmware accepts both transparently via `luaL_loadbuffer`.
 
-1. ~~CLI `build`~~
-2. Helpers coordenadas escena → framebuffer (`yfb = H - 1 - sy`) al generar o plantillar Lua.
-3. Varios archivos embebidos en un solo cartucho.
-4. Plantillas / assets (tortuga demo) como fuentes separadas.
+---
 
-## Uso (desarrollo, sin instalar)
+## Verification (no board needed)
 
 ```bash
 cd tools/turtlestudio
-PYTHONPATH=src python3 -m turtlestudio --help
+
+# Sanity-check an exported SD package (build/ folder):
+PYTHONPATH=src python3 src/turtlestudio/verify_package.py /path/to/build
+
+# Build + verify a full project (defaults to exampleprojects/demo1):
+PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py [/path/to/project]
+
+# Tile collision unit tests:
+PYTHONPATH=src python3 src/turtlestudio/test_tile_collision.py
 ```
 
-## Instalacion editable (opcional)
+---
 
-```bash
-cd tools/turtlestudio
-pip install -e .
-turtlestudio --help
-```
+## Conventions
+
+| Convention | Detail |
+|---|---|
+| Scene space | 164×124, origin bottom-left, Y up (see `spec/scene-v0.md`) |
+| Palette index 31 | Always transparent — not selectable as a brush or fill color |
+| Cell size | 4 px default (`cell_px` in sprite/tile definitions) |
+| Object/asset IDs | Leading letter, then letters/digits/`_`/`-`, max 64 chars |
+| ENTRY script | `scripts/global.lua` — embedded in `main.turtlecart`, also exported to `scripts/` |
+| Actor scripts | `scripts/<stem>.lua` — referenced by `objects/<id>.json` via `"script"` field |
+| Binary assets | `backgrounds/*.tbg`, `sprites/*.tsp`, `tiles/*.tts`, `fonts/*.tfn` |

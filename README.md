@@ -1,84 +1,230 @@
-# FantasyConsole (ESP32-S3)
+# FantasyConsole — ESP32-S3
 
-Primer objetivo del proyecto:
-- Definir un formato minimo de cartucho `.turtlecart`.
-- Leer ese cartucho desde microSD en ESP32-S3.
-- Confirmar por Serial que se leyo el script del cartucho (ENTRY, p. ej. `scripts/global.lua` en el proyecto).
+A fantasy game console running on the **ESP32-S3**. Games are distributed as `.turtlecart` cartridge files on a microSD card and run a full **Lua 5.4** VM on-device. Scenes, sprites, backgrounds, tilemaps, and input are all handled by the C++ firmware; game logic lives entirely in Lua scripts.
 
-## Estado actual (MVP v0 + Lua 5.4 + framebuffer)
+---
 
-- Formato: texto plano `.turtlecart` con secciones.
-- Firmware: sketch Arduino que:
-  - monta SD por SPI (con reintentos),
-  - abre `/main.turtlecart` en la SD (si no esta, `/demo.turtlecart`),
-  - extrae el script indicado en `ENTRY`,
-  - **ejecuta Lua 5.4** con `print` a Serial,
-  - API de consola: **`cls(i)`**, **`pix(x,y,i)`** (raster), **`spix(sx,sy,i)`** (escena, ver `spec/scene-v0.md`), **`flip()`**, constantes **`W`**, **`H`**, **`COLORS`** (164x124, 32 indices de color).
-  - **Entrada**: **`btn(i)`** / **`btnp(i)`** — 8 pulsadores (4 direccion + 4 accion); pines en `turtle_input.h` (`spec/input-v0.md`).
-- **Paleta por juego**: bloque opcional **`PALETTE:`** en el `.turtlecart` con lineas **`#RRGGBB`** (lista larga permitida; el firmware usa las primeras 32 entradas validas). Sin bloque, paleta Genesis-like por defecto.
-- **Sin tope de tamano de cartucho en spec**: lo limitan SD y el desarrollador; el runtime actual solo interpreta el formato v0.
+## Features
 
-### Pantalla ILI9488 (opcional)
+| Feature | Detail |
+|---|---|
+| Resolution | **164 × 124** canonical pixels |
+| Color palette | **32 colors** (index 31 = transparent), per-game palette via `PALETTE:` block |
+| Display | ILI9488 driven by LovyanGFX, scaled to 320 × 240 |
+| Scripting | Lua 5.4.6 — two independent VMs (ENTRY + per-actor) |
+| Input | 8 buttons: 4 directional + 4 action (`btn` / `btnp`) |
+| Assets | Sprites `.tsp`, backgrounds `.tbg`, tilemaps `.tts`, fonts `.tfn` |
+| Physics | Per-axis tile collision with AABB, one-way platforms |
+| Camera | Follow or fixed, world up to 2× the viewport per axis |
+| Scene layers | Up to 3 scrolling background layers + tile layer |
+| Authoring tool | **TurtleStudio** (Python + Dear PyGui) — GUI editor and CLI builder |
 
-1. Instala la libreria **LovyanGFX** en Arduino IDE.
-2. En `firmware/TurtleReader/turtle_gpu.h` deja **`TURTLE_USE_DISPLAY 1`** y ajusta pines `TURTLE_DISP_PIN_*`.
-3. `flip()` escala de 164x124 al panel (240x320 fisico, normalmente rotado a 320x240 para juego).
+---
 
-Sin pantalla, `flip()` no hace falta para probar logica; el buffer igual se rellena en RAM.
+## Hardware requirements
 
-## Dependencia: libreria Lua54 (en este repo)
+- **Board:** ESP32-S3 (variant S3N16R8 recommended)
+- **PSRAM:** Enable `OPI PSRAM` in Arduino IDE (required for cartridges with large backgrounds)
+- **Display:** ILI9488 SPI panel (optional — logic works without it, serial output still runs)
+- **Storage:** microSD reader wired via SPI, powered at **3.3 V**
+- **Input:** 8 push-buttons (pin mapping in `firmware/TurtleReader/turtle_input.h`)
 
-1. Copia la carpeta `firmware/libraries/lua54` dentro del directorio de librerias de Arduino, por ejemplo:
-   - `~/Arduino/libraries/lua54`
-2. Reinicia Arduino IDE si hace falta. Deberia aparecer como libreria **Lua54**.
+---
 
-## Estructura
+## Firmware installation
 
-- `tools/turtlestudio/`: **TurtleStudio** (Python) — CLI y utilidades para armar `.turtlecart`.
-- `spec/scene-v0.md`: escena canonica (164×124) y sistema de coordenadas.
-- `spec/turtlecart-v0.md`: especificacion inicial.
-- `spec/lua/`: scripts Lua — `entry-v0.md` (ENTRY / `global.lua`), `object-script-v0.md` (`_update`, `move`, `btn`).
-- `cart/demo.turtlecart`: cartucho de prueba (fallback en firmware si falta `main.turtlecart` en la SD).
-- `firmware/libraries/lua54/`: Lua 5.4.6 empotrado (fuentes oficiales + parches minimos para ESP32).
-- `firmware/TurtleReader/`: firmware principal (`TurtleReader.ino` + `turtle_gpu.*`).
+### 1. Install the Lua54 Arduino library
 
-## Prueba rapida
+Copy `firmware/libraries/lua54` into your Arduino libraries folder:
 
-1. Instala la libreria **Lua54** como arriba.
-2. Copia a la **raiz** de la microSD la **carpeta de exportacion** de TurtleStudio (p. ej. todo `build/`: `main.turtlecart`, `backgrounds/`, `sprites/`). El bundle del cartucho es delgado; los fondos y sprites pintados van en JSON aparte con las mismas rutas que en el proyecto. Si no tienes export, puedes copiar `cart/demo.turtlecart` como **`demo.turtlecart`** (todo embebido, pequeno) y el firmware lo cargara como respaldo.
-3. Cartuchos grandes (fondos `indexed_pixels` embebidos, ~1 MB): en Arduino IDE activa **PSRAM** en la placa ESP32-S3 (`OPI PSRAM` / `Enabled`). Sin PSRAM el firmware puede reiniciarse al leer `main.turtlecart` y la pantalla queda negra; el monitor serial se corta justo despues de `microSD montada`.
-4. Ajusta pines SPI/SD en el sketch segun tu cableado (alimenta el lector SD a **3V3**).
-5. Flashea el sketch en tu ESP32-S3 (incluye `turtle_cart.cpp` junto al sketch).
-6. Abre monitor serial a `115200`.
+```
+~/Arduino/libraries/lua54
+```
 
-Comprueba el paquete en PC (sin placa):
+Restart Arduino IDE — it should appear as **Lua54**.
+
+### 2. Install LovyanGFX
+
+Install **LovyanGFX** from Arduino IDE's Library Manager (required for the display driver).
+
+### 3. Configure display pins
+
+In `firmware/TurtleReader/turtle_gpu.h`:
+
+```cpp
+#define TURTLE_USE_DISPLAY 1
+// adjust TURTLE_DISP_PIN_* to match your wiring
+```
+
+### 4. Flash the firmware
+
+Open `firmware/TurtleReader/TurtleReader.ino` in Arduino IDE. Make sure all sibling `.cpp`/`.h` files are in the same folder:
+
+```
+TurtleReader.ino
+turtle_cart.cpp / .h
+turtle_gpu.cpp / .h
+turtle_input.cpp / .h
+turtle_asset_bin.cpp / .h
+turtle_tileset.cpp / .h
+turtle_font.cpp / .h
+turtle_scene.cpp / .h
+turtle_actor_lua.cpp / .h
+turtle_tile_collision.cpp / .h
+```
+
+Board settings:
+- Board: **ESP32S3 Dev Module**
+- PSRAM: **OPI PSRAM → Enabled**
+- Serial: **115200 baud**
+
+Flash and open the serial monitor.
+
+---
+
+## TurtleStudio — authoring tool
+
+TurtleStudio is a Python GUI + CLI for creating cartridges. It exports a ready-to-copy `build/` folder for the microSD.
+
+### Requirements
+
+- Python **3.10+**
+
+### Install
 
 ```bash
 cd tools/turtlestudio
-PYTHONPATH=src python3 src/turtlestudio/verify_package.py /ruta/a/build
-PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /ruta/al/proyecto
+python3 -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
+pip install -U pip setuptools
+pip install -e .
 ```
 
-Copia al sketch Arduino los archivos de `firmware/TurtleReader/` (incluye `turtle_cart.cpp`, `turtle_input.cpp`, `turtle_asset_bin.cpp`, `turtle_tileset.cpp`, `turtle_scene.cpp`, `turtle_gpu.cpp`).
+### Launch the GUI
 
-Tras cargar el cartucho, el firmware puede animar sprites en `loop()` (fondo + tiles en capa estatica; solo se redibujan sprites). En TurtleStudio: pestana **Tiles** → `target_fps` / `default_anim_fps` (se exportan en el bundle).
+```bash
+python -m turtlestudio gui
+# or simply:
+turtlestudio gui
+```
 
-Con **paquete SD** (carpeta `build/` copiada entera), el monitor serial deberia mostrar algo como:
-- `SD: leyendo /main.turtlecart` (~5–50 KB, no ~1 MB)
-- `Bundle embebido: … bytes`
-- `turtle_scene: bin SD /backgrounds/cielo.tbg 164x124 mode 2 (... bytes)`
-- `turtle_scene: fondo "cielo" indexed 164x124`
-- `turtle_tileset: 10 tiles 16x16 (... bytes)` y `turtle_scene: N celdas tile pintadas`
-- `turtle_scene: asset SD /objects/bloque.json` (por objeto)
-- `turtle_scene: sprite "bloque_rojo" desde SD` o `asset SD /sprites/….json`
-- `Escena inicial (C++ desde bundle) aplicada tras Lua.`
+The GUI provides:
+- **Scene editor** — place sprites, tiles, and backgrounds on the 164 × 124 canvas
+- **Sprite / tile painter** — draw with the 32-color palette, cell size 4 px default
+- **Lua editor** — write the ENTRY script (`scripts/global.lua`) directly in the tool
+- **Export** — writes `build/` with `main.turtlecart`, binary assets, and all scripts
 
-Si falta un sidecar veras `no pudo cargar asset SD /backgrounds/...`.
+### CLI build (no GUI needed)
 
-Si todo sale bien, veras la carga del cartucho y una linea en **Salida Lua** con el `print` real desde la VM, por ejemplo:
-- `hola mundo desde turtlecart v0`
-- `Lua termino sin error`
+```bash
+cd tools/turtlestudio
+PYTHONPATH=src python3 -m turtlestudio build path/to/main.lua -o out.turtlecart
+PYTHONPATH=src python3 -m turtlestudio build main.lua -o cart.turtlecart --palette palette.txt
+```
 
-## Specs ideales para mi consola
-- resolución: 164×124
-- paleta: 32 colores
+---
+
+## Running a cartridge
+
+### Copy to microSD
+
+Copy the entire exported `build/` folder to the **root** of the microSD:
+
+```
+/main.turtlecart
+/backgrounds/sky.tbg
+/sprites/player.tsp
+/tiles/terrain.tts
+/scripts/actor.lua
+...
+```
+
+If no `main.turtlecart` is found, the firmware falls back to `/demo.turtlecart`.
+
+### Serial output (expected on success)
+
+```
+SD: reading /main.turtlecart
+Bundle: N bytes
+turtle_scene: bin SD /backgrounds/sky.tbg 164x124 mode 2
+turtle_scene: sprite "player" loaded from SD
+Initial scene applied.
+-- Lua output --
+hello from turtlecart
+Lua finished OK
+```
+
+If a sidecar asset is missing you will see `could not load asset SD /backgrounds/...`.
+
+### Verify a package on PC (no board needed)
+
+```bash
+cd tools/turtlestudio
+PYTHONPATH=src python3 src/turtlestudio/verify_package.py /path/to/build
+PYTHONPATH=src python3 src/turtlestudio/test_asset_bin.py /path/to/project
+```
+
+---
+
+## Lua scripting API
+
+### ENTRY script (`scripts/global.lua`)
+
+Runs once at boot in its own VM.
+
+| Function | Description |
+|---|---|
+| `cls(i)` | Clear framebuffer to palette index `i` |
+| `pix(x, y, i)` | Draw pixel at raw framebuffer coords |
+| `spix(sx, sy, i)` | Draw pixel at scene coords (origin bottom-left, Y up) |
+| `flip()` | Push framebuffer to display |
+| `btn(i)` / `btnp(i)` | Read button state / pressed-this-frame |
+| `text(sx, sy, str, font_id [, color])` | Draw text at scene coords |
+| `text_width(str, font_id)` | Measure text width in pixels |
+| `W`, `H`, `COLORS` | Constants: 164, 124, 32 |
+
+### Actor scripts (`scripts/<name>.lua`)
+
+One Lua VM per actor, ticked every frame via `_update(dt)` (dt in seconds).
+
+| Function | Description |
+|---|---|
+| `btn(i)` / `btnp(i)` / `axis(i)` | Input |
+| `posx()` / `posy()` | Actor position in scene coords |
+| `move(dx, dy)` | Move with tile collision, returns actual pixels moved |
+| `on_ground()` | True if grounded after last `move` |
+| `set_anim(name)` / `play_anim(name)` | Set/play sprite animation |
+| `flip_h(bool)` | Mirror sprite horizontally |
+| `text(str, font_id [, dx, dy, color])` | Persistent text overlay on this actor |
+
+---
+
+## Project structure
+
+```
+firmware/
+  TurtleReader/        # Main Arduino sketch + all C++ modules
+  libraries/lua54/     # Vendored Lua 5.4.6 (ESP32-patched)
+tools/
+  turtlestudio/        # Python authoring tool (GUI + CLI)
+spec/
+  turtlecart-v0.md     # Cartridge format spec
+  scene-v0.md          # Scene coordinate system and layers
+  asset-bin-v0.md      # Binary asset formats (.tbg, .tsp, .tts, .tfn)
+  lua/                 # Lua VM API specs
+cart/
+  demo.turtlecart      # Minimal demo cartridge (firmware fallback)
+```
+
+---
+
+## Console specs
+
+| Spec | Value |
+|---|---|
+| Resolution | 164 × 124 |
+| Palette | 32 colors per game |
+| Max world size | 328 × 248 (2× viewport) |
+| Lua VM | 5.4.6 (32-bit integers and floats) |
+| Cartridge format | `.turtlecart` (plain-text container) |
+| Asset formats | `.tbg` `.tsp` `.tts` `.tfn` |
