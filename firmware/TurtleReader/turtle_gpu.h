@@ -141,16 +141,25 @@ void turtle_gpu_fill_rect_absolute(int x, int y, int w, int h, uint8_t color_ind
 
 /**
  * spec/gui-layer-v0.md: escritura sin restriccion de playfield. Escribe `s_fb` en (x, y) si
- * cae en el framebuffer, sin importar si es zona HUD o playfield. Ademas actualiza
- * `s_static_fb` (si hay snapshot) para que restore_static_dirty no revierta el nuevo estado
- * en camara fija, y marca la celda como panel-dirty para el proximo flush. Pensado para
- * capas GUI apilables (menu de pausa, dialogos) que deben poder cubrir la accion del juego.
- * NO USAR desde bindings de HUD (`hud_pix`/`hud_text`/etc) — esos delegan en `_absolute`
- * justamente para proteger el playfield de escrituras accidentales.
+ * cae en el framebuffer, sin importar si es zona HUD o playfield. Marca la celda como
+ * panel-dirty para el proximo flush. NO escribe a `s_static_fb`: las capas GUI se re-pintan
+ * cada frame (paint_all al final del tick), asi que hornear su contenido en la capa estatica
+ * causaria acumulacion de pixeles cuando el contenido dinamico cambia (p. ej. labels con
+ * texto variable dejaban un rastro de tinta del valor anterior). NO USAR desde bindings de
+ * HUD (`hud_pix`/`hud_text`/etc) — esos delegan en `_absolute` justamente para proteger el
+ * playfield de escrituras accidentales.
  */
 void turtle_gpu_pixel_raw(int x, int y, uint8_t color_index);
 /** Relleno solido sin restriccion de playfield. Ver turtle_gpu_pixel_raw. */
 void turtle_gpu_fill_rect_raw(int x, int y, int w, int h, uint8_t color_index);
+/**
+ * Copia una region rectangular (coords framebuffer, Y-abajo) desde `s_static_fb` a `s_fb`.
+ * No-op si no hay snapshot. Usado por el pintado de capas GUI (paint_one_layer en
+ * turtle_gui_layer.cpp) para borrar el rastro de labels dinamicos antes de repintar cada
+ * frame: sin este restore, un label sobre `transparent_bg` acumula pixeles del texto previo
+ * porque nada limpia la region entre frames.
+ */
+void turtle_gpu_restore_static_rect_fb(int x, int y, int w, int h);
 
 /** Marca region sucia (coords escena: esquina inf-izq del blit, Y arriba). */
 void turtle_gpu_dirty_reset(void);

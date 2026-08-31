@@ -5278,6 +5278,19 @@ int turtle_scene_measure_text(const char* bundle_json, size_t bundle_json_len,
   return turtle_font_measure(font, str);
 }
 
+int turtle_scene_font_glyph_px(const char* bundle_json, size_t bundle_json_len,
+                               const char* font_id) {
+  if (!bundle_json || bundle_json_len == 0 || !font_id) {
+    return 0;
+  }
+  const TurtleFont* font =
+      font_cache_get(bundle_json, bundle_json + bundle_json_len, font_id);
+  if (!font) {
+    return 0;
+  }
+  return static_cast<int>(font->glyph_px);
+}
+
 int turtle_scene_draw_text_absolute(const char* bundle_json, size_t bundle_json_len,
                                     const char* font_id, int xfb, int yfb_top, const char* str,
                                     int color_index) {

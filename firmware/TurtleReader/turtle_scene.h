@@ -142,6 +142,12 @@ int turtle_scene_draw_text(const char* bundle_json, size_t bundle_json_len, cons
 int turtle_scene_measure_text(const char* bundle_json, size_t bundle_json_len,
                               const char* font_id, const char* str);
 
+/** glyph_px (alto/ancho canonico de cada glifo) de la fuente `font_id`. 0 si no se pudo
+ *  resolver. Usado por el pintado de capas GUI para calcular el rect ocupado por un label
+ *  antes de repintarlo (necesita w=measure(str), h=glyph_px). */
+int turtle_scene_font_glyph_px(const char* bundle_json, size_t bundle_json_len,
+                               const char* font_id);
+
 /**
  * spec/hud-border-v0.md: variante para bindings `hud_text`. `(xfb, yfb_top)` = esquina
  * superior-izquierda del primer glifo en coord de framebuffer (Y-abajo). Pixeles que caen

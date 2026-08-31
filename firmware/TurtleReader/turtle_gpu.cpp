@@ -630,10 +630,9 @@ void turtle_gpu_pixel_raw(int x, int y, uint8_t color_index) {
     return;
   }
   const uint8_t ci = clamp_color_index(color_index);
+  // A diferencia de pixel_absolute, NO se toca s_static_fb: contenido dinamico de capas GUI
+  // se repinta cada frame, si lo horneamos aca los labels con texto variable acumulan tinta.
   s_fb[y * kW + x] = ci;
-  if (s_has_static) {
-    s_static_fb[y * kW + x] = ci;
-  }
   mark_panel_dirty_pixel_fb(x, y);
 }
 
@@ -653,13 +652,32 @@ void turtle_gpu_fill_rect_raw(int x, int y, int w, int h, uint8_t color_index) {
   if (x0 > x1 || y0 > y1) {
     return;
   }
+  // Ver comentario en turtle_gpu_pixel_raw: no se escribe en s_static_fb.
   for (int yy = y0; yy <= y1; ++yy) {
     uint8_t* row_fb = &s_fb[yy * kW + x0];
     memset(row_fb, ci, static_cast<size_t>(x1 - x0 + 1));
-    if (s_has_static) {
-      uint8_t* row_stat = &s_static_fb[yy * kW + x0];
-      memset(row_stat, ci, static_cast<size_t>(x1 - x0 + 1));
-    }
+  }
+  dirty_mark_fb_clamped(x0, y0, x1, y1);
+}
+
+void turtle_gpu_restore_static_rect_fb(int x, int y, int w, int h) {
+  if (!s_has_static || w <= 0 || h <= 0) {
+    return;
+  }
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w - 1;
+  int y1 = y + h - 1;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 >= kW) x1 = kW - 1;
+  if (y1 >= kH) y1 = kH - 1;
+  if (x0 > x1 || y0 > y1) {
+    return;
+  }
+  const size_t n = static_cast<size_t>(x1 - x0 + 1);
+  for (int yy = y0; yy <= y1; ++yy) {
+    memcpy(&s_fb[yy * kW + x0], &s_static_fb[yy * kW + x0], n);
   }
   dirty_mark_fb_clamped(x0, y0, x1, y1);
 }

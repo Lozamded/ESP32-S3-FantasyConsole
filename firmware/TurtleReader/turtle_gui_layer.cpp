@@ -82,6 +82,16 @@ struct GuiLabel {
   char font_id[kGuiLayerFontIdCap];
   char text[kGuiLayerTextCap];
   int8_t color_index;  // -1 = sin tinte, 0..30 = tinte plano
+  // spec/gui-layer-v0.md: rastro del rect que ocupo el texto en el frame previo (coords fb,
+  // Y-abajo). paint_one_layer lo restaura desde s_static_fb antes de repintar el nuevo texto,
+  // para evitar acumulacion de tinta cuando el texto cambia sobre transparent_bg (un label
+  // "x0" -> "x1" dejaba los pixeles del "0" pegados detras del "1"). has_prev_blit false =
+  // primer paint del label (no hay nada que borrar todavia).
+  int16_t prev_blit_x;
+  int16_t prev_blit_y;
+  int16_t prev_blit_w;
+  int16_t prev_blit_h;
+  bool has_prev_blit;
 };
 
 struct GuiProgressBar {
@@ -318,6 +328,7 @@ void parse_labels_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
     lbl.font_id[0] = '\0';
     lbl.text[0] = '\0';
     lbl.color_index = -1;
+    lbl.has_prev_blit = false;
     int v = 0;
     json_extract_string_for_key(p, oe, "id", lbl.id, sizeof lbl.id);
     lbl.x = json_extract_int_for_key(p, oe, "x", &v) ? static_cast<int16_t>(v) : 0;
@@ -880,7 +891,7 @@ void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
   }
 }
 
-void paint_one_layer(const GuiLayer* ly) {
+void paint_one_layer(GuiLayer* ly) {
   // Fondo (rectangulo entero de la capa) primero.
   if (!ly->transparent_bg) {
     turtle_gpu_fill_rect_raw(ly->x, ly->y, ly->w, ly->h, ly->bg_color_index);
@@ -913,15 +924,67 @@ void paint_one_layer(const GuiLayer* ly) {
     paint_sprite_icon(ly, &ly->sprites[i]);
   }
   // Etiquetas de texto. Usan turtle_scene_draw_text_absolute-like pero sin
-  // proteccion de playfield -- ver turtle_font_draw_fb_raw.
+  // proteccion de playfield -- ver turtle_font_draw_fb_raw. Antes de dibujar cada label
+  // restauramos su rect previo (union con el nuevo) desde s_static_fb: sin esto, un label
+  // sobre transparent_bg cuya cadena cambia (ej. contador de gears "x0"->"x1"->...) acumula
+  // los pixeles de todas las cadenas anteriores porque nada limpia la region entre frames.
   for (int i = 0; i < ly->label_count; ++i) {
-    const GuiLabel& lbl = ly->labels[i];
-    if (!lbl.text[0]) continue;
-    // Resolver la fuente contra el bundle actual (mismo cache que scene text).
+    GuiLabel& lbl = ly->labels[i];
     if (!s_bundle_json || s_bundle_json_len == 0) continue;
-    const int tint = (lbl.color_index >= 0) ? static_cast<int>(lbl.color_index) : -1;
-    turtle_scene_draw_text_raw(s_bundle_json, s_bundle_json_len, lbl.font_id, ly->x + lbl.x,
-                               ly->y + lbl.y, lbl.text, tint);
+    if (!lbl.font_id[0]) continue;
+    const int glyph_px =
+        turtle_scene_font_glyph_px(s_bundle_json, s_bundle_json_len, lbl.font_id);
+    if (glyph_px <= 0) continue;
+    const int text_w = lbl.text[0]
+                           ? turtle_scene_measure_text(s_bundle_json, s_bundle_json_len,
+                                                       lbl.font_id, lbl.text)
+                           : 0;
+    const int cur_x = ly->x + lbl.x;
+    const int cur_y = ly->y + lbl.y;
+    const int cur_w = text_w;
+    const int cur_h = text_w > 0 ? glyph_px : 0;
+    // Union del rect previo (si hay) con el actual: cubre tanto el caso de cadena mas corta
+    // (rect previo mayor -> hay que borrar el sobrante) como el de cadena mas larga (rect
+    // actual mayor -> el sobrante nunca vio un restore).
+    int ux0, uy0, ux1, uy1;
+    bool have_union = false;
+    if (lbl.has_prev_blit && lbl.prev_blit_w > 0 && lbl.prev_blit_h > 0) {
+      ux0 = lbl.prev_blit_x;
+      uy0 = lbl.prev_blit_y;
+      ux1 = lbl.prev_blit_x + lbl.prev_blit_w - 1;
+      uy1 = lbl.prev_blit_y + lbl.prev_blit_h - 1;
+      have_union = true;
+    }
+    if (cur_w > 0 && cur_h > 0) {
+      if (!have_union) {
+        ux0 = cur_x;
+        uy0 = cur_y;
+        ux1 = cur_x + cur_w - 1;
+        uy1 = cur_y + cur_h - 1;
+        have_union = true;
+      } else {
+        if (cur_x < ux0) ux0 = cur_x;
+        if (cur_y < uy0) uy0 = cur_y;
+        if (cur_x + cur_w - 1 > ux1) ux1 = cur_x + cur_w - 1;
+        if (cur_y + cur_h - 1 > uy1) uy1 = cur_y + cur_h - 1;
+      }
+    }
+    if (have_union) {
+      turtle_gpu_restore_static_rect_fb(ux0, uy0, ux1 - ux0 + 1, uy1 - uy0 + 1);
+    }
+    if (cur_w > 0 && cur_h > 0) {
+      const int tint = (lbl.color_index >= 0) ? static_cast<int>(lbl.color_index) : -1;
+      turtle_scene_draw_text_raw(s_bundle_json, s_bundle_json_len, lbl.font_id, cur_x, cur_y,
+                                 lbl.text, tint);
+      lbl.prev_blit_x = static_cast<int16_t>(cur_x);
+      lbl.prev_blit_y = static_cast<int16_t>(cur_y);
+      lbl.prev_blit_w = static_cast<int16_t>(cur_w);
+      lbl.prev_blit_h = static_cast<int16_t>(cur_h);
+      lbl.has_prev_blit = true;
+    } else {
+      // Texto vacio: ya restauramos el rect previo, no dejamos nada por borrar la proxima vez.
+      lbl.has_prev_blit = false;
+    }
   }
 }
 
