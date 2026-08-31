@@ -51,7 +51,7 @@
   ],
   "pip_bars": [
     {
-      "id": "pips1",
+      "id": "shells",
       "x": 2,
       "y": 1,
       "sprite_full_id": "shell",

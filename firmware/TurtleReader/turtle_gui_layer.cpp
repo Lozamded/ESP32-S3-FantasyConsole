@@ -852,7 +852,8 @@ void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
   int maxv = bar->max_value > 0 ? bar->max_value : 1;
   if (val < 0) val = 0;
   if (val > maxv) val = maxv;
-  if (val == 0) return;  // sin pips que pintar
+  // No early return on val==0 yet: necesitamos cargar el sprite para conocer sw/sh y borrar
+  // la region completa antes de pintar -- sin esto los pips eliminados persisten en transparent_bg.
 
   // Rango activo puede reemplazar el sprite full.
   const int frac_pct = (val * 100) / maxv;
@@ -874,7 +875,15 @@ void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
   }
   if (sw <= 0 || sh <= 0) return;
 
+  // Borra el area de todos los pips (max_value) desde la capa estatica antes de repintar.
+  // Sin esto, reducir `value` deja los pips sobrantes visibles en capas transparent_bg.
   const int step = (bar->direction == GuiPipDir::Horizontal ? sw : sh) + bar->gap_px;
+  const int total_w = (bar->direction == GuiPipDir::Horizontal) ? (maxv * step - bar->gap_px) : sw;
+  const int total_h = (bar->direction == GuiPipDir::Vertical)   ? (maxv * step - bar->gap_px) : sh;
+  turtle_gpu_restore_static_rect_fb(ly->x + bar->x, ly->y + bar->y, total_w, total_h);
+
+  if (val == 0) return;  // sin pips que pintar (region ya borrada)
+
   for (int i = 0; i < val; ++i) {
     int px = ly->x + bar->x;
     int py = ly->y + bar->y;

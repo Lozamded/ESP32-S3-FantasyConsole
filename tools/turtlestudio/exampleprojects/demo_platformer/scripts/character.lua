@@ -51,6 +51,7 @@ local jump_hold_time = 0.0
 local jump_start_y = 0
 
 local hp = 3
+state_set("hp", 3)  -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
 
 local function set_facing(dx)
   if dx < 0 and not facing_left then
@@ -118,6 +119,11 @@ function _update(dt)
           was_crouching = false
           cur_anim = "damage"
           play_anim("damage", 1.0, false)
+          hp = hp - 1
+          state_set("hp", hp)
+          if hp <= 0 then
+            goto_scene("Lvl_1")
+          end
           return
         end
       end
