@@ -3,13 +3,13 @@
 A fantasy game console running on the **ESP32-S3**. Games are distributed as `.turtlecart` cartridge files on a microSD card and run a full **Lua 5.4** VM on-device. Scenes, sprites, backgrounds, tilemaps, and input are all handled by the C++ firmware; game logic lives entirely in Lua scripts.
 
 ---
-
 ## Features
+
 
 | Feature | Detail |
 |---|---|
 | Resolution | **164 × 124** canonical pixels |
-| Color palette | **32 colors** (index 31 = transparent), per-game palette via `PALETTE:` block |
+| Color palette | **32 colors** (index 31 = transparent), per scene, palette via `PALETTE:` block |
 | Display | ILI9488 driven by LovyanGFX, scaled to 320 × 240 |
 | Scripting | Lua 5.4.6 — two independent VMs (ENTRY + per-actor) |
 | Input | 8 buttons: 4 directional + 4 action (`btn` / `btnp`) |
@@ -217,14 +217,3 @@ cart/
 ```
 
 ---
-
-## Console specs
-
-| Spec | Value |
-|---|---|
-| Resolution | 164 × 124 |
-| Palette | 32 colors per game |
-| Max world size | 328 × 248 (2× viewport) |
-| Lua VM | 5.4.6 (32-bit integers and floats) |
-| Cartridge format | `.turtlecart` (plain-text container) |
-| Asset formats | `.tbg` `.tsp` `.tts` `.tfn` |
