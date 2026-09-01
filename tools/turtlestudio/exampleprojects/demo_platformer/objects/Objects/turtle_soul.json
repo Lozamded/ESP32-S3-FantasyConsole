@@ -1,0 +1,8 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "turtle_soul",
+  "name": "turtle_soul",
+  "sprite_id": "soul",
+  "script": "turtle_soul"
+}

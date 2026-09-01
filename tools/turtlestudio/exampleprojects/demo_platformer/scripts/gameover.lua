@@ -6,6 +6,7 @@
 -- Indices de boton (spec/input-v0.md): 0-3 = LEFT/RIGHT/UP/DOWN, 4-7 = A/B/C/D.
 function _update(dt)
   if btnp(4) or btnp(5) or btnp(6) or btnp(7) then
+    state_set("lifes", 4) 
     goto_scene("intro")
   end
 end

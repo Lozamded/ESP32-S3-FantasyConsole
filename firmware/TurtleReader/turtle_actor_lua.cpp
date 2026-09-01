@@ -345,6 +345,34 @@ static int l_obj_flip_v(lua_State* L) {
   return 1;
 }
 
+static int l_spawn(lua_State* L) {
+  const char* obj_id = luaL_checkstring(L, 1);
+  const int x = lua_round_to_int(luaL_checknumber(L, 2));
+  const int y = lua_round_to_int(luaL_checknumber(L, 3));
+  const int idx = turtle_scene_spawn_actor(obj_id, x, y);
+  if (idx < 0 || idx >= kMaxActors) {
+    lua_pushinteger(L, 0);
+    return 1;
+  }
+  s_update_ref[idx] = LUA_NOREF;
+  s_script_stem[idx][0] = '\0';
+  char stem[kMaxScriptStem];
+  if (turtle_scene_actor_script_stem(idx, stem, sizeof stem) && stem[0]) {
+    snprintf(s_script_stem[idx], sizeof s_script_stem[idx], "%s", stem);
+    char tag[32];
+    snprintf(tag, sizeof tag, "actor %d spawn", idx);
+    const int ref = load_update_ref(stem, tag);
+    if (ref != LUA_NOREF) {
+      s_update_ref[idx] = ref;
+    }
+  }
+  if (idx + 1 > s_script_actor_count) {
+    s_script_actor_count = idx + 1;
+  }
+  lua_pushinteger(L, idx + 1);
+  return 1;
+}
+
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
   lua_setglobal(L, "print");
@@ -431,6 +459,9 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_obj_flip_v);
   lua_setglobal(L, "obj_flip_v");
+
+  lua_pushcfunction(L, l_spawn);
+  lua_setglobal(L, "spawn");
 
   turtle_state_register_lua(L);
 }
@@ -651,8 +682,9 @@ void turtle_actor_lua_tick_all(uint32_t delta_ms) {
   }
 
   const float dt = static_cast<float>(delta_ms) / 1000.0f;
-
-  for (int i = 0; i < s_script_actor_count; ++i) {
+  // snapshot: actores spawneados dentro de este tick no se tiquean hasta el proximo frame.
+  const int actor_count_snap = s_script_actor_count;
+  for (int i = 0; i < actor_count_snap; ++i) {
     if (s_update_ref[i] == LUA_NOREF) {
       continue;
     }

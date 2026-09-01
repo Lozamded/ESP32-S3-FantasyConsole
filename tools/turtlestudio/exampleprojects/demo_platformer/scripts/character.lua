@@ -25,8 +25,9 @@ local damage_time = 0.35   -- s de knockback: sin input, empuje horizontal fijo
 local iframes_time = 0.6   -- s de invulnerabilidad tras un golpe (evita re-hit)
 local hit_push_speed = 90  -- px/s empuje horizontal opuesto al frente
 local hit_pop_speed = 120  -- px/s pequeno impulso vertical al recibir el golpe
-local defeat_pop_speed = 200 -- px/s impulso vertical al morir (arco arriba/abajo)
-local defeat_time = 1.8      -- s de arco antes de goto_scene
+local defeat_pop_speed = 132 -- px/s impulso vertical al morir (arco arriba/abajo)
+local defeat_time = 2.36     -- s de arco antes de goto_scene
+local kill_y = -40           -- Y en espacio escena: caer mas abajo de esto = derrota instantanea
 
 -- AABB de player.json y eneny_snake.json ("collision": {"x0"..."y1"}),
 -- relativas a posx()/posy() de cada actor. Duplicadas aca porque Lua no ve el
@@ -53,6 +54,7 @@ local jump_hold_time = 0.0
 local jump_start_y = 0
 local defeated = false
 local defeat_timer = 0.0
+local soul_spawned = false
 
 local hp = 3
 state_set("hp", 3)       -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
@@ -80,7 +82,12 @@ function _update(dt)
   -- (sin colision), luego reset de escena. Bloquea todo input y logica normal.
   if defeated then
     defeat_timer = defeat_timer - dt
+    local prev_vy = vy
     vy = vy - gravity * dt
+    if not soul_spawned and prev_vy >= 0 and vy < 0 then
+      soul_spawned = true
+      spawn("turtle_soul", posx(), posy()+12)
+    end
     local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
     set_pos(posx(), posy() + my)
     if defeat_timer <= 0.0 then
@@ -91,6 +98,18 @@ function _update(dt)
         restart_scene()
       end
     end
+    return
+  end
+
+  if posy() < kill_y then
+    defeated = true
+    defeat_timer = defeat_time
+    defeat_pop_speed = 212
+    vy = defeat_pop_speed
+    flip_h(facing_left)
+    flip_v(false)
+    play_anim("defeat", 1.0, false)
+    state_set("defeated", 1)
     return
   end
 
@@ -148,6 +167,7 @@ function _update(dt)
             defeated = true
             play_anim("defeat", 1.0, false)
             defeat_timer = defeat_time
+            defeat_pop_speed = 136
             vy = defeat_pop_speed
             flip_h(facing_left)  -- congela direccion horizontal durante el arco
             flip_v(false)        -- congela vertical; previene flip al cruzar pico (vy==0)

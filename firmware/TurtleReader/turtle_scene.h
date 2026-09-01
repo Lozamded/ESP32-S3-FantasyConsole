@@ -183,3 +183,12 @@ int turtle_scene_draw_text_raw(const char* bundle_json, size_t bundle_json_len,
  */
 bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uint8_t* out_pixels,
                                      size_t out_cap, int* out_w, int* out_h);
+
+/**
+ * Instancia un nuevo actor en runtime a partir del objeto `obj_id` del bundle activo.
+ * Equivale a colocar el objeto en la escena via TurtleStudio, pero ocurre mid-frame.
+ * Devuelve el indice 0-based del nuevo actor, o -1 si falla (objeto no existe, slots llenos).
+ * El script Lua del objeto (si tiene) se carga y tiquea desde el proximo fotograma.
+ * Exponido a Lua como spawn(obj_id, x, y) -> handle (1-based, 0 = fallo).
+ */
+int turtle_scene_spawn_actor(const char* obj_id, int x, int y);

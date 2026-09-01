@@ -4192,7 +4192,9 @@ static bool actor_touching_ground(const SceneActor* a) {
   int x1 = 0;
   int y1 = 0;
   actor_world_aabb(a, &x0, &y0, &x1, &y1);
-  if (y0 <= 0) {
+  if (y0 == 0) {
+    // borde inferior del mundo: actua como suelo invisible cuando no hay tiles.
+    // y0 < 0 significa que el actor ya cayo por debajo del mundo -- no es suelo.
     return true;
   }
   // Sondeo 1px por debajo del AABB real: en reposo el borde inferior del actor
@@ -4528,21 +4530,21 @@ static void draw_all_actors(void) {
 }
 
 static void clamp_actor_pos(SceneActor* a) {
-  const int min_x = -a->col_x0;
-  const int max_x = (s_world_w - 1) - a->col_x1;
-  const int min_y = -a->col_y0;
-  const int max_y = (s_world_h - 1) - a->col_y1;
+  // X: el mas restrictivo entre caja de colision y borde del sprite, para que
+  // ni la colision ni el grafico sobresalgan del borde del mundo.
+  const int col_min_x = -a->col_x0;
+  const int col_max_x = (s_world_w - 1) - a->col_x1;
+  const int spr_min_x = a->origin_x;
+  const int spr_max_x = s_world_w - a->pw + a->origin_x;
+  const int min_x = col_min_x > spr_min_x ? col_min_x : spr_min_x;
+  const int max_x = col_max_x < spr_max_x ? col_max_x : spr_max_x;
   if (a->x < min_x) {
     a->x = min_x;
-  } else if (a->x > max_x) {
+  } else if (max_x >= min_x && a->x > max_x) {
     a->x = max_x;
   }
-  if (a->y < min_y) {
-    a->y = min_y;
-    a->grounded = true;
-  } else if (a->y > max_y) {
-    a->y = max_y;
-  }
+  // Y: sin clamp en ninguno de los dos extremos -- el actor puede caer por
+  // debajo (posy() < 0) o salir por el techo (posy() > world_h) libremente.
 }
 
 static void tick_actors(uint32_t delta_ms) {
@@ -5331,6 +5333,34 @@ int turtle_scene_draw_text_raw(const char* bundle_json, size_t bundle_json_len,
   }
   return turtle_font_draw_fb_raw(font, xfb, yfb_top, str,
                                  static_cast<uint8_t>(kDefaultTransparentIndex), color_index);
+}
+
+int turtle_scene_spawn_actor(const char* obj_id, int x, int y) {
+  if (!s_runtime_json || !s_runtime_json_end || !obj_id || !obj_id[0]) {
+    return -1;
+  }
+  if (s_actor_count >= kMaxPlacements) {
+    Serial.println("turtle_scene: spawn_actor: sin slots libres");
+    return -1;
+  }
+  const int idx = s_actor_count;
+  Placement* pl = &s_placements[idx];
+  snprintf(pl->obj_id, sizeof pl->obj_id, "%s", obj_id);
+  snprintf(pl->instance_id, sizeof pl->instance_id, "%s", obj_id);
+  pl->tags[0] = '\0';
+  pl->x = x;
+  pl->y = y;
+  pl->visible = true;
+  ActorDrawCache* cache = &s_actor_draw_cache[idx];
+  cache->sprite_id[0] = '\0';
+  cache->frame_index = 0;
+  cache->pixels_valid = false;
+  if (!init_actor_from_placement(s_runtime_json, s_runtime_json_end, pl, &s_actors[idx])) {
+    Serial.printf("turtle_scene: spawn_actor: fallo init \"%s\"\n", obj_id);
+    return -1;
+  }
+  s_actor_count = idx + 1;
+  return idx;
 }
 
 bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uint8_t* out_pixels,
