@@ -250,6 +250,7 @@ static int s_runtime_tile_px = 16;
 // spec/lua/object-script-v0.md "Cambio de escena": pedido pendiente de goto_scene(id), aplicado
 // una vez por fotograma fuera del tick de actores -- ver turtle_scene_request_switch/
 // turtle_scene_consume_pending_switch.
+static char s_active_scene_id[64] = "";
 static char s_pending_scene_switch[64] = "";
 static bool s_pending_scene_switch_valid = false;
 // spec/lua/scene-script-v0.md: stem del script de escena declarado en el JSON de la
@@ -4683,6 +4684,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   if (!json || json_len == 0 || !scene_id || !scene_id[0]) {
     return false;
   }
+  snprintf(s_active_scene_id, sizeof s_active_scene_id, "%s", scene_id);
   const char* json_end = json + json_len;
 
   const char* sc_start = nullptr;
@@ -4822,10 +4824,13 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
       paint_cached_world_background(s_runtime_transp);
       paint_bg_image_layers(s_runtime_transp);
     }
-    // spec/hud-border-v0.md: sin snapshot estatico en scroll -- pintar HUD inicial aca. Los
-    // frames siguientes de paint_scene_static_layers preservan HUD (fill_rect_scene clipea
-    // al playfield). Para HUDs dinamicos, el cart define _hud(dt); estatico se sostiene solo.
+    // spec/hud-border-v0.md: snapshot estatico tambien en scroll para que s_static_fb[HUD]
+    // quede inicializado con el color de fondo del HUD. La zona de playfield del snapshot
+    // queda obsoleta al scrollear (paint_scene_static_layers repinta cada frame y nunca
+    // llama restore_static_dirty), pero restore_static_rect_fb de etiquetas y pip bars solo
+    // accede al area HUD -- asi la copia es correcta donde importa.
     turtle_entry_lua_call_hud_init();
+    turtle_gpu_snapshot_static();
   } else {
     if (!draw_background_for_scene(json, json_end, sc_start, sc_end, s_runtime_transp)) {
       Serial.println("turtle_scene: aviso: fondo asset no aplicado; solo background_index");
@@ -4927,6 +4932,12 @@ void turtle_scene_request_switch(const char* scene_id) {
   }
   snprintf(s_pending_scene_switch, sizeof s_pending_scene_switch, "%s", scene_id);
   s_pending_scene_switch_valid = true;
+}
+
+void turtle_scene_restart(void) {
+  if (s_active_scene_id[0]) {
+    turtle_scene_request_switch(s_active_scene_id);
+  }
 }
 
 bool turtle_scene_consume_pending_switch(char* out, size_t out_cap) {

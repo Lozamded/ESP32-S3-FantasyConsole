@@ -25,6 +25,8 @@ local damage_time = 0.35   -- s de knockback: sin input, empuje horizontal fijo
 local iframes_time = 0.6   -- s de invulnerabilidad tras un golpe (evita re-hit)
 local hit_push_speed = 90  -- px/s empuje horizontal opuesto al frente
 local hit_pop_speed = 120  -- px/s pequeno impulso vertical al recibir el golpe
+local defeat_pop_speed = 200 -- px/s impulso vertical al morir (arco arriba/abajo)
+local defeat_time = 1.8      -- s de arco antes de goto_scene
 
 -- AABB de player.json y eneny_snake.json ("collision": {"x0"..."y1"}),
 -- relativas a posx()/posy() de cada actor. Duplicadas aca porque Lua no ve el
@@ -49,9 +51,12 @@ local damage_vx = 0.0
 local jumping = false  -- true durante la ventana de decision del salto binario
 local jump_hold_time = 0.0
 local jump_start_y = 0
+local defeated = false
+local defeat_timer = 0.0
 
 local hp = 3
-state_set("hp", 3)  -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
+state_set("hp", 3)       -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
+state_set("defeated", 0) -- idem: gear.lua lo lee para no colectar durante el arco de derrota
 
 local function set_facing(dx)
   if dx < 0 and not facing_left then
@@ -71,6 +76,24 @@ local function set_anim_once(anim)
 end
 
 function _update(dt)
+  -- Arco de derrota (estilo Mario): sube con impulso, cae con gravedad via set_pos
+  -- (sin colision), luego reset de escena. Bloquea todo input y logica normal.
+  if defeated then
+    defeat_timer = defeat_timer - dt
+    vy = vy - gravity * dt
+    local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
+    set_pos(posx(), posy() + my)
+    if defeat_timer <= 0.0 then
+      local remaining = state_add("lifes", -1)
+      if remaining <= 0 then
+        goto_scene("game_over")
+      else
+        restart_scene()
+      end
+    end
+    return
+  end
+
   if hurt_timer > 0.0 then hurt_timer = hurt_timer - dt end
   if iframes_timer > 0.0 then iframes_timer = iframes_timer - dt end
 
@@ -122,7 +145,13 @@ function _update(dt)
           hp = hp - 1
           state_set("hp", hp)
           if hp <= 0 then
-            goto_scene("Lvl_1")
+            defeated = true
+            play_anim("defeat", 1.0, false)
+            defeat_timer = defeat_time
+            vy = defeat_pop_speed
+            flip_h(facing_left)  -- congela direccion horizontal durante el arco
+            flip_v(false)        -- congela vertical; previene flip al cruzar pico (vy==0)
+            state_set("defeated", 1)
           end
           return
         end

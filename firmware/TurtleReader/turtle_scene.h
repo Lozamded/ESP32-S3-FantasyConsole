@@ -33,6 +33,8 @@ int turtle_scene_target_fps(void);
  * turtle_scene_consume_pending_switch.
  */
 void turtle_scene_request_switch(const char* scene_id);
+/** Reinicia la escena activa (equivalente a goto_scene con el id de la escena actual). */
+void turtle_scene_restart(void);
 
 /** true + copia el id pendiente a out (y limpia el pedido) si turtle_scene_request_switch se
  *  llamo en el fotograma que acaba de terminar. Llamar una vez por iteracion de loop(). */

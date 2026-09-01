@@ -187,6 +187,11 @@ static int l_goto_scene(lua_State* L) {
   return 0;
 }
 
+static int l_restart_scene(lua_State*) {
+  turtle_scene_restart();
+  return 0;
+}
+
 /**
  * text(str, font_id [, dx, dy, color_index]) — overlay de texto del actor actual,
  * persistente hasta el siguiente text(). text("") lo borra. (dx, dy) offset opcional
@@ -390,6 +395,9 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_goto_scene);
   lua_setglobal(L, "goto_scene");
+
+  lua_pushcfunction(L, l_restart_scene);
+  lua_setglobal(L, "restart_scene");
 
   lua_pushcfunction(L, l_self_id);
   lua_setglobal(L, "self_id");

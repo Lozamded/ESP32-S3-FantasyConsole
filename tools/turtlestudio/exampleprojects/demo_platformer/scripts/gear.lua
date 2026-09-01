@@ -22,6 +22,8 @@ function _update(dt)
     end
   end
 
+  if state_get("defeated") == 1 then return end
+
   local px = obj_posx(player_h)
   local py = obj_posy(player_h)
   if not px or not py then
