@@ -93,7 +93,7 @@ function _update(dt)
     vy = vy - gravity * dt
     if not soul_spawned and prev_vy >= 0 and vy < 0 then
       soul_spawned = true
-      spawn("turtle_soul", posx(), posy()+12)
+      spawn("turtle_soul", posx(), posy()+12, "speed", 52)
     end
     local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
     set_pos(posx(), posy() + my)

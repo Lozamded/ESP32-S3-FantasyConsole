@@ -345,6 +345,16 @@ struct ActorDrawCache {
 
 static ActorDrawCache s_actor_draw_cache[kMaxPlacements];
 
+// Argumentos de spawn: valores numericos que el caller de spawn() pasa como pares
+// (clave, valor) para que el script del actor recien creado los lea con spawn_arg().
+// Asignado en PSRAM via heap_caps_malloc (EXT_RAM_ATTR no toma efecto en structs anidados
+// dentro del namespace anonimo en algunas versiones del toolchain esp32 -- heap es mas robusto).
+constexpr int kMaxSpawnArgs    = 8;
+constexpr int kSpawnArgKeyMax  = 24;
+struct SpawnArgEntry { char key[kSpawnArgKeyMax]; double value; };
+struct SpawnArgSet   { SpawnArgEntry entries[kMaxSpawnArgs]; int count; };
+static SpawnArgSet* s_spawn_args = nullptr;
+
 constexpr int kMaxSpriteCache = 48;
 constexpr int kMaxObjectCache = 8;
 
@@ -4849,10 +4859,18 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
     turtle_gpu_snapshot_static();
   }
   s_actor_count = 0;
+  if (!s_spawn_args) {
+    s_spawn_args = reinterpret_cast<SpawnArgSet*>(
+        heap_caps_malloc(sizeof(SpawnArgSet) * kMaxPlacements, MALLOC_CAP_SPIRAM));
+    if (!s_spawn_args) {
+      Serial.println("turtle_scene: sin PSRAM para spawn_args");
+    }
+  }
   for (int i = 0; i < kMaxPlacements; ++i) {
     s_actor_draw_cache[i].sprite_id[0] = '\0';
     s_actor_draw_cache[i].frame_index = 0;
     s_actor_draw_cache[i].pixels_valid = false;
+    if (s_spawn_args) s_spawn_args[i].count = 0;
   }
   for (int i = 0; i < npl && s_actor_count < kMaxPlacements; ++i) {
     if (init_actor_from_placement(json, json_end, &s_placements[i], &s_actors[s_actor_count])) {
@@ -5361,6 +5379,58 @@ int turtle_scene_spawn_actor(const char* obj_id, int x, int y) {
   }
   s_actor_count = idx + 1;
   return idx;
+}
+
+void turtle_scene_spawn_args_clear(int idx) {
+  if (!s_spawn_args || idx < 0 || idx >= kMaxPlacements) return;
+  s_spawn_args[idx].count = 0;
+}
+
+void turtle_scene_spawn_arg_set(int idx, const char* key, double value) {
+  if (!s_spawn_args || idx < 0 || idx >= kMaxPlacements || !key || !key[0]) return;
+  SpawnArgSet* set = &s_spawn_args[idx];
+  for (int i = 0; i < set->count; ++i) {
+    if (strncmp(set->entries[i].key, key, kSpawnArgKeyMax - 1) == 0) {
+      set->entries[i].value = value;
+      return;
+    }
+  }
+  if (set->count >= kMaxSpawnArgs) return;
+  snprintf(set->entries[set->count].key, kSpawnArgKeyMax, "%s", key);
+  set->entries[set->count].value = value;
+  ++set->count;
+}
+
+bool turtle_scene_spawn_arg_get(const char* key, double* out_value) {
+  if (!s_spawn_args || !key || !key[0] || !out_value) return false;
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= kMaxPlacements) return false;
+  const SpawnArgSet* set = &s_spawn_args[s_lua_actor_target];
+  for (int i = 0; i < set->count; ++i) {
+    if (strncmp(set->entries[i].key, key, kSpawnArgKeyMax - 1) == 0) {
+      *out_value = set->entries[i].value;
+      return true;
+    }
+  }
+  return false;
+}
+
+// actor_set(key, value) en Lua: escribe en el slot del actor activo (s_lua_actor_target).
+void turtle_scene_actor_var_set_self(const char* key, double value) {
+  turtle_scene_spawn_arg_set(s_lua_actor_target, key, value);
+}
+
+// obj_get(handle, key, default) en Lua: lee del slot de un actor por indice explicito.
+bool turtle_scene_actor_var_get_at(int idx, const char* key, double* out_value) {
+  if (!s_spawn_args || !key || !key[0] || !out_value) return false;
+  if (idx < 0 || idx >= kMaxPlacements) return false;
+  const SpawnArgSet* set = &s_spawn_args[idx];
+  for (int i = 0; i < set->count; ++i) {
+    if (strncmp(set->entries[i].key, key, kSpawnArgKeyMax - 1) == 0) {
+      *out_value = set->entries[i].value;
+      return true;
+    }
+  }
+  return false;
 }
 
 bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uint8_t* out_pixels,

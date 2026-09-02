@@ -345,33 +345,13 @@ static int l_obj_flip_v(lua_State* L) {
   return 1;
 }
 
-static int l_spawn(lua_State* L) {
-  const char* obj_id = luaL_checkstring(L, 1);
-  const int x = lua_round_to_int(luaL_checknumber(L, 2));
-  const int y = lua_round_to_int(luaL_checknumber(L, 3));
-  const int idx = turtle_scene_spawn_actor(obj_id, x, y);
-  if (idx < 0 || idx >= kMaxActors) {
-    lua_pushinteger(L, 0);
-    return 1;
-  }
-  s_update_ref[idx] = LUA_NOREF;
-  s_script_stem[idx][0] = '\0';
-  char stem[kMaxScriptStem];
-  if (turtle_scene_actor_script_stem(idx, stem, sizeof stem) && stem[0]) {
-    snprintf(s_script_stem[idx], sizeof s_script_stem[idx], "%s", stem);
-    char tag[32];
-    snprintf(tag, sizeof tag, "actor %d spawn", idx);
-    const int ref = load_update_ref(stem, tag);
-    if (ref != LUA_NOREF) {
-      s_update_ref[idx] = ref;
-    }
-  }
-  if (idx + 1 > s_script_actor_count) {
-    s_script_actor_count = idx + 1;
-  }
-  lua_pushinteger(L, idx + 1);
-  return 1;
-}
+// Definidas despues de load_update_ref (necesitan forward-ref aqui).
+static int l_spawn(lua_State* L);
+static int l_spawn_arg(lua_State* L);
+static int l_actor_set(lua_State* L);
+static int l_actor_get(lua_State* L);
+static int l_obj_set(lua_State* L);
+static int l_obj_get(lua_State* L);
 
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
@@ -463,6 +443,21 @@ static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_spawn);
   lua_setglobal(L, "spawn");
 
+  lua_pushcfunction(L, l_spawn_arg);
+  lua_setglobal(L, "spawn_arg");
+
+  lua_pushcfunction(L, l_actor_set);
+  lua_setglobal(L, "actor_set");
+
+  lua_pushcfunction(L, l_actor_get);
+  lua_setglobal(L, "actor_get");
+
+  lua_pushcfunction(L, l_obj_set);
+  lua_setglobal(L, "obj_set");
+
+  lua_pushcfunction(L, l_obj_get);
+  lua_setglobal(L, "obj_get");
+
   turtle_state_register_lua(L);
 }
 
@@ -540,6 +535,112 @@ static int load_update_ref(const char* stem, const char* owner_tag) {
   }
 
   return luaL_ref(s_L, LUA_REGISTRYINDEX);
+}
+
+static int l_spawn(lua_State* L) {
+  const char* obj_id = luaL_checkstring(L, 1);
+  const int x = lua_round_to_int(luaL_checknumber(L, 2));
+  const int y = lua_round_to_int(luaL_checknumber(L, 3));
+  const int idx = turtle_scene_spawn_actor(obj_id, x, y);
+  if (idx < 0 || idx >= kMaxActors) {
+    lua_pushinteger(L, 0);
+    return 1;
+  }
+  // Pares opcionales (clave, valor) a partir del arg 4.
+  turtle_scene_spawn_args_clear(idx);
+  const int top = lua_gettop(L);
+  for (int si = 4; si + 1 <= top; si += 2) {
+    if (lua_type(L, si) == LUA_TSTRING && lua_isnumber(L, si + 1)) {
+      turtle_scene_spawn_arg_set(idx, lua_tostring(L, si),
+                                 (double)lua_tonumber(L, si + 1));
+    }
+  }
+  s_update_ref[idx] = LUA_NOREF;
+  s_script_stem[idx][0] = '\0';
+  char stem[kMaxScriptStem];
+  if (turtle_scene_actor_script_stem(idx, stem, sizeof stem) && stem[0]) {
+    snprintf(s_script_stem[idx], sizeof s_script_stem[idx], "%s", stem);
+    char tag[32];
+    snprintf(tag, sizeof tag, "actor %d spawn", idx);
+    const int ref = load_update_ref(stem, tag);
+    if (ref != LUA_NOREF) {
+      s_update_ref[idx] = ref;
+    }
+  }
+  if (idx + 1 > s_script_actor_count) {
+    s_script_actor_count = idx + 1;
+  }
+  lua_pushinteger(L, idx + 1);
+  return 1;
+}
+
+// spawn_arg("clave" [, default]) -> numero | default | nil
+// Lee el valor que spawn() adjunto al actor actual (usa s_lua_actor_target
+// igual que posx()/posy()). Si la clave no existe devuelve el segundo arg o nil.
+static int l_spawn_arg(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  double val;
+  if (turtle_scene_spawn_arg_get(key, &val)) {
+    lua_pushnumber(L, (lua_Number)val);
+    return 1;
+  }
+  if (lua_gettop(L) >= 2) {
+    lua_pushvalue(L, 2);
+  } else {
+    lua_pushnil(L);
+  }
+  return 1;
+}
+
+// actor_set("key", value) -- escribe una variable en el actor activo.
+static int l_actor_set(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  const double val = (double)luaL_checknumber(L, 2);
+  turtle_scene_actor_var_set_self(key, val);
+  return 0;
+}
+
+// actor_get("key" [, default]) -- lee una variable del actor activo.
+// Misma implementacion que spawn_arg(); registrada con nombre distinto para claridad.
+static int l_actor_get(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  double val;
+  if (turtle_scene_spawn_arg_get(key, &val)) {
+    lua_pushnumber(L, (lua_Number)val);
+    return 1;
+  }
+  if (lua_gettop(L) >= 2) {
+    lua_pushvalue(L, 2);
+  } else {
+    lua_pushnil(L);
+  }
+  return 1;
+}
+
+// obj_set(handle, "key", value) -- escribe una variable en otro actor por handle.
+static int l_obj_set(lua_State* L) {
+  const int idx = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+  const char* key = luaL_checkstring(L, 2);
+  const double val = (double)luaL_checknumber(L, 3);
+  turtle_scene_spawn_arg_set(idx, key, val);
+  return 0;
+}
+
+// obj_get(handle, "key" [, default]) -- lee una variable de otro actor por handle.
+static int l_obj_get(lua_State* L) {
+  const int idx = static_cast<int>(luaL_checkinteger(L, 1)) - 1;
+  const char* key = luaL_checkstring(L, 2);
+  double val;
+  if (turtle_scene_actor_var_get_at(idx, key, &val)) {
+    lua_pushnumber(L, (lua_Number)val);
+    return 1;
+  }
+  if (lua_gettop(L) >= 3) {
+    lua_pushvalue(L, 3);
+  } else {
+    lua_pushnil(L);
+  }
+  return 1;
 }
 
 }  // namespace

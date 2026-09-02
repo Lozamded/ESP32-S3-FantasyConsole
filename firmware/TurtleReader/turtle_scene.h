@@ -191,4 +191,17 @@ bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uin
  * El script Lua del objeto (si tiene) se carga y tiquea desde el proximo fotograma.
  * Exponido a Lua como spawn(obj_id, x, y) -> handle (1-based, 0 = fallo).
  */
-int turtle_scene_spawn_actor(const char* obj_id, int x, int y);
+int  turtle_scene_spawn_actor(const char* obj_id, int x, int y);
+
+/** spawn_arg() API: pares (clave, valor) opcionales que spawn() adjunta al actor creado.
+ *  turtle_scene_spawn_arg_get usa s_lua_actor_target (el actor cuyo _update esta corriendo)
+ *  para saber de que slot leer -- igual que posx()/posy(). */
+void turtle_scene_spawn_args_clear(int actor_idx);
+void turtle_scene_spawn_arg_set(int actor_idx, const char* key, double value);
+bool turtle_scene_spawn_arg_get(const char* key, double* out_value);
+
+/** actor_set/actor_get (self) y obj_set/obj_get (por handle) en Lua.
+ *  Usan el mismo almacen que spawn_arg -- los valores de spawn() son los valores
+ *  iniciales; los scripts pueden sobreescribirlos o anadir nuevas claves en runtime. */
+void turtle_scene_actor_var_set_self(const char* key, double value);
+bool turtle_scene_actor_var_get_at(int actor_idx, const char* key, double* out_value);
