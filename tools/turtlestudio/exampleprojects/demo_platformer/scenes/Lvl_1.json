@@ -53,16 +53,6 @@
       "visible": true
     },
     {
-      "object": "player_attack",
-      "id": "player_attack",
-      "x": 17,
-      "y": 19,
-      "tags": [
-        "player_hitbox"
-      ],
-      "visible": false
-    },
-    {
       "object": "eneny_snake",
       "id": "eneny_snake",
       "x": 118,

@@ -60,6 +60,8 @@ local hp = 3
 state_set("hp", 3)       -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
 state_set("defeated", 0) -- idem: gear.lua lo lee para no colectar durante el arco de derrota
 
+local attack_spawned = false
+
 local function set_facing(dx)
   if dx < 0 and not facing_left then
     flip_h(true)
@@ -78,6 +80,11 @@ local function set_anim_once(anim)
 end
 
 function _update(dt)
+  if not attack_spawned then
+    attack_spawned = true
+    spawn("player_attack", posx(), posy())
+  end
+
   -- Arco de derrota (estilo Mario): sube con impulso, cae con gravedad via set_pos
   -- (sin colision), luego reset de escena. Bloquea todo input y logica normal.
   if defeated then
