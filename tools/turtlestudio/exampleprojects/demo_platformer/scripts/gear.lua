@@ -37,6 +37,12 @@ function _update(dt)
   if overlap_x and overlap_y then
     collected = true
     state_add("gears", 1)
+
+    if state_get("gears") > 99 then
+      state_add("lifes", 1)
+      state_set("gears", 0)
+    end
+
     set_visible(false)
   end
 end
