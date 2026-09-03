@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "robot",
+  "name": "robot",
+  "sprite_id": "robot",
+  "animations": [
+    {
+      "name": "idle",
+      "sprite_id": "robot"
+    }
+  ]
+}
