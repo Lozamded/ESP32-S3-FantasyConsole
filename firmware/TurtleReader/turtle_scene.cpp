@@ -91,6 +91,7 @@ struct Placement {
   int x;
   int y;
   bool visible;  // spec/scene-object-visibility-v0.md: default true si falta en el JSON.
+  int z_index;   // Orden de pintado (mayor = encima); default 0 si falta en el JSON.
 };
 
 constexpr int kMaxTextLabels = 16;
@@ -3526,6 +3527,8 @@ static bool parse_placements(const char* scene_start, const char* scene_end, Pla
     // spec/scene-object-visibility-v0.md: "visible" opcional, default true si falta.
     out[n].visible = true;
     json_extract_bool_for_key(ob, oe, "visible", &out[n].visible);
+    out[n].z_index = 0;
+    json_extract_int_for_key(ob, oe, "z_index", &out[n].z_index);
     if (!json_extract_int_for_key(ob, oe, "x", &out[n].x)) {
       return false;
     }
@@ -4684,6 +4687,27 @@ bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char
   return true;
 }
 
+// Ordena s_actors[] y s_placements[] (arrays paralelos) por z_index ascendente.
+// Usa insertion sort para estabilidad: actores con igual z_index conservan el
+// orden de declaracion del JSON. Se llama una sola vez al cargar la escena.
+static void sort_actors_by_z_index(void) {
+  for (int i = 1; i < s_actor_count; ++i) {
+    if (s_placements[i - 1].z_index <= s_placements[i].z_index) {
+      continue;
+    }
+    Placement tmp_pl = s_placements[i];
+    SceneActor tmp_ac = s_actors[i];
+    int j = i - 1;
+    while (j >= 0 && s_placements[j].z_index > tmp_pl.z_index) {
+      s_placements[j + 1] = s_placements[j];
+      s_actors[j + 1] = s_actors[j];
+      --j;
+    }
+    s_placements[j + 1] = tmp_pl;
+    s_actors[j + 1] = tmp_ac;
+  }
+}
+
 bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* scene_id) {
   s_runtime_active = false;
   s_actor_count = 0;
@@ -4877,6 +4901,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
       ++s_actor_count;
     }
   }
+  sort_actors_by_z_index();
   resolve_player_actor_index();
 
   for (int i = 0; i < s_actor_count; ++i) {
@@ -5369,6 +5394,7 @@ int turtle_scene_spawn_actor(const char* obj_id, int x, int y) {
   pl->x = x;
   pl->y = y;
   pl->visible = true;
+  pl->z_index = 0;
   ActorDrawCache* cache = &s_actor_draw_cache[idx];
   cache->sprite_id[0] = '\0';
   cache->frame_index = 0;

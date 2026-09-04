@@ -243,6 +243,7 @@ class SceneObjectPlacement:
     y: int
     tags: tuple[str, ...] = ()
     visible: bool = True
+    z_index: int = 0
 
 
 def _clamp_scene_xy(
@@ -331,8 +332,8 @@ def _parse_one_scene_object(
     *,
     world_w: int = SCENE_PIXEL_W,
     world_h: int = SCENE_PIXEL_H,
-) -> tuple[str, str | None, int, int, tuple[str, ...], bool] | None:
-    """(object_id, id_pedido_o_None, x, y, tags, visible) o None si no se puede parsear.
+) -> tuple[str, str | None, int, int, tuple[str, ...], bool, int] | None:
+    """(object_id, id_pedido_o_None, x, y, tags, visible, z_index) o None si no se puede parsear.
     id_pedido es None cuando falta/es invalido/es una escena legado (solo tenia "id" =
     referencia de catalogo, sin identidad propia por instancia) -- parse_scene_objects_raw le
     asigna un id unico despues, ya que la deduplicacion necesita ver TODAS las instancias de
@@ -344,7 +345,7 @@ def _parse_one_scene_object(
         if not s:
             return None
         oid = validate_object_id(s)
-        return oid, None, 0, 0, (), True
+        return oid, None, 0, 0, (), True, 0
     if isinstance(raw, dict):
         robj = raw.get("object")
         legacy = not isinstance(robj, str) or not robj.strip()
@@ -368,7 +369,11 @@ def _parse_one_scene_object(
         except (TypeError, ValueError):
             xi, yi = 0, 0
         xi, yi = _clamp_scene_xy(xi, yi, world_w=world_w, world_h=world_h)
-        return oid, requested_id, xi, yi, tags, visible
+        try:
+            zi = int(raw.get("z_index", 0))
+        except (TypeError, ValueError):
+            zi = 0
+        return oid, requested_id, xi, yi, tags, visible, zi
     return None
 
 
@@ -380,19 +385,19 @@ def parse_scene_objects_raw(
 ) -> tuple[SceneObjectPlacement, ...]:
     if not isinstance(raw, list):
         return ()
-    parsed: list[tuple[str, str | None, int, int, tuple[str, ...], bool]] = []
+    parsed: list[tuple[str, str | None, int, int, tuple[str, ...], bool, int]] = []
     for item in raw:
         p = _parse_one_scene_object(item, world_w=world_w, world_h=world_h)
         if p is not None:
             parsed.append(p)
     used: set[str] = set()
     out: list[SceneObjectPlacement] = []
-    for object_id, requested_id, x, y, tags, visible in parsed:
+    for object_id, requested_id, x, y, tags, visible, z_index in parsed:
         iid = requested_id if requested_id is not None and requested_id not in used else None
         if iid is None:
             iid = next_unique_placement_id(object_id, used)
         used.add(iid)
-        out.append(SceneObjectPlacement(object_id=object_id, id=iid, x=x, y=y, tags=tags, visible=visible))
+        out.append(SceneObjectPlacement(object_id=object_id, id=iid, x=x, y=y, tags=tags, visible=visible, z_index=z_index))
     return tuple(out)
 
 
@@ -417,7 +422,7 @@ def normalize_scene_objects_for_save(
                 f"Objeto {p.object_id!r}: no existe o su sprite no usa la paleta de esta escena ({sp})."
             )
         out.append(
-            {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible}
+            {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index}
         )
     return out
 

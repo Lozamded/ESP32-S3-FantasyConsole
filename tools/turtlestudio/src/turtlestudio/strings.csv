@@ -108,6 +108,7 @@ scene.add_object,Añadir,Add
 scene.remove_object,Quitar,Remove
 scene.x_label,X:,X:
 scene.y_label,Y:,Y:
+scene.z_label,Z:,Z:
 scene.object_id_label,Id:,Id:
 scene.object_id_tooltip,Identificador unico de esta instancia en la escena (find_by_id en scripts). Letra inicial luego letras/digitos/_/- (max 64).,Unique identifier for this instance in the scene (find_by_id in scripts). Leading letter then letters/digits/_/- (max 64).
 scene.object_tags_label,Tags:,Tags:

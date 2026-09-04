@@ -1,0 +1,24 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "brickblock",
+  "name": "brickblock",
+  "sprite_id": "block",
+  "animations": [
+    {
+      "name": "default",
+      "sprite_id": "block"
+    },
+    {
+      "name": "break",
+      "sprite_id": "block_break"
+    }
+  ],
+  "collision": {
+    "mode": "aabb",
+    "x0": 0,
+    "y0": 0,
+    "x1": 15,
+    "y1": 15
+  }
+}

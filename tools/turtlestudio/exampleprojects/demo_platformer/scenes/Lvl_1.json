@@ -48,9 +48,10 @@
       "object": "player",
       "id": "player",
       "x": 17,
-      "y": 19,
+      "y": 17,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 1
     },
     {
       "object": "eneny_snake",
@@ -60,7 +61,8 @@
       "tags": [
         "enemy"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "eneny_snake",
@@ -70,7 +72,8 @@
       "tags": [
         "enemy"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "eneny_snake",
@@ -80,7 +83,8 @@
       "tags": [
         "enemy"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "directional_block",
@@ -90,7 +94,8 @@
       "tags": [
         "turn"
       ],
-      "visible": false
+      "visible": false,
+      "z_index": 0
     },
     {
       "object": "directional_block",
@@ -100,7 +105,8 @@
       "tags": [
         "turn"
       ],
-      "visible": false
+      "visible": false,
+      "z_index": 0
     },
     {
       "object": "directional_block",
@@ -110,7 +116,8 @@
       "tags": [
         "turn"
       ],
-      "visible": false
+      "visible": false,
+      "z_index": 0
     },
     {
       "object": "directional_block",
@@ -120,7 +127,8 @@
       "tags": [
         "turn"
       ],
-      "visible": false
+      "visible": false,
+      "z_index": 0
     },
     {
       "object": "eneny_snake",
@@ -130,7 +138,8 @@
       "tags": [
         "enemy"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -138,7 +147,8 @@
       "x": 82,
       "y": 62,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -146,7 +156,8 @@
       "x": 123,
       "y": 92,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -154,7 +165,8 @@
       "x": 144,
       "y": 93,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -162,7 +174,8 @@
       "x": 163,
       "y": 92,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -170,7 +183,8 @@
       "x": 255,
       "y": 46,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -178,7 +192,8 @@
       "x": 439,
       "y": 41,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -186,7 +201,8 @@
       "x": 454,
       "y": 58,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -194,7 +210,8 @@
       "x": 470,
       "y": 74,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -202,7 +219,8 @@
       "x": 276,
       "y": 47,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -210,7 +228,8 @@
       "x": 671,
       "y": 67,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -218,7 +237,8 @@
       "x": 818,
       "y": 26,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -226,7 +246,8 @@
       "x": 972,
       "y": 43,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -234,7 +255,8 @@
       "x": 952,
       "y": 42,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "directional_block",
@@ -244,7 +266,8 @@
       "tags": [
         "turn"
       ],
-      "visible": false
+      "visible": false,
+      "z_index": 0
     },
     {
       "object": "gear",
@@ -252,15 +275,17 @@
       "x": 1048,
       "y": 30,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "gear",
       "id": "gear_15",
-      "x": 1217,
-      "y": 54,
+      "x": 1208,
+      "y": 43,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "robot",
@@ -268,7 +293,8 @@
       "x": 251,
       "y": 32,
       "tags": [],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "finish_pc",
@@ -278,7 +304,8 @@
       "tags": [
         "levelend"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
     },
     {
       "object": "check_PC",
@@ -288,7 +315,152 @@
       "tags": [
         "checkpoint"
       ],
-      "visible": true
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock",
+      "x": 66,
+      "y": 17,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_2",
+      "x": 496,
+      "y": 31,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_3",
+      "x": 480,
+      "y": 47,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_4",
+      "x": 496,
+      "y": 47,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_5",
+      "x": 512,
+      "y": 31,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_6",
+      "x": 512,
+      "y": 47,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_7",
+      "x": 847,
+      "y": 50,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_8",
+      "x": 1207,
+      "y": 0,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_9",
+      "x": 1138,
+      "y": 16,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_10",
+      "x": 1138,
+      "y": 0,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_11",
+      "x": 1191,
+      "y": 0,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_12",
+      "x": 1199,
+      "y": 15,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_13",
+      "x": 686,
+      "y": 31,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_14",
+      "x": 702,
+      "y": 31,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_15",
+      "x": 686,
+      "y": 46,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
+    },
+    {
+      "object": "brickblock",
+      "id": "brickblock_16",
+      "x": 702,
+      "y": 46,
+      "tags": [],
+      "visible": true,
+      "z_index": 0
     }
   ],
   "text_labels": [
@@ -765,7 +937,7 @@
           31,
           31,
           31,
-          4,
+          31,
           0,
           1,
           1,
@@ -774,34 +946,34 @@
           1,
           1,
           1,
-          1,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          0,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          5,
           2,
-          1,
-          1,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
           31,
           31,
           31,
@@ -849,48 +1021,48 @@
           31,
           31,
           31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
-          31,
           0,
-          0,
-          0,
-          0,
-          2,
-          0,
-          0,
-          2,
-          2,
-          2,
-          2,
-          31,
-          31,
-          1,
-          1,
-          1,
-          1,
-          1,
-          2,
-          2,
-          2,
+          6,
           3,
+          3,
+          3,
+          3,
+          3,
+          5,
           1,
-          1,
-          31,
-          31,
-          31,
-          31,
           2,
+          31,
+          31,
+          31,
+          0,
+          0,
+          0,
+          0,
+          2,
+          0,
+          0,
+          2,
+          2,
+          2,
+          2,
+          31,
+          31,
+          0,
+          1,
+          1,
+          1,
+          1,
+          2,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          31,
+          0,
           2,
           2,
           2

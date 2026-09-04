@@ -489,7 +489,7 @@ def _paint_scene_text_labels(
 def _paint_scene_objects(
     rgba: list[float], fw: int, fh: int, project_root: Path, placements: list[dict[str, Any]]
 ) -> None:
-    for p in placements:
+    for p in sorted(placements, key=lambda p: int(p.get("z_index", 0)) if isinstance(p, dict) else 0):
         if not isinstance(p, dict):
             continue
         oid = str(p.get("object", "")).strip()
@@ -1071,7 +1071,7 @@ def _normalize_row(
     r["tile_layers"] = tile_layers_to_json_list(tile_layers)
     placements = parse_scene_objects_raw(r.get("objects"), world_w=ww, world_h=wh)
     r["objects"] = [
-        {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible}
+        {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index}
         for p in placements
     ]
     labels = parse_scene_text_labels_raw(r.get("text_labels"), world_w=ww, world_h=wh)
@@ -1650,6 +1650,12 @@ class SceneEditorWidget(QWidget):
         self.spin_obj_y.setRange(0, SCENE_PIXEL_H * WORLD_STEPS_MAX)
         self.spin_obj_y.valueChanged.connect(self._on_object_xy_changed)
         pos_row.addWidget(self.spin_obj_y)
+        pos_row.addWidget(QLabel(tr("scene.z_label")))
+        self.spin_obj_z = QSpinBox()
+        self.spin_obj_z.setRange(-999, 999)
+        self.spin_obj_z.setValue(0)
+        self.spin_obj_z.valueChanged.connect(self._on_object_z_changed)
+        pos_row.addWidget(self.spin_obj_z)
         layout.addLayout(pos_row)
 
         separator = QFrame()
@@ -1931,6 +1937,7 @@ class SceneEditorWidget(QWidget):
                 self.list_objects.clear()
                 self.edit_object_id.clear()
                 self.edit_object_tags.clear()
+                self.spin_obj_z.setValue(0)
                 self.list_labels.clear()
                 self.canvas.set_frame(QImage(), 0, 0)
                 self.btn_create_script.setVisible(False)
@@ -2993,7 +3000,7 @@ class SceneEditorWidget(QWidget):
             row["objects"] = objs
         existing_ids = {str(o.get("id", "")) for o in objs if isinstance(o, dict)}
         iid = next_unique_placement_id(oid, existing_ids)
-        objs.append({"object": oid, "id": iid, "x": x, "y": y, "tags": [], "visible": True})
+        objs.append({"object": oid, "id": iid, "x": x, "y": y, "tags": [], "visible": True, "z_index": 0})
         self._mark_dirty()
         self._load_objects(row)
         self._refresh_canvas()
@@ -3034,10 +3041,13 @@ class SceneEditorWidget(QWidget):
             p = objs[index]
             self.spin_obj_x.blockSignals(True)
             self.spin_obj_y.blockSignals(True)
+            self.spin_obj_z.blockSignals(True)
             self.spin_obj_x.setValue(int(p.get("x", 0)))
             self.spin_obj_y.setValue(int(p.get("y", 0)))
+            self.spin_obj_z.setValue(int(p.get("z_index", 0)))
             self.spin_obj_x.blockSignals(False)
             self.spin_obj_y.blockSignals(False)
+            self.spin_obj_z.blockSignals(False)
             self.edit_object_id.blockSignals(True)
             self.edit_object_id.setText(str(p.get("id", "")))
             self.edit_object_id.blockSignals(False)
@@ -3060,6 +3070,18 @@ class SceneEditorWidget(QWidget):
         self.list_objects.blockSignals(True)
         self.list_objects.item(idx).setText(self._object_list_item_text(objs[idx]))
         self.list_objects.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_canvas()
+
+    def _on_object_z_changed(self, _value: int) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_objects.currentRow()
+        objs = row.get("objects") or []
+        if not (0 <= idx < len(objs)):
+            return
+        objs[idx]["z_index"] = self.spin_obj_z.value()
         self._mark_dirty()
         self._refresh_canvas()
 
