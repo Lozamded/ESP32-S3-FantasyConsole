@@ -25,6 +25,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from turtlestudio.sprite_picker_dialog import SpritePickerDialog
+
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
 from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.i18n import tr
@@ -472,9 +474,14 @@ class ObjectEditorWidget(QWidget):
         self.edit_name = QLineEdit()
         self.edit_name.editingFinished.connect(self._on_name_edited)
         form.addRow(tr("object.name_label"), self.edit_name)
-        self.combo_sprite = QComboBox()
-        self.combo_sprite.currentTextChanged.connect(self._on_sprite_changed)
-        form.addRow(tr("object.sprite_label"), self.combo_sprite)
+        sprite_row = QHBoxLayout()
+        self.lbl_sprite_id = QLabel("—")
+        self.lbl_sprite_id.setStyleSheet("font-family: monospace;")
+        sprite_row.addWidget(self.lbl_sprite_id, stretch=1)
+        self.btn_pick_sprite = QPushButton(tr("object.pick_sprite"))
+        self.btn_pick_sprite.clicked.connect(self._action_pick_sprite)
+        sprite_row.addWidget(self.btn_pick_sprite)
+        form.addRow(tr("object.sprite_label"), sprite_row)
         self.edit_script = QLineEdit()
         self.edit_script.editingFinished.connect(self._on_script_edited)
         form.addRow(tr("object.script_label"), self.edit_script)
@@ -545,13 +552,8 @@ class ObjectEditorWidget(QWidget):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _refresh_sprite_combo(self) -> None:
-        self.combo_sprite.blockSignals(True)
-        self.combo_sprite.clear()
-        self.combo_sprite.addItems(list_sprite_json_stems(self.project_root))
-        idx = self.combo_sprite.findText(self.sprite_id)
-        self.combo_sprite.setCurrentIndex(max(0, idx))
-        self.combo_sprite.blockSignals(False)
+    def _refresh_sprite_label(self) -> None:
+        self.lbl_sprite_id.setText(self.sprite_id or "—")
 
     def _refresh_animation_list(self) -> None:
         self.list_animations.blockSignals(True)
@@ -617,7 +619,7 @@ class ObjectEditorWidget(QWidget):
         self.lbl_object_id.setText(self.object_id)
         self.edit_name.setText(str(data.get("name", self.object_id)))
         self.edit_script.setText(self.script or "")
-        self._refresh_sprite_combo()
+        self._refresh_sprite_label()
         self._suspend = False
         self._refresh_animation_list()
         self._refresh_preview_sprite(self.sprite_id)
@@ -654,7 +656,7 @@ class ObjectEditorWidget(QWidget):
             self._suspend = True
             self.edit_name.setText(state["name"])
             self.edit_script.setText(self.script or "")
-            self._refresh_sprite_combo()
+            self._refresh_sprite_label()
             self._suspend = False
 
             self._refresh_animation_list()
@@ -690,9 +692,15 @@ class ObjectEditorWidget(QWidget):
         if self._suspend or not text:
             return
         self.sprite_id = text
+        self._refresh_sprite_label()
         self._refresh_preview_sprite(self.sprite_id)
         self._mark_dirty()
         self._commit_history()
+
+    def _action_pick_sprite(self) -> None:
+        dlg = SpritePickerDialog(self.project_root, self.sprite_id, parent=self)
+        if dlg.exec() and dlg.selected_sprite_id:
+            self._on_sprite_changed(dlg.selected_sprite_id)
 
     def _on_script_edited(self) -> None:
         text = self.edit_script.text().strip()
@@ -779,21 +787,19 @@ class ObjectEditorWidget(QWidget):
         self._regenerate_shape(self.combo_coll_mode.currentText())
 
     def _action_add_animation(self) -> None:
-        sprites = list_sprite_json_stems(self.project_root)
-        if not sprites:
+        if not list_sprite_json_stems(self.project_root):
             QMessageBox.warning(self, tr("object.new_animation_title"), tr("object.no_sprites"))
             return
         name, ok = QInputDialog.getText(self, tr("object.new_animation_title"), tr("object.new_animation_name_label"))
         if not ok or not name.strip():
             return
-        sprite_id, ok = QInputDialog.getItem(
-            self, tr("object.new_animation_title"), tr("object.new_animation_sprite_label"), sprites, 0, False
-        )
-        if not ok:
+        dlg = SpritePickerDialog(self.project_root, self.sprite_id, parent=self)
+        dlg.setWindowTitle(tr("object.new_animation_title"))
+        if not dlg.exec() or not dlg.selected_sprite_id:
             return
         if len(self.animations) >= 32:
             return
-        self.animations.append({"name": name.strip(), "sprite_id": sprite_id})
+        self.animations.append({"name": name.strip(), "sprite_id": dlg.selected_sprite_id})
         self._refresh_animation_list()
         self._mark_dirty()
         self._commit_history()

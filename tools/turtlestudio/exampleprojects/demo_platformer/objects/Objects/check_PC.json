@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "check_PC",
+  "name": "check_PC",
+  "sprite_id": "check_PC",
+  "animations": [
+    {
+      "name": "off",
+      "sprite_id": "check_PC"
+    },
+    {
+      "name": "on",
+      "sprite_id": "check_PC_on"
+    }
+  ]
+}

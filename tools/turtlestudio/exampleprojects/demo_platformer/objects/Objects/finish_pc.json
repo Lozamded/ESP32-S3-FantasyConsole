@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "kind": "turtlestudio.object",
+  "id": "finish_pc",
+  "name": "finish_pc",
+  "sprite_id": "finish_pc",
+  "animations": [
+    {
+      "name": "off",
+      "sprite_id": "finish_pc"
+    },
+    {
+      "name": "on",
+      "sprite_id": "finish_pc_on"
+    }
+  ]
+}

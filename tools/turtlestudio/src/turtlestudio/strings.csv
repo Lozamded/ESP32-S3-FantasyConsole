@@ -259,6 +259,10 @@ object.new_id_label,Id del objeto:,Object id:
 object.no_sprites,El proyecto no tiene sprites.,The project has no sprites.
 object.new_sprite_label,Sprite:,Sprite:
 object.save_error_title,Guardar objeto,Save object
+object.pick_sprite,Elegir…,Pick…
+object.pick_sprite_title,Elegir sprite,Pick sprite
+object.pick_sprite_search,Buscar sprite…,Search sprite…
+object.pick_sprite_empty,No hay sprites que coincidan.,No matching sprites.
 font.label,Fuente:,Font:
 font.charset_label,Caracteres:,Characters:
 font.glyph_px_label,Px por glifo:,Px per glyph:
@@ -294,6 +298,7 @@ build.gv_add,+ Variable,+ Variable
 build.gv_col_default,Valor inicial,Initial value
 build.gv_name_placeholder,nombre_variable,variable_name
 build.gv_delete_tooltip,Eliminar variable,Delete variable
+build.open_folder,Abrir carpeta,Open folder
 mainwindow.menu_export,&Exportar cartucho…,&Export cartridge…
 mainwindow.tab_scene,Escena,Scene
 mainwindow.tab_sprites,Sprites,Sprites

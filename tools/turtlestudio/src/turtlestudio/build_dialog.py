@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 from PyQt6.QtWidgets import (
@@ -226,6 +228,9 @@ class BuildDialogWidget(QWidget):
         self.btn_export = QPushButton(tr("build.export_button"))
         self.btn_export.clicked.connect(self._action_export)
         btn_row.addWidget(self.btn_export)
+        self.btn_open_folder = QPushButton(tr("build.open_folder"))
+        self.btn_open_folder.clicked.connect(self._action_open_folder)
+        btn_row.addWidget(self.btn_open_folder)
         btn_row.addStretch()
         outer.addLayout(btn_row)
 
@@ -338,6 +343,16 @@ class BuildDialogWidget(QWidget):
         path = QFileDialog.getExistingDirectory(self, tr("build.browse_title"), start)
         if path:
             self.edit_output.setText(path)
+
+    def _action_open_folder(self) -> None:
+        folder = Path(self.edit_output.text().strip() or str(self.project_root / DEFAULT_PACKAGE_DIR_NAME))
+        folder.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer", str(folder)])
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(folder)])
+        else:
+            subprocess.Popen(["xdg-open", str(folder)])
 
     def _action_export(self) -> None:
         self.log.clear()
