@@ -11,6 +11,7 @@ from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
 from PyQt6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFileDialog,
     QFormLayout,
     QHBoxLayout,
     QInputDialog,
@@ -37,6 +38,7 @@ from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
 from turtlestudio.scene_editor import _tool_icon
 from turtlestudio.sprite_import_dialog import SpriteImportDialog
 from turtlestudio.sprite_picker_dialog import SpritePickerDialog
+from turtlestudio.sprite_png_export import export_sprite_frames_to_png_dir
 from turtlestudio.sprites import (
     MAX_BLOCKS_PER_AXIS,
     MAX_CELL_PX,
@@ -392,6 +394,9 @@ class SpriteEditorWidget(QWidget):
         self.btn_import = QPushButton(tr("sprite.import_button"))
         self.btn_import.clicked.connect(self._action_import_image)
         form.addRow(self.btn_import)
+        self.btn_export_png = QPushButton(tr("sprite.export_png_button"))
+        self.btn_export_png.clicked.connect(self._action_export_png)
+        form.addRow(self.btn_export_png)
         self.spin_origin_x = QSpinBox()
         self.spin_origin_x.setRange(0, MAX_BLOCKS_PER_AXIS * 64)
         self.spin_origin_x.valueChanged.connect(self._on_origin_changed)
@@ -671,6 +676,22 @@ class SpriteEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_canvas()
         self._commit_history()
+
+    def _action_export_png(self) -> None:
+        if not self.sprite_id:
+            QMessageBox.warning(self, tr("sprite.export_png_button"), tr("sprite.import_no_sprite_open"))
+            return
+        out_dir = QFileDialog.getExistingDirectory(self, tr("sprite.export_png_dir_title"), str(self.project_root))
+        if not out_dir:
+            return
+        rgbs01 = [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in self.grid.colors()]
+        try:
+            written = export_sprite_frames_to_png_dir(out_dir, self.sprite_id, self._frames, rgbs01)
+        except (ValueError, OSError) as e:
+            QMessageBox.warning(self, tr("sprite.export_png_button"), str(e))
+            return
+        names = "\n".join(p.name for p in written)
+        QMessageBox.information(self, tr("sprite.export_png_button"), tr("sprite.export_png_ok", files=names))
 
     def _action_add_frame(self) -> None:
         if len(self._frames) >= MAX_SPRITE_FRAMES:

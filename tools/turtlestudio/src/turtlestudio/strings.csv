@@ -57,6 +57,9 @@ sprite.new_title,Nuevo sprite,New sprite
 sprite.new_id_label,Id del sprite:,Sprite id:
 sprite.save_error_title,Guardar sprite,Save sprite
 sprite.import_button,Importar imagen…,Import image…
+sprite.export_png_button,Exportar PNG…,Export PNG…
+sprite.export_png_dir_title,Carpeta de exportacion,Export folder
+sprite.export_png_ok,Exportado:\n{files},Exported:\n{files}
 sprite.import_dialog_title,Importar imagen,Import image
 sprite.import_file_label,Archivo:,File:
 sprite.import_browse_button,Examinar…,Browse…
