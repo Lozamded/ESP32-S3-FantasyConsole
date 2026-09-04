@@ -244,6 +244,7 @@ object.script_label,"Script (stem, opcional):","Script (stem, optional):"
 object.animations_group,Animaciones,Animations
 object.add_animation,Añadir…,Add…
 object.remove_animation,Quitar,Remove
+object.change_anim_sprite,Cambiar sprite…,Change sprite…
 object.new_animation_title,Nueva animacion,New animation
 object.new_animation_name_label,Nombre de la animacion:,Animation name:
 object.new_animation_sprite_label,Sprite para la animacion:,Sprite for the animation:

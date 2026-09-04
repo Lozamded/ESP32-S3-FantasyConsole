@@ -491,11 +491,16 @@ class ObjectEditorWidget(QWidget):
         anim_layout = QVBoxLayout(anim_box)
         self.list_animations = QListWidget()
         self.list_animations.currentRowChanged.connect(self._on_animation_selected)
+        self.list_animations.itemDoubleClicked.connect(lambda _: self._action_change_anim_sprite())
         anim_layout.addWidget(self.list_animations)
         anim_btn_row = QHBoxLayout()
         self.btn_add_animation = QPushButton(tr("object.add_animation"))
         self.btn_add_animation.clicked.connect(self._action_add_animation)
         anim_btn_row.addWidget(self.btn_add_animation)
+        self.btn_change_anim_sprite = QPushButton(tr("object.change_anim_sprite"))
+        self.btn_change_anim_sprite.clicked.connect(self._action_change_anim_sprite)
+        self.btn_change_anim_sprite.setEnabled(False)
+        anim_btn_row.addWidget(self.btn_change_anim_sprite)
         self.btn_remove_animation = QPushButton(tr("object.remove_animation"))
         self.btn_remove_animation.clicked.connect(self._action_remove_animation)
         anim_btn_row.addWidget(self.btn_remove_animation)
@@ -709,10 +714,26 @@ class ObjectEditorWidget(QWidget):
         self._commit_history()
 
     def _on_animation_selected(self, index: int) -> None:
-        if 0 <= index < len(self.animations):
+        has = 0 <= index < len(self.animations)
+        self.btn_change_anim_sprite.setEnabled(has)
+        if has:
             self._refresh_preview_sprite(self.animations[index]["sprite_id"])
         else:
             self._refresh_preview_sprite(self.sprite_id)
+
+    def _action_change_anim_sprite(self) -> None:
+        idx = self.list_animations.currentRow()
+        if not (0 <= idx < len(self.animations)):
+            return
+        current = self.animations[idx]["sprite_id"]
+        dlg = SpritePickerDialog(self.project_root, current, parent=self)
+        if not dlg.exec() or not dlg.selected_sprite_id:
+            return
+        self.animations[idx]["sprite_id"] = dlg.selected_sprite_id
+        self._refresh_animation_list()
+        self.list_animations.setCurrentRow(idx)
+        self._mark_dirty()
+        self._commit_history()
 
     def _on_has_collision_toggled(self, checked: bool) -> None:
         if self._suspend:

@@ -274,8 +274,10 @@
       "object": "finish_pc",
       "id": "finish_pc",
       "x": 1282,
-      "y": 15,
-      "tags": [],
+      "y": 16,
+      "tags": [
+        "levelend"
+      ],
       "visible": true
     },
     {
@@ -283,7 +285,9 @@
       "id": "check_PC",
       "x": 914,
       "y": 32,
-      "tags": [],
+      "tags": [
+        "checkpoint"
+      ],
       "visible": true
     }
   ],
