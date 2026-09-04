@@ -51,6 +51,7 @@ sprite.px_per_block,Px por bloque:,Px per block:
 sprite.origin_x,Origen X:,Origin X:
 sprite.origin_y,Origen Y:,Origin Y:
 sprite.palette_hint,Paleta del sprite (0–30):,Sprite palette (0–30):
+sprite.browse,Examinar…,Browse…
 sprite.open_error_title,Abrir sprite,Open sprite
 sprite.new_title,Nuevo sprite,New sprite
 sprite.new_id_label,Id del sprite:,Sprite id:
@@ -260,6 +261,10 @@ object.new_id_label,Id del objeto:,Object id:
 object.no_sprites,El proyecto no tiene sprites.,The project has no sprites.
 object.new_sprite_label,Sprite:,Sprite:
 object.save_error_title,Guardar objeto,Save object
+object.browse,Examinar…,Browse…
+object.pick_object_title,Elegir objeto,Pick object
+object.pick_object_search,Buscar objeto…,Search object…
+object.pick_object_empty,No hay objetos que coincidan.,No matching objects.
 object.pick_sprite,Elegir…,Pick…
 object.pick_sprite_title,Elegir sprite,Pick sprite
 object.pick_sprite_search,Buscar sprite…,Search sprite…

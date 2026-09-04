@@ -36,6 +36,7 @@ from turtlestudio.palette_policy import (
 from turtlestudio.project import DEFAULT_EXAMPLE_PALETTE_REL
 from turtlestudio.scene_editor import _tool_icon
 from turtlestudio.sprite_import_dialog import SpriteImportDialog
+from turtlestudio.sprite_picker_dialog import SpritePickerDialog
 from turtlestudio.sprites import (
     MAX_BLOCKS_PER_AXIS,
     MAX_CELL_PX,
@@ -284,6 +285,9 @@ class SpriteEditorWidget(QWidget):
         self.combo_sprite.setMinimumWidth(180)
         self.combo_sprite.currentTextChanged.connect(self._on_sprite_combo_changed)
         top_row.addWidget(self.combo_sprite)
+        self.btn_browse_sprite = QPushButton(tr("sprite.browse"))
+        self.btn_browse_sprite.clicked.connect(self._action_browse_sprite)
+        top_row.addWidget(self.btn_browse_sprite)
         self.btn_new = QPushButton(tr("common.new"))
         self.btn_new.clicked.connect(self._action_new_sprite)
         top_row.addWidget(self.btn_new)
@@ -610,6 +614,11 @@ class SpriteEditorWidget(QWidget):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def _action_browse_sprite(self) -> None:
+        dlg = SpritePickerDialog(self.project_root, self.sprite_id, parent=self)
+        if dlg.exec() and dlg.selected_sprite_id:
+            self.open_sprite(dlg.selected_sprite_id)
 
     def _action_new_sprite(self) -> None:
         name, ok = QInputDialog.getText(self, tr("sprite.new_title"), tr("sprite.new_id_label"))

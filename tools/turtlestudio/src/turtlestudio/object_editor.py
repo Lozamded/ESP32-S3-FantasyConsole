@@ -25,6 +25,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from turtlestudio.object_picker_dialog import ObjectPickerDialog
 from turtlestudio.sprite_picker_dialog import SpritePickerDialog
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
@@ -432,6 +433,9 @@ class ObjectEditorWidget(QWidget):
         self.combo_object.setMinimumWidth(180)
         self.combo_object.currentTextChanged.connect(self._on_object_combo_changed)
         top_row.addWidget(self.combo_object)
+        self.btn_browse_object = QPushButton(tr("object.browse"))
+        self.btn_browse_object.clicked.connect(self._action_browse_object)
+        top_row.addWidget(self.btn_browse_object)
         self.btn_new = QPushButton(tr("common.new"))
         self.btn_new.clicked.connect(self._action_new_object)
         top_row.addWidget(self.btn_new)
@@ -832,6 +836,11 @@ class ObjectEditorWidget(QWidget):
             self._refresh_animation_list()
             self._mark_dirty()
             self._commit_history()
+
+    def _action_browse_object(self) -> None:
+        dlg = ObjectPickerDialog(self.project_root, self.object_id, parent=self)
+        if dlg.exec() and dlg.selected_object_id:
+            self.open_object(dlg.selected_object_id)
 
     def _action_new_object(self) -> None:
         name, ok = QInputDialog.getText(self, tr("object.new_title"), tr("object.new_id_label"))
