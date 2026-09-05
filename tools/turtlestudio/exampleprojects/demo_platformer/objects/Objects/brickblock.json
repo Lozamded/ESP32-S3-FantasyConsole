@@ -3,6 +3,7 @@
   "kind": "turtlestudio.object",
   "id": "brickblock",
   "name": "brickblock",
+  "script": "brickblock",
   "sprite_id": "block",
   "animations": [
     {
@@ -20,5 +21,6 @@
     "y0": 0,
     "x1": 15,
     "y1": 15
-  }
+  },
+  "solid": true
 }

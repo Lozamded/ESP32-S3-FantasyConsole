@@ -167,6 +167,7 @@ struct SceneActor {
   int col_x1;
   int col_y1;
   bool grounded;
+  bool solid;    // Obstaculiza move() de otros actores; se lee de "solid" en el JSON del objeto.
   bool anim_repeat;
   bool flip_h;
   bool flip_v;
@@ -357,7 +358,7 @@ struct SpawnArgSet   { SpawnArgEntry entries[kMaxSpawnArgs]; int count; };
 static SpawnArgSet* s_spawn_args = nullptr;
 
 constexpr int kMaxSpriteCache = 48;
-constexpr int kMaxObjectCache = 8;
+constexpr int kMaxObjectCache = 16;
 
 struct SpriteBlobCacheEntry {
   char id[48];
@@ -494,7 +495,13 @@ static bool object_cache_add_move(const char* obj_id, TurtleCartBuffer* buf) {
     return true;
   }
   if (s_object_cache_count >= kMaxObjectCache) {
-    return false;
+    // Eviccion FIFO: liberar la entrada mas antigua para hacer espacio.
+    object_cache_free_entry(&s_object_cache[0]);
+    for (int i = 1; i < s_object_cache_count; ++i) {
+      s_object_cache[i - 1] = s_object_cache[i];
+    }
+    --s_object_cache_count;
+    s_object_cache[s_object_cache_count] = {};
   }
   ObjectJsonCacheEntry* e = &s_object_cache[s_object_cache_count];
   snprintf(e->id, sizeof e->id, "%s", obj_id);
@@ -4053,6 +4060,8 @@ static bool init_actor_from_placement(const char* json, const char* json_end,
   actor->col_x1 = actor->pw - 1 - actor->origin_x;
   actor->col_y1 = actor->ph - 1 - actor->origin_y;
   actor->grounded = false;
+  actor->solid = false;
+  json_extract_bool_for_key(obj_inner, obj_inner_end, "solid", &actor->solid);
 
   const char* coll_key = strstr_bounded(obj_inner, obj_inner_end, "\"collision\"");
   if (coll_key) {
@@ -4190,6 +4199,25 @@ static bool aabb_overlaps_solid_tiles(int x0, int y0, int x1, int y1, int step_d
   return false;
 }
 
+// Devuelve true si la AABB actual de `a` solapa con la de cualquier otro actor
+// marcado como solid. Se llama despues de mover `a` un paso, igual que actor_aabb_hits_tiles.
+static bool actor_aabb_hits_solid_actors(const SceneActor* a, int /*step_dx*/, int /*step_dy*/) {
+  int ax0, ay0, ax1, ay1;
+  actor_world_aabb(a, &ax0, &ay0, &ax1, &ay1);
+  for (int i = 0; i < s_actor_count; ++i) {
+    const SceneActor* other = &s_actors[i];
+    if (other == a || !other->solid) {
+      continue;
+    }
+    int ox0, oy0, ox1, oy1;
+    actor_world_aabb(other, &ox0, &oy0, &ox1, &oy1);
+    if (ax1 > ox0 && ax0 < ox1 && ay1 > oy0 && ay0 < oy1) {
+      return true;
+    }
+  }
+  return false;
+}
+
 static bool actor_aabb_hits_tiles(const SceneActor* a, int step_dx, int step_dy) {
   int x0 = 0;
   int y0 = 0;
@@ -4236,6 +4264,18 @@ static bool actor_touching_ground(const SceneActor* a) {
       return true;
     }
   }
+  // Tambien considerar actores solidos: sondeo 1px hacia abajo igual que con tiles.
+  for (int i = 0; i < s_actor_count; ++i) {
+    const SceneActor* other = &s_actors[i];
+    if (other == a || !other->solid) {
+      continue;
+    }
+    int ox0, oy0, ox1, oy1;
+    actor_world_aabb(other, &ox0, &oy0, &ox1, &oy1);
+    if (x1 > ox0 && x0 < ox1 && probe_y1 > oy0 && probe_y0 < oy1) {
+      return true;
+    }
+  }
   return false;
 }
 
@@ -4246,7 +4286,7 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
     *dx = 0;
     for (int i = 0; i < steps; ++i) {
       a->x += step;
-      if (actor_aabb_hits_tiles(a, step, 0)) {
+      if (actor_aabb_hits_tiles(a, step, 0) || actor_aabb_hits_solid_actors(a, step, 0)) {
         a->x -= step;
         break;
       }
@@ -4260,7 +4300,7 @@ static void resolve_axis_steps(SceneActor* a, int* dx, int* dy) {
     *dy = 0;
     for (int i = 0; i < steps; ++i) {
       a->y += step;
-      if (actor_aabb_hits_tiles(a, 0, step)) {
+      if (actor_aabb_hits_tiles(a, 0, step) || actor_aabb_hits_solid_actors(a, 0, step)) {
         a->y -= step;
         if (step < 0) {
           a->grounded = true;
@@ -5216,6 +5256,13 @@ void turtle_scene_actor_set_visible(bool visible) {
     return;
   }
   s_actors[s_lua_actor_target].visible = visible;
+}
+
+void turtle_scene_actor_set_solid(bool solid) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return;
+  }
+  s_actors[s_lua_actor_target].solid = solid;
 }
 
 void turtle_scene_actor_set_pos(int x, int y) {

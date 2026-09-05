@@ -85,6 +85,10 @@ void turtle_scene_actor_set_flip_h(bool flip_h);
  *  El script sigue recibiendo _update(dt); solo el redibujo consulta `visible`. */
 void turtle_scene_actor_set_visible(bool visible);
 
+/** Activa o desactiva la colision solida del actor Lua actual contra otros actores
+ *  que llaman a move(). Corresponde al campo "solid" del JSON del objeto. */
+void turtle_scene_actor_set_solid(bool solid);
+
 /** Reposiciona al actor Lua actual en (x, y) espacio escena. Sin colision ni clamp
  *  contra tiles -- teleport puro, pensado para hitboxes/overlays que siguen a otro actor
  *  (ver player_attack.lua). El redibujo por rects sucios detecta el cambio por a->x/y

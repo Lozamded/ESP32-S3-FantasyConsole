@@ -88,6 +88,7 @@ class ActorLuaBridge:
         g.flip_h = self._l_flip_h
         g.flip_v = self._l_flip_v
         g.set_visible = self._l_set_visible
+        g.set_solid = self._l_set_solid
         g.set_pos = self._l_set_pos
         g.text = self._l_text
         g.text_width = self._l_text_width
@@ -137,7 +138,10 @@ class ActorLuaBridge:
             return 0, 0
         idx = _round_half_away_from_zero(float(dx))
         idy = _round_half_away_from_zero(float(dy))
-        return move_actor(a, idx, idy, self.session.tile_index, self.session.fw, self.session.fh)
+        return move_actor(
+            a, idx, idy, self.session.tile_index, self.session.fw, self.session.fh,
+            self.session.actors,
+        )
 
     def _l_on_ground(self) -> bool:
         a = self.current_actor
@@ -167,6 +171,11 @@ class ActorLuaBridge:
         a = self.current_actor
         if a is not None:
             a.visible = bool(value)
+
+    def _l_set_solid(self, value: Any = False) -> None:
+        a = self.current_actor
+        if a is not None:
+            a.solid = bool(value)
 
     def _l_set_pos(self, x: Any, y: Any) -> None:
         """Teleport puro sin colision ni clamp -- misma semantica que

@@ -255,6 +255,7 @@ object.new_animation_name_label,Nombre de la animacion:,Animation name:
 object.new_animation_sprite_label,Sprite para la animacion:,Sprite for the animation:
 object.collision_group,Colision,Collision
 object.has_collision,Tiene colision,Has collision
+object.solid,Solido (bloquea move() de otros actores),Solid (blocks other actors' move())
 object.collision_mode_label,Forma:,Shape:
 object.auto_shape,Auto (segun sprite),Auto (from sprite)
 object.points_label,Puntos:,Points:

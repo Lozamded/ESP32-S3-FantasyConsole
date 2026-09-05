@@ -768,7 +768,9 @@
           "id": "brickblock",
           "x": 66,
           "y": 17,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -777,7 +779,9 @@
           "id": "brickblock_2",
           "x": 496,
           "y": 31,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -786,7 +790,9 @@
           "id": "brickblock_3",
           "x": 480,
           "y": 47,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -795,7 +801,9 @@
           "id": "brickblock_4",
           "x": 496,
           "y": 47,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -804,7 +812,9 @@
           "id": "brickblock_5",
           "x": 512,
           "y": 31,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -813,7 +823,9 @@
           "id": "brickblock_6",
           "x": 512,
           "y": 47,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -822,7 +834,9 @@
           "id": "brickblock_7",
           "x": 847,
           "y": 50,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -831,7 +845,9 @@
           "id": "brickblock_8",
           "x": 1207,
           "y": 0,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -840,7 +856,9 @@
           "id": "brickblock_9",
           "x": 1138,
           "y": 16,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -849,7 +867,9 @@
           "id": "brickblock_10",
           "x": 1138,
           "y": 0,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -858,7 +878,9 @@
           "id": "brickblock_11",
           "x": 1191,
           "y": 0,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -867,7 +889,9 @@
           "id": "brickblock_12",
           "x": 1199,
           "y": 15,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -876,7 +900,9 @@
           "id": "brickblock_13",
           "x": 686,
           "y": 31,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -885,7 +911,9 @@
           "id": "brickblock_14",
           "x": 702,
           "y": 31,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -894,7 +922,9 @@
           "id": "brickblock_15",
           "x": 686,
           "y": 46,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         },
@@ -903,7 +933,9 @@
           "id": "brickblock_16",
           "x": 702,
           "y": 46,
-          "tags": [],
+          "tags": [
+            "brick"
+          ],
           "visible": true,
           "z_index": 0
         }

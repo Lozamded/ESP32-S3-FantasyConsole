@@ -115,6 +115,7 @@ class ActorRuntimeState:
     object_id: str = ""
     tags: tuple[str, ...] = ()
     visible: bool = True
+    solid: bool = False
     animations: dict[str, str] = field(default_factory=dict)
     script_stem: str | None = None
     grounded: bool = False
@@ -180,6 +181,7 @@ def build_actor_states(
 
         animations = {a["name"]: a["sprite_id"] for a in objects_mod.parse_object_animations(od)}
         script_stem = objects_mod.parse_object_script(od)
+        solid = bool(od.get("solid", False))
         try:
             x = int(p.get("x", 0))
             y = int(p.get("y", 0))
@@ -192,6 +194,7 @@ def build_actor_states(
                 object_id=oid,
                 tags=tags,
                 visible=visible,
+                solid=solid,
                 x=x,
                 y=y,
                 pw=pw,
@@ -397,14 +400,33 @@ class TileCollisionIndex:
 # ----------------------------------------------------------------------
 
 
-def resolve_axis_steps(a: ActorRuntimeState, dx: int, dy: int, tile_index: TileCollisionIndex) -> tuple[int, int]:
+def _actor_aabb_hits_solid_actors(a: ActorRuntimeState, actors: list[ActorRuntimeState]) -> bool:
+    ax0, ay0, ax1, ay1 = _actor_world_aabb(a)
+    for other in actors:
+        if other is a or not other.solid:
+            continue
+        ox0, oy0, ox1, oy1 = _actor_world_aabb(other)
+        if ax1 > ox0 and ax0 < ox1 and ay1 > oy0 and ay0 < oy1:
+            return True
+    return False
+
+
+def resolve_axis_steps(
+    a: ActorRuntimeState,
+    dx: int,
+    dy: int,
+    tile_index: TileCollisionIndex,
+    actors: list[ActorRuntimeState] | None = None,
+) -> tuple[int, int]:
     if dx != 0:
         step = 1 if dx > 0 else -1
         moved = 0
         for _ in range(abs(dx)):
             a.x += step
             x0, y0, x1, y1 = _actor_world_aabb(a)
-            if tile_index.actor_hits(x0, y0, x1, y1, step, 0):
+            if tile_index.actor_hits(x0, y0, x1, y1, step, 0) or (
+                actors is not None and _actor_aabb_hits_solid_actors(a, actors)
+            ):
                 a.x -= step
                 break
             moved += step
@@ -415,7 +437,9 @@ def resolve_axis_steps(a: ActorRuntimeState, dx: int, dy: int, tile_index: TileC
         for _ in range(abs(dy)):
             a.y += step
             x0, y0, x1, y1 = _actor_world_aabb(a)
-            if tile_index.actor_hits(x0, y0, x1, y1, 0, step):
+            if tile_index.actor_hits(x0, y0, x1, y1, 0, step) or (
+                actors is not None and _actor_aabb_hits_solid_actors(a, actors)
+            ):
                 a.y -= step
                 if step < 0:
                     a.grounded = True
@@ -439,7 +463,11 @@ def clamp_actor_pos(a: ActorRuntimeState, world_w: int, world_h: int) -> None:
         a.y = max_y
 
 
-def actor_touching_ground(a: ActorRuntimeState, tile_index: TileCollisionIndex) -> bool:
+def actor_touching_ground(
+    a: ActorRuntimeState,
+    tile_index: TileCollisionIndex,
+    actors: list[ActorRuntimeState] | None = None,
+) -> bool:
     x0, y0, x1, y1 = _actor_world_aabb(a)
     if y0 <= 0:
         return True
@@ -451,23 +479,40 @@ def actor_touching_ground(a: ActorRuntimeState, tile_index: TileCollisionIndex) 
     gx1 = _trunc_div(x1, px)
     gy = tile_index.rows - 1 - _trunc_div(probe_y0, px)
     if gy < 0 or gy >= tile_index.rows:
-        return False
-    for gx in range(gx0, gx1 + 1):
-        if gx < 0 or gx >= tile_index.cols:
-            continue
-        if tile_index.cell_blocks(gx, gy, x0, probe_y0, x1, probe_y1, 0, -1, ground_probe=True):
-            return True
+        pass
+    else:
+        for gx in range(gx0, gx1 + 1):
+            if gx < 0 or gx >= tile_index.cols:
+                continue
+            if tile_index.cell_blocks(gx, gy, x0, probe_y0, x1, probe_y1, 0, -1, ground_probe=True):
+                return True
+    # Actores solidos: sondeo 1px hacia abajo igual que con tiles.
+    if actors:
+        for other in actors:
+            if other is a or not other.solid:
+                continue
+            ox0, oy0, ox1, oy1 = _actor_world_aabb(other)
+            if x1 > ox0 and x0 < ox1 and probe_y1 > oy0 and probe_y0 < oy1:
+                return True
     return False
 
 
-def move_actor(a: ActorRuntimeState, dx: int, dy: int, tile_index: TileCollisionIndex, world_w: int, world_h: int) -> tuple[int, int]:
+def move_actor(
+    a: ActorRuntimeState,
+    dx: int,
+    dy: int,
+    tile_index: TileCollisionIndex,
+    world_w: int,
+    world_h: int,
+    actors: list[ActorRuntimeState] | None = None,
+) -> tuple[int, int]:
     a.grounded = False
     out_dx, out_dy = 0, 0
     if dx != 0 or dy != 0:
-        out_dx, out_dy = resolve_axis_steps(a, dx, dy, tile_index)
+        out_dx, out_dy = resolve_axis_steps(a, dx, dy, tile_index, actors)
         clamp_actor_pos(a, world_w, world_h)
     if not a.grounded:
-        a.grounded = actor_touching_ground(a, tile_index)
+        a.grounded = actor_touching_ground(a, tile_index, actors)
     return out_dx, out_dy
 
 

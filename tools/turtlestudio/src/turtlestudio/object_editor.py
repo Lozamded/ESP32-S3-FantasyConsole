@@ -381,6 +381,7 @@ class ObjectEditorWidget(QWidget):
         self.animations: list[dict[str, str]] = []
         self.collision: dict[str, Any] | None = None
         self.script: str | None = None
+        self.solid: bool = False
         self._dirty = False
         self._suspend = False
         self._history = SnapshotHistory()
@@ -553,6 +554,10 @@ class ObjectEditorWidget(QWidget):
         self.btn_auto_shape.clicked.connect(self._action_auto_shape)
         coll_layout.addWidget(self.btn_auto_shape)
 
+        self.chk_solid = QCheckBox(tr("object.solid"))
+        self.chk_solid.toggled.connect(self._on_solid_toggled)
+        coll_layout.addWidget(self.chk_solid)
+
         side.addWidget(coll_box)
         side.addStretch()
         root.addLayout(side)
@@ -622,12 +627,16 @@ class ObjectEditorWidget(QWidget):
         )
         raw_coll = data.get("collision")
         self.collision = dict(raw_coll) if isinstance(raw_coll, dict) else None
+        self.solid = bool(data.get("solid", False))
         self._dirty = False
 
         self._suspend = True
         self.lbl_object_id.setText(self.object_id)
         self.edit_name.setText(str(data.get("name", self.object_id)))
         self.edit_script.setText(self.script or "")
+        self.chk_solid.blockSignals(True)
+        self.chk_solid.setChecked(self.solid)
+        self.chk_solid.blockSignals(False)
         self._refresh_sprite_label()
         self._suspend = False
         self._refresh_animation_list()
@@ -647,6 +656,7 @@ class ObjectEditorWidget(QWidget):
             "script": self.script,
             "animations": self.animations,
             "collision": self.collision,
+            "solid": self.solid,
         }
 
     def _commit_history(self) -> None:
@@ -661,10 +671,14 @@ class ObjectEditorWidget(QWidget):
             self.script = state["script"]
             self.animations = state["animations"]
             self.collision = state["collision"]
+            self.solid = state.get("solid", False)
 
             self._suspend = True
             self.edit_name.setText(state["name"])
             self.edit_script.setText(self.script or "")
+            self.chk_solid.blockSignals(True)
+            self.chk_solid.setChecked(self.solid)
+            self.chk_solid.blockSignals(False)
             self._refresh_sprite_label()
             self._suspend = False
 
@@ -794,6 +808,13 @@ class ObjectEditorWidget(QWidget):
     def _on_preview_collision_drag_finished(self) -> None:
         self._commit_history()
 
+    def _on_solid_toggled(self, checked: bool) -> None:
+        if self._suspend:
+            return
+        self.solid = checked
+        self._mark_dirty()
+        self._commit_history()
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -874,6 +895,7 @@ class ObjectEditorWidget(QWidget):
                 animations=self.animations,
                 collision=self.collision,
                 script=self.script,
+                solid=self.solid,
             )
         except ValueError as e:
             QMessageBox.warning(self, tr("object.save_error_title"), str(e))

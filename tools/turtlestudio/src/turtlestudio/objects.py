@@ -383,6 +383,7 @@ def object_payload(
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
     script: str | None = None,
+    solid: bool = False,
 ) -> dict[str, object]:
     oid = validate_object_id(object_id)
     display = name.strip() or oid
@@ -402,6 +403,8 @@ def object_payload(
         ]
     if collision is not None:
         payload["collision"] = collision_to_json(collision)
+    if solid:
+        payload["solid"] = True
     return payload
 
 
@@ -431,6 +434,7 @@ def write_object_json(
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
     script: str | None = None,
+    solid: bool = False,
 ) -> Path:
     oid = validate_object_id(object_id)
     sprite_ok = validate_sprite_ref(project_root, sprite_id)
@@ -449,6 +453,7 @@ def write_object_json(
         animations=anims_ok,
         collision=coll_ok,
         script=script_ok,
+        solid=solid,
     )
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
@@ -466,6 +471,7 @@ def save_object_json(
     animations: list[dict[str, str]] | None = None,
     collision: ObjectCollision | None = None,
     script: str | None = None,
+    solid: bool = False,
 ) -> Path:
     oid = validate_object_id(object_id)
     sprite_ok = validate_sprite_ref(project_root, sprite_id)
@@ -482,6 +488,7 @@ def save_object_json(
         animations=anims_ok,
         collision=coll_ok,
         script=script_ok,
+        solid=solid,
     )
     path.write_text(
         json.dumps(payload, indent=2, ensure_ascii=False) + "\n",

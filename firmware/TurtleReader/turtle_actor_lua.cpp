@@ -161,6 +161,14 @@ static int l_set_visible(lua_State* L) {
   return 0;
 }
 
+/** set_solid(bool) — activa/desactiva la colision solida de este actor contra otros
+ *  actores que llaman a move(). Util para bloques destructibles: set_solid(false) al
+ *  iniciar la animacion de destruccion para que dejen de bloquear al jugador. */
+static int l_set_solid(lua_State* L) {
+  turtle_scene_actor_set_solid(lua_toboolean(L, 1));
+  return 0;
+}
+
 /** set_pos(x, y) — teleport puro del actor actual, sin colision ni clamp. Pensado para
  *  hitboxes/overlays que reposicionan cada frame siguiendo a otro actor (ver
  *  player_attack.lua). El redibujo por rects sucios se encarga de borrar el rect previo. */
@@ -388,6 +396,9 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_set_visible);
   lua_setglobal(L, "set_visible");
+
+  lua_pushcfunction(L, l_set_solid);
+  lua_setglobal(L, "set_solid");
 
   lua_pushcfunction(L, l_set_pos);
   lua_setglobal(L, "set_pos");
