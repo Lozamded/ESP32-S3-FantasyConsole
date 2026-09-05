@@ -4869,6 +4869,21 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   s_runtime_json_end = json_end;
   s_runtime_sc_start = sc_start;
   s_runtime_sc_end = sc_end;
+  // Paleta por escena: "palette_colors" incrustado en el bundle por TurtleStudio.
+  // Si ausente, la paleta actual (del cartucho o escena previa) permanece.
+  {
+    const char* pk = strstr_bounded(sc_start, sc_end, "\"palette_colors\"");
+    if (pk) {
+      const char* p = pk + strlen("\"palette_colors\"");
+      while (p < sc_end && *p != '[') ++p;
+      if (p < sc_end && *p == '[') {
+        const char* arr_end = json_array_end(p);
+        if (arr_end && arr_end > p + 1) {
+          turtle_gpu_palette_from_json_array(p + 1, static_cast<size_t>(arr_end - p - 1));
+        }
+      }
+    }
+  }
   turtle_gpu_set_camera(0, 0);
   turtle_gpu_cls(static_cast<uint8_t>(bg));
   // spec/hud-border-v0.md "bg_color_index": pintar la region HUD (fuera del playfield) con el

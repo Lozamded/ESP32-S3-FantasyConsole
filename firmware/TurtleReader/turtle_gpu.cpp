@@ -210,6 +210,33 @@ int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len) {
   return n_user;
 }
 
+int turtle_gpu_palette_from_json_array(const char* arr_inner, size_t arr_len) {
+  const char* p = arr_inner;
+  const char* end = arr_inner + arr_len;
+  int slot = 0;
+  while (p < end && slot < kNColors) {
+    while (p < end && (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r' || *p == ',')) {
+      ++p;
+    }
+    if (p >= end) break;
+    if (*p != '"') { ++p; continue; }
+    ++p;
+    const char* str_start = p;
+    while (p < end && *p != '"') ++p;
+    uint8_t r = 0, g = 0, b = 0;
+    if (parse_hex_rgb_line(str_start, static_cast<size_t>(p - str_start), &r, &g, &b)) {
+      s_palette[slot++] = rgb565(r, g, b);
+    }
+    if (p < end) ++p;
+  }
+  const int n_user = slot;
+  if (n_user == 0) return 0;
+  while (slot < kNColors) {
+    s_palette[slot++] = rgb565(0, 0, 0);
+  }
+  return n_user;
+}
+
 #if TURTLE_USE_DISPLAY
 #define LGFX_USE_V1
 #include <LovyanGFX.hpp>

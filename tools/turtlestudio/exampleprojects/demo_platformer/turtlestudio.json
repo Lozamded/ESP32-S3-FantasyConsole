@@ -9,14 +9,14 @@
   "scenes": [
     {
       "id": "intro",
-      "palette": "palettes/palette.txt",
+      "palette": "palettes/titlescreen.txt",
       "background_index": 1,
       "background_layers": [
         {
           "enabled": true,
           "color_index": 1,
           "opacity": 255,
-          "background": "intro_bg",
+          "background": "title_bg",
           "parallax_x": 1.0,
           "fixed": false,
           "repeat_x": false
@@ -25,7 +25,7 @@
           "enabled": false,
           "color_index": 0,
           "opacity": 255,
-          "background": "intro_bg",
+          "background": "",
           "parallax_x": 1.0,
           "fixed": false,
           "repeat_x": false
@@ -58,7 +58,7 @@
           "x": 25,
           "y": 11,
           "font": "default",
-          "color_index": -1,
+          "color_index": 30,
           "blink_ms": 200
         }
       ],
@@ -735,8 +735,8 @@
         {
           "object": "robot",
           "id": "robot",
-          "x": 251,
-          "y": 32,
+          "x": 311,
+          "y": 16,
           "tags": [],
           "visible": true,
           "z_index": 0
@@ -3384,7 +3384,7 @@
     },
     {
       "id": "game_over",
-      "palette": "palettes/palette.txt",
+      "palette": "palettes/gameover.txt",
       "background_index": 1,
       "background_layers": [
         {
@@ -3433,7 +3433,7 @@
           "x": 19,
           "y": 6,
           "font": "default",
-          "color_index": -1,
+          "color_index": 30,
           "blink_ms": 200
         }
       ],
@@ -3821,7 +3821,7 @@
       "camera_hud_border_right": 0
     }
   ],
-  "active_scene": "Lvl_1",
+  "active_scene": "intro",
   "transparent_index": 31,
   "target_fps": 30,
   "default_anim_fps": 8,

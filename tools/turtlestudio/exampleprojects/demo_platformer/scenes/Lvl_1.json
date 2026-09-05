@@ -290,8 +290,8 @@
     {
       "object": "robot",
       "id": "robot",
-      "x": 251,
-      "y": 32,
+      "x": 311,
+      "y": 16,
       "tags": [],
       "visible": true,
       "z_index": 0

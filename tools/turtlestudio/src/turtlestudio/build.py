@@ -380,6 +380,20 @@ def collect_studio_bundle_files(
     ti = clamp_transparent_index(transparent_index)
     tile_px = _manifest_tile_px(root)
 
+    # Incrustar colores de paleta por escena; el firmware los aplica en turtle_scene_begin_runtime.
+    enhanced_scenes: list[dict[str, Any]] = []
+    for _row in scenes:
+        if isinstance(_row, dict):
+            _pal_rel = str(_row.get("palette", "")).strip()
+            if _pal_rel:
+                _pal_path = (root / _pal_rel).resolve()
+                if _pal_path.is_file():
+                    _colors = load_palette_lines(_pal_path)
+                    if _colors:
+                        _row = {**_row, "palette_colors": _colors}
+        enhanced_scenes.append(_row)
+    scenes = enhanced_scenes
+
     oids_in_scenes: set[str] = set()
     bg_stems: set[str] = set()
     tile_stems: set[str] = collect_tileset_stems_from_scenes(scenes)

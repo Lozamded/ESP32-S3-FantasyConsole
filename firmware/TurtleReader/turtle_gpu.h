@@ -58,6 +58,8 @@ void turtle_gpu_init(void);
 void turtle_gpu_register_lua(struct lua_State* L);
 void turtle_gpu_palette_reset_default(void);
 int turtle_gpu_palette_from_hex_text(const char* text, size_t text_len);
+/** Aplica paleta desde array JSON de strings "#RRGGBB" (sin corchetes). */
+int turtle_gpu_palette_from_json_array(const char* arr_inner, size_t arr_len);
 
 /** Indices 0..31; rellena framebuffer con indice de color. */
 void turtle_gpu_cls(uint8_t color_index);
