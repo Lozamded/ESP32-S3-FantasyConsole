@@ -7,6 +7,7 @@
 function _update(dt)
   if btnp(4) or btnp(5) or btnp(6) or btnp(7) then
     state_set("lifes", 4) 
+    state_set("gears",0)
     goto_scene("intro")
   end
 end

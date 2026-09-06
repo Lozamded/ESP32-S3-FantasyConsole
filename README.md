@@ -31,6 +31,16 @@ A fantasy game console running on the **ESP32-S3**. Games are distributed as `.t
 
 ---
 
+## Diagram
+
+The diagram shows the pinout to solder or make a PCB, this picture is a complete mess but on the [images](images/) directory have diagrams by part
+
+![complete_diagram](images/complete_diagram.png?style=center)
+
+
+---
+
+
 ## Firmware installation
 
 ### 1. Install the Lua54 Arduino library
