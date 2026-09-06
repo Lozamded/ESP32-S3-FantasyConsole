@@ -1,0 +1,28 @@
+{
+  "id": "assets/binary-formats",
+  "title": "Asset Binary Formats",
+  "description": "TurtleStudio edits assets as JSON on disk. When exporting to the SD package (build/), pixel data is baked into compact binary files.",
+  "source": "@site/docs/assets/binary-formats.md",
+  "sourceDirName": "assets",
+  "slug": "/assets/binary-formats",
+  "permalink": "/assets/binary-formats",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "binary-formats",
+    "sidebar_position": 1,
+    "title": "Asset Binary Formats"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Sprite Spec",
+    "permalink": "/assets/sprite-spec"
+  },
+  "next": {
+    "title": "HUD Border",
+    "permalink": "/gui/hud-border"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "id": "lua/object-scripts",
+  "title": "Object Scripts",
+  "description": "Object scripts provide per-instance game logic: reading input, moving, and changing animations. Sprite drawing and the frame loop stay in C++ (turtle_scene); Lua decides behavior and position.",
+  "source": "@site/docs/lua/object-scripts.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/object-scripts",
+  "permalink": "/lua/object-scripts",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 3,
+  "frontMatter": {
+    "id": "object-scripts",
+    "sidebar_position": 3,
+    "title": "Object Scripts"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "ENTRY VM",
+    "permalink": "/lua/entry-vm"
+  },
+  "next": {
+    "title": "Animation",
+    "permalink": "/lua/animation"
+  }
+}

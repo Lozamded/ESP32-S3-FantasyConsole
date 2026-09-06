@@ -1,0 +1,24 @@
+{
+  "id": "turtlestudio/guide",
+  "title": "TurtleStudio Guide",
+  "description": "TurtleStudio is the Python authoring tool for TurtleReader projects. It ships a CLI and a Dear PyGui GUI editor.",
+  "source": "@site/docs/turtlestudio/guide.md",
+  "sourceDirName": "turtlestudio",
+  "slug": "/turtlestudio/guide",
+  "permalink": "/turtlestudio/guide",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "guide",
+    "sidebar_position": 1,
+    "title": "TurtleStudio Guide"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "GUI Layers",
+    "permalink": "/gui/gui-layers"
+  }
+}

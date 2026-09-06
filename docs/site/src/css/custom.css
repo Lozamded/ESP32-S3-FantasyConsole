@@ -1,0 +1,223 @@
+/* TurtleReader Docs — retro pixel-art theme inspired by the 164×124 fantasy console */
+
+@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap');
+
+/* ── Palette ─────────────────────────────────────────────────────────────────
+   Inspired by the 32-color Genesis-style default palette of TurtleReader:
+   dark navy bg, teal/green accent, amber highlight, off-white text.
+──────────────────────────────────────────────────────────────────────────── */
+:root {
+  --ifm-color-primary: #00d4aa;
+  --ifm-color-primary-dark: #00b994;
+  --ifm-color-primary-darker: #00a888;
+  --ifm-color-primary-darkest: #008a6f;
+  --ifm-color-primary-light: #1adbb4;
+  --ifm-color-primary-lighter: #2ddebb;
+  --ifm-color-primary-lightest: #55e5c7;
+
+  --ifm-code-font-size: 90%;
+  --ifm-font-family-monospace: 'Share Tech Mono', monospace;
+  --ifm-heading-font-family: 'Press Start 2P', monospace;
+  --ifm-font-family-base: 'Share Tech Mono', monospace;
+
+  --ifm-background-color: #0d0f1a;
+  --ifm-background-surface-color: #13162a;
+  --ifm-navbar-background-color: #0a0c16;
+  --ifm-footer-background-color: #0a0c16;
+
+  --ifm-heading-color: #00d4aa;
+  --ifm-link-color: #00d4aa;
+  --ifm-link-hover-color: #2ddebb;
+
+  --ifm-toc-border-color: #1e2244;
+  --ifm-sidebar-border-color: #1e2244;
+
+  --docusaurus-highlighted-code-line-bg: rgba(0, 212, 170, 0.08);
+}
+
+/* Dark mode is the only mode for this console */
+[data-theme='dark'] {
+  --ifm-color-primary: #00d4aa;
+  --ifm-background-color: #0d0f1a;
+  --ifm-background-surface-color: #13162a;
+  --ifm-card-background-color: #13162a;
+  --ifm-navbar-background-color: #0a0c16;
+  --ifm-footer-background-color: #0a0c16;
+  --ifm-heading-color: #00d4aa;
+  --ifm-link-color: #00d4aa;
+  --ifm-font-color-base: #c8d8d0;
+}
+
+/* ── Typography ──────────────────────────────────────────────────────────── */
+h1, h2, h3, h4 {
+  font-family: 'Press Start 2P', monospace;
+  letter-spacing: 0.02em;
+  line-height: 1.6;
+}
+
+h1 { font-size: 1.4rem; }
+h2 { font-size: 1.0rem; }
+h3 { font-size: 0.8rem; }
+
+p, li, td, th {
+  font-family: 'Share Tech Mono', monospace;
+  line-height: 1.8;
+}
+
+/* ── Navbar ──────────────────────────────────────────────────────────────── */
+.navbar {
+  border-bottom: 2px solid var(--ifm-color-primary);
+  box-shadow: 0 2px 0 rgba(0, 212, 170, 0.15);
+}
+
+.navbar__title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.75rem;
+  color: var(--ifm-color-primary);
+  letter-spacing: 0.1em;
+}
+
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+.menu__link {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.85rem;
+  border-left: 2px solid transparent;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.menu__link--active {
+  border-left: 2px solid var(--ifm-color-primary);
+  color: var(--ifm-color-primary) !important;
+}
+
+.menu__link:hover {
+  border-left: 2px solid var(--ifm-color-primary-light);
+  color: var(--ifm-color-primary-light);
+}
+
+/* ── Code blocks ─────────────────────────────────────────────────────────── */
+code {
+  background: #1a1d33;
+  border: 1px solid #2a2d4a;
+  border-radius: 0;
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.9em;
+  padding: 0.1em 0.4em;
+  color: #f0c040;
+}
+
+pre {
+  border: 1px solid #2a2d4a;
+  border-radius: 0;
+  background: #0d0f1a !important;
+}
+
+pre code {
+  background: none;
+  border: none;
+  color: inherit;
+  padding: 0;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────── */
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.85rem;
+}
+
+th {
+  background: #1a1d33;
+  color: var(--ifm-color-primary);
+  border: 1px solid #2a2d4a;
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+}
+
+td {
+  border: 1px solid #1e2244;
+  padding: 0.4rem 0.75rem;
+}
+
+tr:nth-child(even) td {
+  background: #13162a;
+}
+
+/* ── Admonitions (tips, notes, warnings) ─────────────────────────────────── */
+.alert {
+  border-radius: 0;
+  border-left-width: 4px;
+  font-family: 'Share Tech Mono', monospace;
+}
+
+/* ── Footer ──────────────────────────────────────────────────────────────── */
+.footer {
+  border-top: 2px solid var(--ifm-color-primary);
+}
+
+.footer__title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.65rem;
+  color: var(--ifm-color-primary);
+}
+
+/* ── Pixel-art CRT scanline overlay (subtle) ─────────────────────────────── */
+body::before {
+  content: '';
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ── Homepage hero ───────────────────────────────────────────────────────── */
+.hero {
+  background: linear-gradient(160deg, #0d0f1a 0%, #13162a 100%);
+  border-bottom: 2px solid var(--ifm-color-primary);
+}
+
+.hero__title {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 1.8rem;
+  color: var(--ifm-color-primary);
+  text-shadow: 0 0 20px rgba(0, 212, 170, 0.4);
+  line-height: 1.8;
+}
+
+.hero__subtitle {
+  font-family: 'Share Tech Mono', monospace;
+  color: #7a9090;
+  font-size: 1rem;
+}
+
+.button--primary {
+  background: var(--ifm-color-primary);
+  border-color: var(--ifm-color-primary);
+  border-radius: 0;
+  color: #0d0f1a;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1.5rem;
+}
+
+.button--primary:hover {
+  background: var(--ifm-color-primary-light);
+  border-color: var(--ifm-color-primary-light);
+  color: #0d0f1a;
+}
+
+.button--secondary {
+  border-radius: 0;
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.65rem;
+  letter-spacing: 0.05em;
+  padding: 0.75rem 1.5rem;
+}

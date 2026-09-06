@@ -1,0 +1,28 @@
+{
+  "id": "cartridge/turtlecart-format",
+  "title": ".turtlecart Format",
+  "description": "A .turtlecart file is a plain-text container with an ordered set of sections. It's designed for simplicity: readable on any text editor, easy to parse on the ESP32.",
+  "source": "@site/docs/cartridge/turtlecart-format.md",
+  "sourceDirName": "cartridge",
+  "slug": "/cartridge/turtlecart-format",
+  "permalink": "/cartridge/turtlecart-format",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "turtlecart-format",
+    "sidebar_position": 1,
+    "title": ".turtlecart Format"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Introduction",
+    "permalink": "/intro"
+  },
+  "next": {
+    "title": "Scene Format",
+    "permalink": "/scene/scene-format"
+  }
+}

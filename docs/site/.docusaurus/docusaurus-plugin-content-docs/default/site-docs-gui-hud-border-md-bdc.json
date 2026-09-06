@@ -1,0 +1,28 @@
+{
+  "id": "gui/hud-border",
+  "title": "HUD Border",
+  "description": "The HUD border reserves fixed pixel strips along the framebuffer edges for permanent on-screen UI — score, lives, minimap, timer — by shrinking the camera's playfield. This is method 1 of GUI transient overlays for menus, pause screens, and dialogues.",
+  "source": "@site/docs/gui/hud-border.md",
+  "sourceDirName": "gui",
+  "slug": "/gui/hud-border",
+  "permalink": "/gui/hud-border",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "id": "hud-border",
+    "sidebar_position": 2,
+    "title": "HUD Border"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Asset Binary Formats",
+    "permalink": "/assets/binary-formats"
+  },
+  "next": {
+    "title": "GUI Layers",
+    "permalink": "/gui/gui-layers"
+  }
+}

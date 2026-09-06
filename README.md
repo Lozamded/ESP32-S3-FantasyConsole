@@ -209,6 +209,32 @@ One Lua VM per actor, ticked every frame via `_update(dt)` (dt in seconds).
 
 ---
 
+## Documentation site
+
+The `docs/site/` folder contains a Docusaurus 3 site with the full spec reference (cartridge format, scene format, Lua API, asset formats, GUI layers, TurtleStudio guide).
+
+### Requirements
+
+- Node.js **18+**
+
+### Run locally
+
+```bash
+cd docs/site
+npm install
+npm start          # dev server → http://localhost:3000
+```
+
+### Build static output
+
+```bash
+cd docs/site
+npm run build      # output in docs/site/build/
+npm run serve      # preview the built site locally
+```
+
+---
+
 ## Project structure
 
 ```

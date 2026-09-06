@@ -1,0 +1,28 @@
+{
+  "id": "gui/gui-layers",
+  "title": "GUI Layers",
+  "description": "GUI layers are stackable overlays defined in the cart bundle and shown/hidden at runtime from Lua. They handle menus, dialogues, inventory screens, title cards, game-over screens, and non-modal popups — any transient UI that doesn't fit in the permanent HUD strip.",
+  "source": "@site/docs/gui/gui-layers.md",
+  "sourceDirName": "gui",
+  "slug": "/gui/gui-layers",
+  "permalink": "/gui/gui-layers",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "gui-layers",
+    "sidebar_position": 1,
+    "title": "GUI Layers"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "HUD Border",
+    "permalink": "/gui/hud-border"
+  },
+  "next": {
+    "title": "TurtleStudio Guide",
+    "permalink": "/turtlestudio/guide"
+  }
+}

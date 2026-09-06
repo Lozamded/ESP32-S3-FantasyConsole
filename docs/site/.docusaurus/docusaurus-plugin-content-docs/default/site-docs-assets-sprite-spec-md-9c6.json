@@ -1,0 +1,28 @@
+{
+  "id": "assets/sprite-spec",
+  "title": "Sprite Spec",
+  "description": "Sprites in TurtleStudio are JSON assets stored in objects/Sprites/.json. They define pixel art with optional multiple frames, a palette reference, an anchor origin, and a collision shape when attached to an object.",
+  "source": "@site/docs/assets/sprite-spec.md",
+  "sourceDirName": "assets",
+  "slug": "/assets/sprite-spec",
+  "permalink": "/assets/sprite-spec",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "id": "sprite-spec",
+    "sidebar_position": 2,
+    "title": "Sprite Spec"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Input",
+    "permalink": "/lua/input"
+  },
+  "next": {
+    "title": "Asset Binary Formats",
+    "permalink": "/assets/binary-formats"
+  }
+}

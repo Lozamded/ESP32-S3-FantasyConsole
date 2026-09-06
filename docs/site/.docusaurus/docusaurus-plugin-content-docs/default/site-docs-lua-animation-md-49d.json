@@ -1,0 +1,28 @@
+{
+  "id": "lua/animation",
+  "title": "Animation",
+  "description": "Sprite animation is controlled from Lua via the animations list defined in the object's JSON. C++ advances frames automatically after _update(dt) runs.",
+  "source": "@site/docs/lua/animation.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/animation",
+  "permalink": "/lua/animation",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 4,
+  "frontMatter": {
+    "id": "animation",
+    "sidebar_position": 4,
+    "title": "Animation"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Object Scripts",
+    "permalink": "/lua/object-scripts"
+  },
+  "next": {
+    "title": "Physics",
+    "permalink": "/lua/physics"
+  }
+}

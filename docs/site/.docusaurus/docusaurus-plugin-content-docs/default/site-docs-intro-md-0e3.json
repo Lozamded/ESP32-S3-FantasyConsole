@@ -1,0 +1,25 @@
+{
+  "id": "intro",
+  "title": "Introduction",
+  "description": "TurtleReader is a fantasy console targeting the ESP32-S3 microcontroller. Games are distributed as .turtlecart cartridges stored on a microSD card. Game logic runs on an embedded Lua 5.4 VM.",
+  "source": "@site/docs/intro.md",
+  "sourceDirName": ".",
+  "slug": "/intro",
+  "permalink": "/intro",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "intro",
+    "slug": "/intro",
+    "sidebar_position": 1,
+    "title": "Introduction"
+  },
+  "sidebar": "mainSidebar",
+  "next": {
+    "title": ".turtlecart Format",
+    "permalink": "/cartridge/turtlecart-format"
+  }
+}

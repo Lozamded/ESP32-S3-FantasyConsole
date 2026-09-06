@@ -1,0 +1,28 @@
+{
+  "id": "lua/input",
+  "title": "Input",
+  "description": "Button indices",
+  "source": "@site/docs/lua/input.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/input",
+  "permalink": "/lua/input",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 6,
+  "frontMatter": {
+    "id": "input",
+    "sidebar_position": 6,
+    "title": "Input"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Physics",
+    "permalink": "/lua/physics"
+  },
+  "next": {
+    "title": "Sprite Spec",
+    "permalink": "/assets/sprite-spec"
+  }
+}

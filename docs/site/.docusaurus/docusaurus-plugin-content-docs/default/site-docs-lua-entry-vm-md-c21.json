@@ -1,0 +1,28 @@
+{
+  "id": "lua/entry-vm",
+  "title": "ENTRY VM",
+  "description": "The ENTRY script is declared in the ENTRY scripts/global.lua). The firmware executes it once during setup(), before the scene runtime starts.",
+  "source": "@site/docs/lua/entry-vm.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/entry-vm",
+  "permalink": "/lua/entry-vm",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "id": "entry-vm",
+    "sidebar_position": 2,
+    "title": "ENTRY VM"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Lua API Overview",
+    "permalink": "/lua/overview"
+  },
+  "next": {
+    "title": "Object Scripts",
+    "permalink": "/lua/object-scripts"
+  }
+}

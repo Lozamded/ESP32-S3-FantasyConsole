@@ -1,0 +1,28 @@
+{
+  "id": "lua/physics",
+  "title": "Physics",
+  "description": "Movement and collision for actors in scene. Inspired by Godot's moveandcollide — per-axis, no slope sliding.",
+  "source": "@site/docs/lua/physics.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/physics",
+  "permalink": "/lua/physics",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 5,
+  "frontMatter": {
+    "id": "physics",
+    "sidebar_position": 5,
+    "title": "Physics"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Animation",
+    "permalink": "/lua/animation"
+  },
+  "next": {
+    "title": "Input",
+    "permalink": "/lua/input"
+  }
+}

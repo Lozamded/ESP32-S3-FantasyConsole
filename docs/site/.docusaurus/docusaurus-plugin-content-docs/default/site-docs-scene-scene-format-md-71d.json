@@ -1,0 +1,28 @@
+{
+  "id": "scene/scene-format",
+  "title": "Scene Format",
+  "description": "A scene defines the visual space where a game takes place0; no field in any version is required.",
+  "source": "@site/docs/scene/scene-format.md",
+  "sourceDirName": "scene",
+  "slug": "/scene/scene-format",
+  "permalink": "/scene/scene-format",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "scene-format",
+    "sidebar_position": 1,
+    "title": "Scene Format"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": ".turtlecart Format",
+    "permalink": "/cartridge/turtlecart-format"
+  },
+  "next": {
+    "title": "Lua API Overview",
+    "permalink": "/lua/overview"
+  }
+}

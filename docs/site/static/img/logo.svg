@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+  <!-- Pixel-art turtle shell inspired by the TurtleReader console -->
+  <rect width="40" height="40" fill="#0d0f1a"/>
+  <!-- Shell body -->
+  <rect x="10" y="12" width="20" height="16" rx="2" fill="#00d4aa"/>
+  <!-- Shell segments -->
+  <rect x="18" y="12" width="4" height="16" fill="#0a0c16"/>
+  <rect x="10" y="18" width="20" height="4" fill="#0a0c16"/>
+  <!-- Head -->
+  <rect x="16" y="8" width="8" height="6" rx="1" fill="#00d4aa"/>
+  <!-- Eyes -->
+  <rect x="18" y="10" width="2" height="2" fill="#0d0f1a"/>
+  <rect x="22" y="10" width="2" height="2" fill="#0d0f1a"/>
+  <!-- Feet -->
+  <rect x="8" y="22" width="4" height="4" rx="1" fill="#00d4aa"/>
+  <rect x="28" y="22" width="4" height="4" rx="1" fill="#00d4aa"/>
+  <rect x="12" y="28" width="4" height="4" rx="1" fill="#00d4aa"/>
+  <rect x="24" y="28" width="4" height="4" rx="1" fill="#00d4aa"/>
+</svg>

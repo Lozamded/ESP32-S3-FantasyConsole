@@ -1,0 +1,76 @@
+.main {
+  padding: 3rem 0;
+}
+
+.heroCta {
+  display: flex;
+  gap: 1rem;
+  margin-top: 2rem;
+  flex-wrap: wrap;
+}
+
+/* ── Spec badges row ─────────────────────────────────────────────────────── */
+.specs {
+  display: flex;
+  gap: 1.5rem;
+  justify-content: center;
+  flex-wrap: wrap;
+  margin-bottom: 3rem;
+  padding: 1.5rem;
+  border: 1px solid #2a2d4a;
+  background: #13162a;
+}
+
+.specBadge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.specBadge span {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.85rem;
+  color: #00d4aa;
+}
+
+.specBadge label {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.7rem;
+  color: #7a9090;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+/* ── Section card grid ───────────────────────────────────────────────────── */
+.cardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.5rem;
+}
+
+.specCard {
+  border: 1px solid #2a2d4a;
+  padding: 1.5rem;
+  background: #13162a;
+  transition: border-color 0.2s;
+}
+
+.specCard:hover {
+  border-color: #00d4aa;
+}
+
+.specCard h3 {
+  font-family: 'Press Start 2P', monospace;
+  font-size: 0.7rem;
+  color: #00d4aa;
+  margin-bottom: 0.75rem;
+}
+
+.specCard p {
+  font-family: 'Share Tech Mono', monospace;
+  font-size: 0.85rem;
+  color: #9ab0aa;
+  margin-bottom: 1rem;
+  line-height: 1.6;
+}
