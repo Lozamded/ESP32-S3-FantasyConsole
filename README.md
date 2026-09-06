@@ -233,8 +233,6 @@ npm run build      # output in docs/site/build/
 npm run serve      # preview the built site locally
 ```
 
----
-
 ## Project structure
 
 ```
