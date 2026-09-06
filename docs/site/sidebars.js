@@ -12,7 +12,11 @@ const sidebars = {
     {
       type: 'category',
       label: 'Scene Format',
-      items: ['scene/scene-format'],
+      items: [
+        'scene/scene-format',
+        'scene/text-labels',
+        'scene/object-identity',
+      ],
     },
     {
       type: 'category',
@@ -24,6 +28,9 @@ const sidebars = {
         'lua/animation',
         'lua/physics',
         'lua/input',
+        'lua/scene-script',
+        'lua/state',
+        'lua/firmware-bridge',
       ],
     },
     {
@@ -40,6 +47,11 @@ const sidebars = {
       type: 'category',
       label: 'TurtleStudio',
       items: ['turtlestudio/guide'],
+    },
+    {
+      type: 'category',
+      label: 'Hardware',
+      items: ['hardware/audio', 'hardware/rca-composite'],
     },
   ],
 };

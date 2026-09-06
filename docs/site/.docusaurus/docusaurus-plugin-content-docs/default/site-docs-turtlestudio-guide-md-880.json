@@ -20,5 +20,9 @@
   "previous": {
     "title": "GUI Layers",
     "permalink": "/gui/gui-layers"
+  },
+  "next": {
+    "title": "Audio (M0 Bringup)",
+    "permalink": "/hardware/audio"
   }
 }

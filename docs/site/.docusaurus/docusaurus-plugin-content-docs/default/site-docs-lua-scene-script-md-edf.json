@@ -1,0 +1,28 @@
+{
+  "id": "lua/scene-script",
+  "title": "Scene Script",
+  "description": "A scene script is an optional Lua file that runs inside the Actor VM alongside all actor scripts. It is ideal for scene-level coordination: checking conditions that span multiple actors, triggering transitions, managing global game state within a scene.",
+  "source": "@site/docs/lua/scene-script.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/scene-script",
+  "permalink": "/lua/scene-script",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 8,
+  "frontMatter": {
+    "id": "scene-script",
+    "sidebar_position": 8,
+    "title": "Scene Script"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Input",
+    "permalink": "/lua/input"
+  },
+  "next": {
+    "title": "State Store",
+    "permalink": "/lua/state"
+  }
+}

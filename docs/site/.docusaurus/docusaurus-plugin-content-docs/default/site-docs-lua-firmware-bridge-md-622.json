@@ -1,0 +1,28 @@
+{
+  "id": "lua/firmware-bridge",
+  "title": "Firmware Bridge",
+  "description": "This page documents how the C++ firmware exposes functionality to the two Lua VMs, what each VM can and cannot do, and where the code lives for each binding.",
+  "source": "@site/docs/lua/firmware-bridge.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/firmware-bridge",
+  "permalink": "/lua/firmware-bridge",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 7,
+  "frontMatter": {
+    "id": "firmware-bridge",
+    "sidebar_position": 7,
+    "title": "Firmware Bridge"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "State Store",
+    "permalink": "/lua/state"
+  },
+  "next": {
+    "title": "Sprite Spec",
+    "permalink": "/assets/sprite-spec"
+  }
+}

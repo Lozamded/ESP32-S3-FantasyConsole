@@ -6,17 +6,17 @@
     },
     "config": "5e9f5e1a"
   },
-  "/-2eb": {
+  "/-48c": {
     "__comp": "5e95c892",
     "__context": {
       "plugin": "aba21aa0"
     }
   },
-  "/-dde": {
+  "/-97d": {
     "__comp": "a7bd4aaa",
     "__props": "22dd74f7"
   },
-  "/-84f": {
+  "/-9dc": {
     "__comp": "a94703ab"
   },
   "/assets/binary-formats-02e": {
@@ -39,6 +39,14 @@
     "__comp": "17896441",
     "content": "bdc931c0"
   },
+  "/hardware/audio-4cd": {
+    "__comp": "17896441",
+    "content": "ec9ed6a3"
+  },
+  "/hardware/rca-composite-c96": {
+    "__comp": "17896441",
+    "content": "c99f2a9d"
+  },
   "/intro-9af": {
     "__comp": "17896441",
     "content": "0e384e19"
@@ -50,6 +58,10 @@
   "/lua/entry-vm-764": {
     "__comp": "17896441",
     "content": "c21f9371"
+  },
+  "/lua/firmware-bridge-7aa": {
+    "__comp": "17896441",
+    "content": "622d2c9f"
   },
   "/lua/input-71e": {
     "__comp": "17896441",
@@ -67,9 +79,25 @@
     "__comp": "17896441",
     "content": "10a50d8d"
   },
+  "/lua/scene-script-b74": {
+    "__comp": "17896441",
+    "content": "edf86501"
+  },
+  "/lua/state-15a": {
+    "__comp": "17896441",
+    "content": "3c71d432"
+  },
+  "/scene/object-identity-19b": {
+    "__comp": "17896441",
+    "content": "547db93d"
+  },
   "/scene/scene-format-eb3": {
     "__comp": "17896441",
     "content": "71d01a9b"
+  },
+  "/scene/text-labels-4cd": {
+    "__comp": "17896441",
+    "content": "b22bec92"
   },
   "/turtlestudio/guide-699": {
     "__comp": "17896441",

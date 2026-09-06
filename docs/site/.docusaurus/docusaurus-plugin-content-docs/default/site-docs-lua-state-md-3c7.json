@@ -1,0 +1,28 @@
+{
+  "id": "lua/state",
+  "title": "State Store",
+  "description": "The state store is a small key–value memory shared across all Lua VMs (ENTRY and all actor scripts). It is the canonical way for actors to communicate with the HUD, to persist progress between scenes, and to coordinate between actor scripts.",
+  "source": "@site/docs/lua/state.md",
+  "sourceDirName": "lua",
+  "slug": "/lua/state",
+  "permalink": "/lua/state",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 9,
+  "frontMatter": {
+    "id": "state",
+    "sidebar_position": 9,
+    "title": "State Store"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Scene Script",
+    "permalink": "/lua/scene-script"
+  },
+  "next": {
+    "title": "Firmware Bridge",
+    "permalink": "/lua/firmware-bridge"
+  }
+}

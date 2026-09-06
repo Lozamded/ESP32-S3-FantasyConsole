@@ -9,15 +9,15 @@ export default [
   },
   {
     path: '/',
-    component: ComponentCreator('/', '2eb'),
+    component: ComponentCreator('/', '48c'),
     routes: [
       {
         path: '/',
-        component: ComponentCreator('/', 'dde'),
+        component: ComponentCreator('/', '97d'),
         routes: [
           {
             path: '/',
-            component: ComponentCreator('/', '84f'),
+            component: ComponentCreator('/', '9dc'),
             routes: [
               {
                 path: '/assets/binary-formats',
@@ -50,6 +50,18 @@ export default [
                 sidebar: "mainSidebar"
               },
               {
+                path: '/hardware/audio',
+                component: ComponentCreator('/hardware/audio', '4cd'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
+                path: '/hardware/rca-composite',
+                component: ComponentCreator('/hardware/rca-composite', 'c96'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
                 path: '/intro',
                 component: ComponentCreator('/intro', '9af'),
                 exact: true,
@@ -64,6 +76,12 @@ export default [
               {
                 path: '/lua/entry-vm',
                 component: ComponentCreator('/lua/entry-vm', '764'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
+                path: '/lua/firmware-bridge',
+                component: ComponentCreator('/lua/firmware-bridge', '7aa'),
                 exact: true,
                 sidebar: "mainSidebar"
               },
@@ -92,8 +110,32 @@ export default [
                 sidebar: "mainSidebar"
               },
               {
+                path: '/lua/scene-script',
+                component: ComponentCreator('/lua/scene-script', 'b74'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
+                path: '/lua/state',
+                component: ComponentCreator('/lua/state', '15a'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
+                path: '/scene/object-identity',
+                component: ComponentCreator('/scene/object-identity', '19b'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
                 path: '/scene/scene-format',
                 component: ComponentCreator('/scene/scene-format', 'eb3'),
+                exact: true,
+                sidebar: "mainSidebar"
+              },
+              {
+                path: '/scene/text-labels',
+                component: ComponentCreator('/scene/text-labels', '4cd'),
                 exact: true,
                 sidebar: "mainSidebar"
               },

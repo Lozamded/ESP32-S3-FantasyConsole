@@ -1,0 +1,24 @@
+{
+  "id": "hardware/rca-composite",
+  "title": "RCA Composite Driver (P4)",
+  "description": "This page covers the v0 design for the ESP32-P4 composite video output driver. The P4 target outputs NTSC monochrome video over an RCA connector — no LCD, no SPI display. This is a separate firmware sketch (TurtleReaderP4/) and a distinct hardware platform from the ESP32-S3 TurtleReader.",
+  "source": "@site/docs/hardware/rca-composite.md",
+  "sourceDirName": "hardware",
+  "slug": "/hardware/rca-composite",
+  "permalink": "/hardware/rca-composite",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "id": "rca-composite",
+    "sidebar_position": 2,
+    "title": "RCA Composite Driver (P4)"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Audio (M0 Bringup)",
+    "permalink": "/hardware/audio"
+  }
+}

@@ -18,8 +18,8 @@
   },
   "sidebar": "mainSidebar",
   "previous": {
-    "title": "Scene Format",
-    "permalink": "/scene/scene-format"
+    "title": "Object Identity & Visibility",
+    "permalink": "/scene/object-identity"
   },
   "next": {
     "title": "ENTRY VM",

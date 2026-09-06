@@ -1,0 +1,28 @@
+{
+  "id": "scene/text-labels",
+  "title": "Scene Text Labels",
+  "description": "Scene text labels are static text strings baked directly into the scene JSON and drawn automatically by the firmware — no Lua code required. Use them for level names, tutorial hints, fixed UI text, or any string that doesn't need to change at runtime.",
+  "source": "@site/docs/scene/text-labels.md",
+  "sourceDirName": "scene",
+  "slug": "/scene/text-labels",
+  "permalink": "/scene/text-labels",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 2,
+  "frontMatter": {
+    "id": "text-labels",
+    "sidebar_position": 2,
+    "title": "Scene Text Labels"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Scene Format",
+    "permalink": "/scene/scene-format"
+  },
+  "next": {
+    "title": "Object Identity & Visibility",
+    "permalink": "/scene/object-identity"
+  }
+}

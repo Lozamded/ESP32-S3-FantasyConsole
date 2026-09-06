@@ -1,0 +1,28 @@
+{
+  "id": "scene/object-identity",
+  "title": "Object Identity & Visibility",
+  "description": "Objects placed in a scene can have an instance identity (id, tags) for runtime lookup, and a visibility flag that controls whether the object draws.",
+  "source": "@site/docs/scene/object-identity.md",
+  "sourceDirName": "scene",
+  "slug": "/scene/object-identity",
+  "permalink": "/scene/object-identity",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 3,
+  "frontMatter": {
+    "id": "object-identity",
+    "sidebar_position": 3,
+    "title": "Object Identity & Visibility"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "Scene Text Labels",
+    "permalink": "/scene/text-labels"
+  },
+  "next": {
+    "title": "Lua API Overview",
+    "permalink": "/lua/overview"
+  }
+}

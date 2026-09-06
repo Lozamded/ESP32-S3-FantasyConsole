@@ -18,8 +18,8 @@
   },
   "sidebar": "mainSidebar",
   "previous": {
-    "title": "Input",
-    "permalink": "/lua/input"
+    "title": "Firmware Bridge",
+    "permalink": "/lua/firmware-bridge"
   },
   "next": {
     "title": "Asset Binary Formats",

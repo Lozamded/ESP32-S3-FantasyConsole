@@ -22,7 +22,7 @@
     "permalink": "/lua/physics"
   },
   "next": {
-    "title": "Sprite Spec",
-    "permalink": "/assets/sprite-spec"
+    "title": "Scene Script",
+    "permalink": "/lua/scene-script"
   }
 }

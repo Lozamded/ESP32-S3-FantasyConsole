@@ -1,0 +1,28 @@
+{
+  "id": "hardware/audio",
+  "title": "Audio (M0 Bringup)",
+  "description": "This page covers the M0 (initial) hardware bring-up for audio on the ESP32-S3 target. It documents the signal chain, component selection, and verification sketch. Full Lua API integration is out of scope for M0.",
+  "source": "@site/docs/hardware/audio.md",
+  "sourceDirName": "hardware",
+  "slug": "/hardware/audio",
+  "permalink": "/hardware/audio",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "sidebarPosition": 1,
+  "frontMatter": {
+    "id": "audio",
+    "sidebar_position": 1,
+    "title": "Audio (M0 Bringup)"
+  },
+  "sidebar": "mainSidebar",
+  "previous": {
+    "title": "TurtleStudio Guide",
+    "permalink": "/turtlestudio/guide"
+  },
+  "next": {
+    "title": "RCA Composite Driver (P4)",
+    "permalink": "/hardware/rca-composite"
+  }
+}

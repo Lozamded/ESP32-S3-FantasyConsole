@@ -36,6 +36,16 @@
               "sidebar": "mainSidebar"
             },
             {
+              "id": "hardware/audio",
+              "path": "/hardware/audio",
+              "sidebar": "mainSidebar"
+            },
+            {
+              "id": "hardware/rca-composite",
+              "path": "/hardware/rca-composite",
+              "sidebar": "mainSidebar"
+            },
+            {
               "id": "intro",
               "path": "/intro",
               "sidebar": "mainSidebar"
@@ -48,6 +58,11 @@
             {
               "id": "lua/entry-vm",
               "path": "/lua/entry-vm",
+              "sidebar": "mainSidebar"
+            },
+            {
+              "id": "lua/firmware-bridge",
+              "path": "/lua/firmware-bridge",
               "sidebar": "mainSidebar"
             },
             {
@@ -71,8 +86,28 @@
               "sidebar": "mainSidebar"
             },
             {
+              "id": "lua/scene-script",
+              "path": "/lua/scene-script",
+              "sidebar": "mainSidebar"
+            },
+            {
+              "id": "lua/state",
+              "path": "/lua/state",
+              "sidebar": "mainSidebar"
+            },
+            {
+              "id": "scene/object-identity",
+              "path": "/scene/object-identity",
+              "sidebar": "mainSidebar"
+            },
+            {
               "id": "scene/scene-format",
               "path": "/scene/scene-format",
+              "sidebar": "mainSidebar"
+            },
+            {
+              "id": "scene/text-labels",
+              "path": "/scene/text-labels",
               "sidebar": "mainSidebar"
             },
             {
