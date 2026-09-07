@@ -4,6 +4,7 @@
   "id": "check_PC",
   "name": "check_PC",
   "sprite_id": "check_PC",
+  "script": "check_PC",
   "animations": [
     {
       "name": "off",

@@ -83,6 +83,10 @@ function _update(dt)
   if not attack_spawned then
     attack_spawned = true
     spawn("player_attack", posx(), posy())
+    -- Teletransporte al checkpoint si habia uno activo al reiniciar la escena.
+    if state_get("checkpoint_active", 0) == 1 then
+      set_pos(state_get("checkpoint_x", posx()), state_get("checkpoint_y", posy()))
+    end
   end
 
   -- Arco de derrota (estilo Mario): sube con impulso, cae con gravedad via set_pos
