@@ -35,17 +35,18 @@ constexpr int kMaxSpriteH = 128;
 /** Escena canonica (spec/scene-v0.md); viewport = kSceneW x kSceneH. */
 constexpr int kSceneW = 164;
 constexpr int kSceneH = 124;
-/** Mundo AUTORADO, hasta 8x8 pasos (spec/scene-v0.md). La rejilla de tiles (TileLayer,
+/** Mundo AUTORADO, hasta 32x32 pasos (spec/scene-v0.md). La rejilla de tiles (TileLayer,
  *  abajo) es barata -- indices, no pixeles -- y queda resident para el mundo ENTERO sin
- *  problema. Lo caro es el buffer horneado por pixel (s_world_bg): ese NO escala con
- *  este limite, ver kWorldWindowSteps mas abajo -- se mantiene una "ventana" residente
- *  fija de tamano constante que sigue a la camara (ensure_world_window_covers_camera). */
-constexpr int kMaxWorldSteps = 8;
-constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;   // 1312
-constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;   //  992
+ *  problema (~325 KB en PSRAM a 32x32 pasos, 4 capas). Lo caro es el buffer horneado por
+ *  pixel (s_world_bg): ese NO escala con este limite, ver kWorldWindowSteps mas abajo --
+ *  se mantiene una "ventana" residente fija de tamano constante que sigue a la camara
+ *  (ensure_world_window_covers_camera). */
+constexpr int kMaxWorldSteps = 32;
+constexpr int kMaxWorldW = kSceneW * kMaxWorldSteps;   // 5248
+constexpr int kMaxWorldH = kSceneH * kMaxWorldSteps;   // 3968
 constexpr int kMaxTileLayers = 4;
-constexpr int kMaxTileCols = 82;  /* kMaxWorldW / 16 */
-constexpr int kMaxTileRows = 62;  /* kMaxWorldH / 16 */
+constexpr int kMaxTileCols = 328;  /* kMaxWorldW / 16 */
+constexpr int kMaxTileRows = 248;  /* kMaxWorldH / 16 */
 /** Ventana RESIDENTE del buffer horneado (s_world_bg) -- deliberadamente independiente
  *  de kMaxWorldSteps (mundo autorado). Centrada en la camara, con 1 paso de holgura por
  *  lado respecto del viewport: un rebake solo hace falta tras ~kSceneW/kSceneH px mas de
@@ -72,10 +73,12 @@ struct TileLayer {
   char tileset[48];
   int cols;
   int rows;
-  uint8_t cells[kMaxTileRows][kMaxTileCols];
   /** Precomputado en coll_tileset_cache_prewarm(): evita tocar la cache de tileset
    *  de colision (single-entry, ver s_tileset_coll) en capas puramente decorativas. */
   bool has_solid_tiles;
+  // cells movido a s_tile_cells[layer][row][col] -- EXT_RAM_ATTR no alcanza a arrays
+  // dentro de structs, solo a variables estaticas de nivel de archivo (ver linker error
+  // al intentar embeberlo aqui con kMaxTileRows/Cols grandes). Acceso: s_tile_cells[li].
 };
 
 /** spec/scene-object-identity-v0.md: `obj_id` es la referencia de catalogo (objects/Objects/
@@ -235,6 +238,12 @@ TURTLE_BSS_PSRAM static Placement s_placements[kMaxPlacements];
 TURTLE_BSS_PSRAM static SceneTextLabel s_text_labels[kMaxTextLabels];
 static int s_text_label_count = 0;
 TURTLE_BSS_PSRAM static TileLayer s_tile_layers[kMaxTileLayers];
+/** Celdas de tile (indices, 1 byte/celda) para las 4 capas del mundo completo.
+ *  Separado de TileLayer (EXT_RAM_ATTR no alcanza a miembros de struct) y asignado en
+ *  PSRAM via heap_caps_malloc (mismo patron que s_spawn_args -- EXT_RAM_ATTR tampoco
+ *  funciona para arrays grandes dentro del namespace anonimo en este toolchain).
+ *  325 KB a 32x32 pasos, 4 capas. Nulo hasta turtle_scene_begin_runtime. */
+static uint8_t (*s_tile_cells)[kMaxTileRows][kMaxTileCols] = nullptr;
 TURTLE_BSS_PSRAM static TurtleTileset s_tileset_draw;
 TURTLE_BSS_PSRAM static SceneActor s_actors[kMaxPlacements];
 static int s_actor_count = 0;
@@ -2667,8 +2676,10 @@ static int parse_tile_layers(const char* sc_start, const char* sc_end, int tile_
     if (!ly->tileset[0]) {
       json_extract_string_for_key(ob, oe, "tileset_id", ly->tileset, sizeof ly->tileset);
     }
-    parse_tile_cells(ob, oe, cols, rows, static_cast<uint8_t>(kDefaultTransparentIndex),
-                     ly->cells);
+    if (s_tile_cells) {
+      parse_tile_cells(ob, oe, cols, rows, static_cast<uint8_t>(kDefaultTransparentIndex),
+                       s_tile_cells[n]);
+    }
     ++n;
     p = oe;
   }
@@ -3157,7 +3168,7 @@ static bool bake_tile_layers_into_world(const char* json, const char* json_end,
     const int rows = ly->rows;
     for (int gy = 0; gy < rows; ++gy) {
       for (int gx = 0; gx < cols; ++gx) {
-        const int ti = ly->cells[gy][gx];
+        const int ti = s_tile_cells[li][gy][gx];
         if (ti == static_cast<int>(transparent_index) || ti < 0) {
           continue;
         }
@@ -3321,6 +3332,9 @@ static bool prepare_world_static_composite(const char* json, const char* json_en
 static void draw_tile_layers_for_scene(const char* json, const char* json_end,
                                        const char* scene_start, const char* scene_end,
                                        uint8_t transparent_index) {
+  if (!s_tile_cells) {
+    return;
+  }
   int tile_px = 16;
   if (!json_extract_int_for_key(json, json_end, "tile_px", &tile_px) || tile_px < 4 ||
       tile_px > 64) {
@@ -3366,7 +3380,7 @@ static void draw_tile_layers_for_scene(const char* json, const char* json_end,
     for (int gy = 0; gy < rows; ++gy) {
       const int sy0 = (rows - 1 - gy) * px;
       for (int gx = 0; gx < cols; ++gx) {
-        const int ti = ly->cells[gy][gx];
+        const int ti = s_tile_cells[li][gy][gx];
         if (ti == static_cast<int>(transparent_index) || ti < 0) {
           continue;
         }
@@ -3400,8 +3414,11 @@ static void draw_tile_layers_for_scene(const char* json, const char* json_end,
  *  2) Acota el recorrido de la rejilla al rango de celdas visible por la camara (mismo
  *     patron que paint_cached_world_background con vis_x0/x1/y0/y1, en coordenadas de
  *     rejilla en vez de pixeles) -- sin esto, este loop es O(mundo autorado) por
- *     fotograma, y a 8x8 pasos eso es severo. */
+ *     fotograma, y a 32x32 pasos eso es inaceptable. */
 static void draw_tile_layers_live(uint8_t transparent_index) {
+  if (!s_tile_cells) {
+    return;
+  }
   const int px = s_runtime_tile_px;
   if (px < 4 || px > 64) {
     return;
@@ -3458,7 +3475,7 @@ static void draw_tile_layers_live(uint8_t transparent_index) {
     for (int gy = gy_top_lo; gy <= gy_top_hi; ++gy) {
       const int sy0 = (rows - 1 - gy) * px;
       for (int gx = gx0; gx <= gx1; ++gx) {
-        const int ti = ly->cells[gy][gx];
+        const int ti = s_tile_cells[li][gy][gx];
         if (ti == static_cast<int>(transparent_index) || ti < 0) {
           continue;
         }
@@ -4145,10 +4162,10 @@ static bool tile_cell_blocks_actor(int gx, int gy, int ax0, int ay0, int ax1, in
   if (!ly->enabled || !ly->tileset[0] || !ly->has_solid_tiles) {
     return false;
   }
-  if (gx >= ly->cols || gy >= ly->rows) {
+  if (gx >= ly->cols || gy >= ly->rows || !s_tile_cells) {
     return false;
   }
-  const int ti = ly->cells[gy][gx];
+  const int ti = s_tile_cells[li][gy][gx];
   if (ti < 0 || ti == static_cast<int>(s_runtime_transp)) {
     return false;
   }
@@ -4903,6 +4920,14 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
       tile_px = 16;
     }
     s_runtime_tile_px = tile_px;
+  }
+  if (!s_tile_cells) {
+    s_tile_cells = reinterpret_cast<uint8_t (*)[kMaxTileRows][kMaxTileCols]>(
+        heap_caps_malloc((size_t)kMaxTileLayers * kMaxTileRows * kMaxTileCols,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_tile_cells) {
+      Serial.println("turtle_scene: sin PSRAM para tile_cells");
+    }
   }
   if (scene_uses_scrolling()) {
     if (!prepare_world_static_composite(json, json_end, sc_start, sc_end)) {

@@ -5,7 +5,7 @@ Documento **pre-paso 1**: define el espacio logico en el que un cartucho `.turtl
 ## Escena basica (canonica)
 
 - **Vista (viewport)** en consola: **164 × 124** píxeles logicos (lo que muestra el panel).
-- **Mundo** opcionalmente mas grande: en el manifest de escena, `world_steps_x` y `world_steps_y` (enteros **1..8**) multiplican la vista. Ejemplo: `world_steps_x: 8` → ancho **1312** (ocho “pantallas” horizontales). Por defecto ambos son **1** (mundo = vista). Ver "Ventana residente / streaming del mundo" mas abajo: el mundo AUTORADO puede llegar a 8x8 pasos sin que el firmware necesite mantener en RAM un buffer de pixeles de ese tamano.
+- **Mundo** opcionalmente mas grande: en el manifest de escena, `world_steps_x` y `world_steps_y` (enteros **1..32**) multiplican la vista. Ejemplo: `world_steps_x: 8` → ancho **1312** (ocho “pantallas” horizontales); `world_steps_x: 32` → ancho **5248** (treinta y dos “pantallas”). Por defecto ambos son **1** (mundo = vista). Ver “Ventana residente / streaming del mundo” mas abajo: el mundo AUTORADO puede llegar a 32x32 pasos sin que el firmware necesite mantener en RAM un buffer de pixeles de ese tamano.
 - El **firmware** recorta al viewport con camara configurable (`camera` en manifest / `scenes/<id>.json`):
   - **`mode`**: `follow` (por defecto) o `fixed`.
   - **`target`**: id de objeto a seguir (vacio = `character`, luego `player`, luego el primero de `objects`).
@@ -16,9 +16,9 @@ Documento **pre-paso 1**: define el espacio logico en el que un cartucho `.turtl
 
 ## Ventana residente / streaming del mundo (`turtle_scene.cpp`)
 
-El mundo **autorado** (`world_steps_x/y`, hasta 8x8 pasos = 1312×992 px) y lo que el firmware mantiene **resident** en RAM son cosas distintas a proposito, para que un mundo mas grande no cueste mas memoria ni mas tiempo por fotograma:
+El mundo **autorado** (`world_steps_x/y`, hasta 32x32 pasos = 5248×3968 px) y lo que el firmware mantiene **resident** en RAM son cosas distintas a proposito, para que un mundo mas grande no cueste mas memoria ni mas tiempo por fotograma:
 
-- La **rejilla de tiles** (`TileLayer::cells`, un `uint8_t` por celda de 16px — indice, no pixel) es barata y se mantiene resident para el mundo **entero**, sin importar su tamano (hasta ~20KB en total para 4 capas a 8x8 pasos). La colision (`move()`, tile collision) y `posx()/posy()` siempre operan contra esta rejilla completa y el mundo logico entero — la ventana de abajo **no los afecta**, son totalmente transparentes a Lua.
+- La **rejilla de tiles** (`TileLayer::cells`, un `uint8_t` por celda de 16px — indice, no pixel) es barata y se mantiene resident para el mundo **entero**, sin importar su tamano (hasta ~325 KB en PSRAM para 4 capas a 32x32 pasos; ~20 KB para 4 capas a 8x8 pasos). La colision (`move()`, tile collision) y `posx()/posy()` siempre operan contra esta rejilla completa y el mundo logico entero — la ventana de abajo **no los afecta**, son totalmente transparentes a Lua.
 - El **buffer horneado por pixel** (`s_world_bg`, fondo de capa 1 + tiles cuando se hornean juntos) es lo caro (1 byte/pixel) y por eso se mantiene como una **ventana residente de tamano fijo**: 3x3 pasos (492×372 px, 183 024 bytes), centrada en la camara y **recentrada + rehorneada** (`ensure_world_window_covers_camera` / `rebake_world_window` en `turtle_scene.cpp`) cada vez que el viewport de la camara amenaza con salirse de ella — no en cada fotograma: con 1 paso entero de holgura por lado respecto del viewport (1 paso), un rebake solo hace falta tras ~164/124 px mas de scroll desde el ultimo, del orden de segundos a velocidad normal de juego, no cada frame.
 - Ventana **simetrica** (3x3, no sesgada a un eje): el mismo firmware sirve tanto plataformeros de scroll casi-1-eje como juegos de scroll libre en las 4 direcciones/diagonales (p. ej. un RPG), asi que no se privilegia X sobre Y.
 - Un mundo de 1 o 2 pasos por eje (el maximo de antes de este cambio) sigue cabiendo entero dentro de la ventana de 3 pasos — para esos, el "rebake" inicial es el unico que hace falta en toda la vida de la escena, y el resultado es identico al de antes (sin ventana). Escenas con `world_steps_x/y` sin declarar o en 1 nunca activan este mecanismo en absoluto (`scene_uses_scrolling()` sigue en falso, igual que siempre). Cartuchos `.turtlecart` ya exportados se siguen viendo identicos sin necesidad de re-exportarlos.
@@ -164,7 +164,7 @@ Ademas, al guardar proyecto TurtleStudio puede generar un **espejo** por escena 
 
 ## Resumen para compiladores / generadores
 
-1. Tratar **164×124** como tamano de **vista**; mundo = pasos × vista (v0: pasos 1 a 8 por eje; el firmware mantiene solo una ventana residente fija de 3x3 pasos, ver "Ventana residente / streaming del mundo").
+1. Tratar **164×124** como tamano de **vista**; mundo = pasos × vista (v0: pasos 1 a 32 por eje; el firmware mantiene solo una ventana residente fija de 3x3 pasos, ver "Ventana residente / streaming del mundo").
 2. Emitir posiciones y disenos pensando **Y hacia arriba** y **(0,0) abajo-izquierda**.
 3. Si el generador emite Lua que llama al `pix()` actual del firmware, aplicar la conversion `yfb = 123 - sy` (o `H-1` con `H=124`) al generar coordenadas.
 4. Los scripts de objeto usan **`move(dx, dy)`** y **`posx()` / `posy()`** directamente en espacio escena; ver **`spec/lua/object-script-v0.md`**.

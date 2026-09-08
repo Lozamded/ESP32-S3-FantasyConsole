@@ -122,11 +122,12 @@ SCENE_PIXEL_H = 124
 VIEWPORT_PIXEL_W = SCENE_PIXEL_W
 VIEWPORT_PIXEL_H = SCENE_PIXEL_H
 WORLD_STEPS_MIN = 1
-# Mundo autorable hasta 8x8 pasos (spec/scene-v0.md); el firmware mantiene solo una
-# "ventana" residente de 3x3 pasos del buffer horneado (turtle_scene.cpp), independiente
-# de este tope -- BACKGROUND_PARALLAX_FACTOR (backgrounds.py) es un limite no relacionado
+# Mundo autorable hasta 32x32 pasos (spec/scene-v0.md); el firmware mantiene solo una
+# "ventana" residente de 3x3 pasos del buffer horneado (turtle_scene.cpp, kWorldWindowSteps),
+# independiente de este tope -- la rejilla de tiles ocupa ~325 KB en PSRAM a 32x32 pasos,
+# 4 capas. BACKGROUND_PARALLAX_FACTOR (backgrounds.py) es un limite no relacionado
 # (tamano maximo de un asset de fondo suelto, no del mundo).
-WORLD_STEPS_MAX = 8
+WORLD_STEPS_MAX = 32
 
 BACKGROUND_LAYER_COUNT = 4
 

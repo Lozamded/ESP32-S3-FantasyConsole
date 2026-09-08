@@ -1386,10 +1386,12 @@ class SceneEditorWidget(QWidget):
         form.addRow(tr("scene.script_label"), script_row)
         self.spin_world_x = QSpinBox()
         self.spin_world_x.setRange(WORLD_STEPS_MIN, WORLD_STEPS_MAX)
+        self.spin_world_x.setKeyboardTracking(False)
         self.spin_world_x.valueChanged.connect(self._on_world_steps_changed)
         form.addRow(tr("scene.world_steps_x"), self.spin_world_x)
         self.spin_world_y = QSpinBox()
         self.spin_world_y.setRange(WORLD_STEPS_MIN, WORLD_STEPS_MAX)
+        self.spin_world_y.setKeyboardTracking(False)
         self.spin_world_y.valueChanged.connect(self._on_world_steps_changed)
         form.addRow(tr("scene.world_steps_y"), self.spin_world_y)
         return section
