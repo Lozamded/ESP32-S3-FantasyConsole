@@ -7,7 +7,9 @@ Documentation for the **Lua 5.4** runtime embedded in the firmware and the scrip
 | [entry-v0.md](entry-v0.md) | **ENTRY script** — `cls`, `pix`, `spix`, `flip`, runs once at boot |
 | [object-script-v0.md](object-script-v0.md) | **Actor scripts** — `_update(dt)`, input, movement in scene space |
 | [physics-v0.md](physics-v0.md) | Platformer physics: `move` with tile collision, `on_ground()`, gravity in Lua |
-| [animation-v0.md](animation-v0.md) | `set_anim` / `play_anim` driven by the object's `animations` definition |
+| [animation-v0.md](animation-v0.md) | `set_anim` / `play_anim` / `anim_done()` driven by the object's `animations` definition |
+| [instance-props-v0.md](instance-props-v0.md) | **Props exportadas por instancia** — `prop(key, default)`, panel Props en TurtleStudio |
+| [state-v0.md](state-v0.md) | `state_set` / `state_get` — store compartido entre VMs (score, HP, inventario) |
 | [firmware-bridge-v0.md](firmware-bridge-v0.md) | C++ / Lua execution order in TurtleReader (two VMs, frame loop, `move`) |
 | [../input-v0.md](../input-v0.md) | `btn` / `btnp` button API (shared by ENTRY and actor VMs) |
 | [../scene-v0.md](../scene-v0.md) | 164×124 scene space and coordinate system (`move` / `posx` space) |

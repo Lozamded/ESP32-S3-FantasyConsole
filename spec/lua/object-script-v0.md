@@ -101,6 +101,7 @@ Ver **`spec/lua/animation-v0.md`**. Nombres definidos en `animations` del JSON d
 |---------|-------------|
 | `set_anim(anim)` | Sprite en loop, velocidad 1; no reinicia si ya esta en `anim`. |
 | `play_anim(anim, speed, repeat)` | Cambia sprite; `speed` float; `repeat` bool; reinicia en fotograma 0. |
+| `anim_done()` | `true` si la animacion activa es one-shot (`repeat=false`) y esta en su ultimo fotograma. Siempre `false` en loop. Ver **`spec/lua/animation-v0.md`**. |
 | `flip_h(flip)` | Espejo **horizontal** del sprite (`true` = mirar izquierda). Eje: ancla del sprite en escena. |
 
 Convencion recomendada para velocidad horizontal:
@@ -164,6 +165,20 @@ end
 
 Un `handle` es estable mientras la escena activa no cambie (`goto_scene` reconstruye todos los
 actores, invalida cualquier handle guardado de la escena anterior).
+
+### Variables exportadas por instancia
+
+Permite configurar valores distintos por instancia desde TurtleStudio sin tocar el script. Ver **`spec/lua/instance-props-v0.md`** para la referencia completa.
+
+| Funcion | Descripcion |
+|---------|-------------|
+| `prop(key, default)` | Lee la variable `key` configurada para esta instancia en el panel Props de TurtleStudio. Si la instancia no declara esa clave, devuelve `default`. El tipo de `default` determina como se lee el valor: `number` → float, `string`/`nil` → string. |
+
+```lua
+-- A nivel de modulo, antes de _update:
+local sceneToChange = prop("sceneToChange", "Lvl_2")
+local speed         = prop("speed", 80.0)
+```
 
 ### Depuracion
 

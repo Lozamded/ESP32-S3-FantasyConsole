@@ -26,6 +26,7 @@ En runtime, `set_anim` / `play_anim` **buscan el nombre en ese JSON** (bundle o 
 |---------|-------------|
 | `set_anim(anim)` | Cambia al sprite de `anim`. **Loop** infinito, velocidad **1.0** (relativa a `default_anim_fps` de la escena). Si ya estaba en esa animacion, **no** reinicia el fotograma (el ciclo sigue). |
 | `play_anim(anim, speed, repeat)` | Cambia sprite, aplica **`speed`** (`float`, 0.25–16, factor sobre `default_anim_fps`) y **`repeat`** (`boolean`). **Siempre** reinicia en el fotograma 0. |
+| `anim_done()` | `true` si la animacion activa es **one-shot** (`repeat = false`) y ya esta en su **ultimo fotograma**. Siempre `false` para animaciones en loop. Util para encadenar animaciones sin temporizadores. |
 
 Si `anim` no existe en el objeto, el firmware escribe aviso en Serial y no cambia el sprite.
 
@@ -40,6 +41,22 @@ Internamente: `ms_por_fotograma = 1000 * 16 / (default_anim_fps * speed * 16)`.
 
 - `repeat = true`: al llegar al ultimo fotograma del sprite, vuelve al 0.
 - `repeat = false`: se queda en el **ultimo** fotograma (util para `damage`, cutscenes, etc.).
+
+### Deteccion de fin de animacion — `anim_done()`
+
+Comprueba si la animacion one-shot activa ha terminado (esta en el ultimo fotograma). Se evalua en el mismo `_update(dt)` en que el firmware ya avanzo el fotograma, asi que no hay lag de un frame.
+
+```lua
+-- Encadenar turningon → on sin temporizador hardcodeado:
+play_anim("turningon", 1.0, false)
+
+-- ... en el siguiente _update (o varios frames despues):
+if anim_done() then
+  set_anim("on")
+end
+```
+
+`anim_done()` devuelve `true` **solo** cuando `repeat = false` y `frame_index + 1 >= frame_count`. Para animaciones en loop siempre devuelve `false` (nunca "terminan").
 
 ## Ejemplo (demo1)
 
