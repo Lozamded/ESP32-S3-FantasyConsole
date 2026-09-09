@@ -72,6 +72,15 @@ void turtle_scene_actor_move(int dx, int dy, int* out_dx, int* out_dy);
 /** true si el actor Lua actual apoya sobre tile solido o el borde inferior de escena. */
 bool turtle_scene_actor_on_ground(void);
 
+/** true si la animacion actual es de un solo ciclo (play_anim repeat=false) y llego al ultimo fotograma. */
+bool turtle_scene_actor_anim_done(void);
+
+/** Variables exportadas por instancia (prop(key, default) en Lua).
+ *  prop_str: extrae un valor string de "props" del placement actual; false si no existe.
+ *  prop_num: extrae un valor numerico (float) de "props"; false si no existe. */
+bool turtle_scene_actor_prop_str(const char* key, char* out, size_t outsz);
+bool turtle_scene_actor_prop_num(const char* key, float* out);
+
 /** Cambia al sprite de la animacion nombrada (loop, velocidad 1). No reinicia si ya esta activa. */
 bool turtle_scene_actor_set_anim(const char* name);
 

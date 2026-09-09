@@ -91,6 +91,9 @@ struct Placement {
   char obj_id[32];
   char instance_id[40];
   char tags[128];
+  // props_json QUITADO del struct: 256 bytes * 96 placements = 24 KB de DRAM (EXT_RAM_ATTR
+  // no funciona para el namespace anonimo -- mismo problema que s_tile_cells). El JSON crudo
+  // de "props" vive en s_props_store[i] (PSRAM via heap_caps_malloc, ver declaracion abajo).
   int x;
   int y;
   bool visible;  // spec/scene-object-visibility-v0.md: default true si falta en el JSON.
@@ -244,6 +247,10 @@ TURTLE_BSS_PSRAM static TileLayer s_tile_layers[kMaxTileLayers];
  *  funciona para arrays grandes dentro del namespace anonimo en este toolchain).
  *  325 KB a 32x32 pasos, 4 capas. Nulo hasta turtle_scene_begin_runtime. */
 static uint8_t (*s_tile_cells)[kMaxTileRows][kMaxTileCols] = nullptr;
+// JSON crudo de "props" por placement (max 256 bytes). EXT_RAM_ATTR no alcanza al namespace
+// anonimo (ver comentario de s_tile_cells), por eso va en PSRAM via heap_caps_malloc.
+constexpr int kPropsBufSize = 256;
+static char (*s_props_store)[kPropsBufSize] = nullptr;
 TURTLE_BSS_PSRAM static TurtleTileset s_tileset_draw;
 TURTLE_BSS_PSRAM static SceneActor s_actors[kMaxPlacements];
 static int s_actor_count = 0;
@@ -3548,6 +3555,29 @@ static bool parse_placements(const char* scene_start, const char* scene_end, Pla
     }
     out[n].tags[0] = '\0';
     json_extract_string_array_as_csv(ob, oe, "tags", out[n].tags, sizeof(out[n].tags));
+    // Variables exportadas: extraer el objeto "props" como JSON crudo en s_props_store[n].
+    if (s_props_store) {
+      s_props_store[n][0] = '{'; s_props_store[n][1] = '}'; s_props_store[n][2] = '\0';
+      const char* pk = strstr_bounded(ob, oe, "\"props\"");
+      if (pk) {
+        pk += 7;
+        while (pk < oe && *pk != ':') ++pk;
+        if (pk < oe) {
+          ++pk;
+          while (pk < oe && isspace(static_cast<unsigned char>(*pk))) ++pk;
+          if (pk < oe && *pk == '{') {
+            const char* pe = json_object_end(pk);
+            if (pe) {
+              size_t plen = static_cast<size_t>(pe - pk);
+              if (plen < (size_t)(kPropsBufSize - 1)) {
+                memcpy(s_props_store[n], pk, plen);
+                s_props_store[n][plen] = '\0';
+              }
+            }
+          }
+        }
+      }
+    }
     // spec/scene-object-visibility-v0.md: "visible" opcional, default true si falta.
     out[n].visible = true;
     json_extract_bool_for_key(ob, oe, "visible", &out[n].visible);
@@ -4754,14 +4784,24 @@ static void sort_actors_by_z_index(void) {
     }
     Placement tmp_pl = s_placements[i];
     SceneActor tmp_ac = s_actors[i];
+    char tmp_props[kPropsBufSize];
+    if (s_props_store) {
+      memcpy(tmp_props, s_props_store[i], kPropsBufSize);
+    }
     int j = i - 1;
     while (j >= 0 && s_placements[j].z_index > tmp_pl.z_index) {
       s_placements[j + 1] = s_placements[j];
       s_actors[j + 1] = s_actors[j];
+      if (s_props_store) {
+        memcpy(s_props_store[j + 1], s_props_store[j], kPropsBufSize);
+      }
       --j;
     }
     s_placements[j + 1] = tmp_pl;
     s_actors[j + 1] = tmp_ac;
+    if (s_props_store) {
+      memcpy(s_props_store[j + 1], tmp_props, kPropsBufSize);
+    }
   }
 }
 
@@ -4927,6 +4967,19 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!s_tile_cells) {
       Serial.println("turtle_scene: sin PSRAM para tile_cells");
+    }
+  }
+  if (!s_props_store) {
+    s_props_store = reinterpret_cast<char (*)[kPropsBufSize]>(
+        heap_caps_malloc((size_t)kMaxPlacements * kPropsBufSize,
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!s_props_store) {
+      Serial.println("turtle_scene: sin PSRAM para props_store");
+    }
+  }
+  if (s_props_store) {
+    for (int i = 0; i < kMaxPlacements; ++i) {
+      s_props_store[i][0] = '{'; s_props_store[i][1] = '}'; s_props_store[i][2] = '\0';
     }
   }
   if (scene_uses_scrolling()) {
@@ -5220,6 +5273,28 @@ bool turtle_scene_actor_on_ground(void) {
     return false;
   }
   return s_actors[s_lua_actor_target].grounded;
+}
+
+bool turtle_scene_actor_anim_done(void) {
+  if (s_lua_actor_target < 0 || s_lua_actor_target >= s_actor_count) {
+    return true;
+  }
+  const SceneActor* a = &s_actors[s_lua_actor_target];
+  return !a->anim_repeat && (a->frame_index + 1 >= a->frame_count);
+}
+
+bool turtle_scene_actor_prop_str(const char* key, char* out, size_t outsz) {
+  if (!key || !key[0] || !out || outsz == 0) return false;
+  const char* p = (s_props_store && s_lua_actor_target >= 0 && s_lua_actor_target < s_actor_count)
+      ? s_props_store[s_lua_actor_target] : "{}";
+  return json_extract_string_for_key(p, p + strlen(p), key, out, outsz);
+}
+
+bool turtle_scene_actor_prop_num(const char* key, float* out) {
+  if (!key || !key[0] || !out) return false;
+  const char* p = (s_props_store && s_lua_actor_target >= 0 && s_lua_actor_target < s_actor_count)
+      ? s_props_store[s_lua_actor_target] : "{}";
+  return json_extract_float_for_key(p, p + strlen(p), key, out);
 }
 
 bool turtle_scene_actor_set_anim(const char* name) {

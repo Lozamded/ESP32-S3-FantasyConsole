@@ -4,6 +4,7 @@
   "id": "finish_pc",
   "name": "finish_pc",
   "sprite_id": "finish_pc",
+  "script": "finish_PC",
   "animations": [
     {
       "name": "off",
@@ -12,6 +13,10 @@
     {
       "name": "on",
       "sprite_id": "finish_pc_on"
+    },
+    {
+      "name": "turningon",
+      "sprite_id": "finish_pc_turningon"
     }
   ]
 }

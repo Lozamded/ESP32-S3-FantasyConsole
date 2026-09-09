@@ -55,10 +55,12 @@ local jump_start_y = 0
 local defeated = false
 local defeat_timer = 0.0
 local soul_spawned = false
+local finishing = false
 
 local hp = 3
-state_set("hp", 3)       -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
-state_set("defeated", 0) -- idem: gear.lua lo lee para no colectar durante el arco de derrota
+state_set("hp", 3)         -- reset al cargar (goto_scene recarga el script, asi hp vuelve a 3)
+state_set("defeated", 0)   -- idem: gear.lua lo lee para no colectar durante el arco de derrota
+state_set("finishing", 0)  -- reset al cargar: evita que el flag persista en la escena siguiente
 
 local attack_spawned = false
 
@@ -121,6 +123,33 @@ function _update(dt)
     flip_v(false)
     play_anim("defeat", 1.0, false)
     state_set("defeated", 1)
+    return
+  end
+
+  -- Fin de nivel: finish_PC senalizo contacto via state "finishing".
+  -- El personaje camina fuera de pantalla en la direccion que miraba,
+  -- con gravedad normal pero sin ningun input del jugador.
+  -- finish_PC.lua llama goto_scene tras su propio timer; aqui solo movemos.
+  if not finishing and state_get("finishing") == 1 then
+    finishing = true
+    vy = 0
+    rem_x = 0.0
+    play_anim("walk", 1.0, true)
+    cur_anim = "walk"
+  end
+  if finishing then
+    if on_ground() then
+      if vy < 0 then vy = 0 end
+    else
+      vy = vy - gravity * dt
+    end
+    local dir = facing_left and -1 or 1
+    rem_x = rem_x + dir * walk_speed * dt
+    local mx = math.floor(rem_x + 0.5)
+    local my = math.floor(vy * dt + (vy >= 0 and 0.5 or -0.5))
+    local ax, ay = move(mx, my)
+    if ax == mx then rem_x = rem_x - ax else rem_x = 0.0 end
+    if my > 0 and ay < my then vy = 0 end
     return
   end
 

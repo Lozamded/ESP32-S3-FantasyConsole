@@ -135,6 +135,36 @@ static int l_on_ground(lua_State* L) {
   return 1;
 }
 
+static int l_anim_done(lua_State* L) {
+  lua_pushboolean(L, turtle_scene_actor_anim_done());
+  return 1;
+}
+
+// prop(key [, default]) -- lee variable exportada del placement actual.
+// Si default es numero, intenta extraer valor numerico; si es string/nil, extrae string.
+// Devuelve default (o nil si no hay default) cuando la clave no existe en "props".
+static int l_prop(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  if (lua_isnumber(L, 2)) {
+    float val = 0.0f;
+    if (turtle_scene_actor_prop_num(key, &val)) {
+      lua_pushnumber(L, static_cast<lua_Number>(val));
+    } else {
+      lua_pushvalue(L, 2);
+    }
+  } else {
+    char buf[64];
+    if (turtle_scene_actor_prop_str(key, buf, sizeof(buf))) {
+      lua_pushstring(L, buf);
+    } else if (!lua_isnoneornil(L, 2)) {
+      lua_pushvalue(L, 2);
+    } else {
+      lua_pushnil(L);
+    }
+  }
+  return 1;
+}
+
 static int l_set_anim(lua_State* L) {
   const char* name = luaL_checkstring(L, 1);
   turtle_scene_actor_set_anim(name);
@@ -384,6 +414,12 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_on_ground);
   lua_setglobal(L, "on_ground");
+
+  lua_pushcfunction(L, l_anim_done);
+  lua_setglobal(L, "anim_done");
+
+  lua_pushcfunction(L, l_prop);
+  lua_setglobal(L, "prop");
 
   lua_pushcfunction(L, l_set_anim);
   lua_setglobal(L, "set_anim");

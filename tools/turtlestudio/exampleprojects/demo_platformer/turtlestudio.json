@@ -750,7 +750,10 @@
             "levelend"
           ],
           "visible": true,
-          "z_index": 0
+          "z_index": 0,
+          "props": {
+            "sceneToChange": "Lvl_2"
+          }
         },
         {
           "object": "check_PC",
@@ -978,8 +981,8 @@
         {
           "object": "brickblock",
           "id": "brickblock_20",
-          "x": 1836,
-          "y": 11,
+          "x": 1835,
+          "y": 17,
           "tags": [],
           "visible": true,
           "z_index": 0
@@ -1056,6 +1059,51 @@
           "id": "gear_20",
           "x": 1799,
           "y": 53,
+          "tags": [],
+          "visible": true,
+          "z_index": 0
+        },
+        {
+          "object": "brickblock",
+          "id": "brickblock_21",
+          "x": 1746,
+          "y": 15,
+          "tags": [],
+          "visible": true,
+          "z_index": 0
+        },
+        {
+          "object": "brickblock",
+          "id": "brickblock_22",
+          "x": 1747,
+          "y": 0,
+          "tags": [],
+          "visible": true,
+          "z_index": 0
+        },
+        {
+          "object": "brickblock",
+          "id": "brickblock_23",
+          "x": 1793,
+          "y": 12,
+          "tags": [],
+          "visible": true,
+          "z_index": 0
+        },
+        {
+          "object": "brickblock",
+          "id": "brickblock_24",
+          "x": 1794,
+          "y": 1,
+          "tags": [],
+          "visible": true,
+          "z_index": 0
+        },
+        {
+          "object": "brickblock",
+          "id": "brickblock_25",
+          "x": 1836,
+          "y": 0,
           "tags": [],
           "visible": true,
           "z_index": 0
@@ -1725,8 +1773,8 @@
               31,
               31,
               31,
-              31,
-              7,
+              9,
+              8,
               8,
               31,
               31,

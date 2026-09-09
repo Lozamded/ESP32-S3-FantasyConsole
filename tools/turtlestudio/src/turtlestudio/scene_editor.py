@@ -486,6 +486,124 @@ def _paint_scene_text_labels(
                 _draw_rect_outline_on_rgba(rgba, fw, fh, bx, by, bw, bh, *_SELECTION_FRAME_RGB)
 
 
+def _parse_prop_value(raw: str) -> bool | int | float | str:
+    """Infiere tipo de una cadena de valor de prop: bool > int > float > str."""
+    s = raw.strip()
+    if s.lower() == "true":
+        return True
+    if s.lower() == "false":
+        return False
+    try:
+        return int(s)
+    except ValueError:
+        pass
+    try:
+        return float(s)
+    except ValueError:
+        pass
+    return s
+
+
+class _PropsWidget(QWidget):
+    """Lista dinamica de filas [nombre] : [valor] con botones + / - por fila."""
+
+    changed = pyqtSignal()
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rows: list[tuple[QLineEdit, QLineEdit]] = []
+        self._blocking = False
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(2)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        lbl = QLabel(tr("scene.object_props_label"))
+        header.addWidget(lbl)
+        header.addStretch()
+        btn_add = QPushButton("+")
+        btn_add.setFixedSize(22, 22)
+        btn_add.setToolTip(tr("scene.object_props_add_tooltip"))
+        btn_add.clicked.connect(self._add_row)
+        header.addWidget(btn_add)
+        outer.addLayout(header)
+
+        self._rows_widget = QWidget()
+        self._rows_layout = QVBoxLayout(self._rows_widget)
+        self._rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._rows_layout.setSpacing(2)
+        outer.addWidget(self._rows_widget)
+
+    def load(self, props: dict[str, Any]) -> None:
+        self._blocking = True
+        self._clear_rows()
+        for k, v in props.items():
+            self._append_row(str(k), str(v) if not isinstance(v, bool) else ("true" if v else "false"))
+        self._blocking = False
+
+    def get_props(self) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key_ed, val_ed in self._rows:
+            k = key_ed.text().strip()
+            if k:
+                result[k] = _parse_prop_value(val_ed.text())
+        return result
+
+    def _clear_rows(self) -> None:
+        for key_ed, val_ed in self._rows:
+            key_ed.setParent(None)  # type: ignore[call-overload]
+            val_ed.setParent(None)  # type: ignore[call-overload]
+        self._rows.clear()
+        while self._rows_layout.count():
+            item = self._rows_layout.takeAt(0)
+            if item and item.widget():
+                item.widget().deleteLater()
+
+    def _append_row(self, key: str = "", value: str = "") -> None:
+        row_widget = QWidget()
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(4)
+
+        key_ed = QLineEdit(key)
+        key_ed.setPlaceholderText("nombre")
+        key_ed.setMinimumWidth(80)
+        val_ed = QLineEdit(value)
+        val_ed.setPlaceholderText("valor")
+
+        btn_del = QPushButton("−")
+        btn_del.setFixedSize(22, 22)
+
+        row_layout.addWidget(key_ed, 2)
+        row_layout.addWidget(QLabel(":"))
+        row_layout.addWidget(val_ed, 3)
+        row_layout.addWidget(btn_del)
+
+        self._rows.append((key_ed, val_ed))
+        self._rows_layout.addWidget(row_widget)
+
+        key_ed.textEdited.connect(self._on_edited)
+        val_ed.textEdited.connect(self._on_edited)
+        btn_del.clicked.connect(lambda: self._remove_row(row_widget, key_ed, val_ed))
+
+    def _add_row(self) -> None:
+        self._append_row()
+        self.changed.emit()
+
+    def _remove_row(self, row_widget: QWidget, key_ed: QLineEdit, val_ed: QLineEdit) -> None:
+        if (key_ed, val_ed) in self._rows:
+            self._rows.remove((key_ed, val_ed))
+        row_widget.deleteLater()
+        if not self._blocking:
+            self.changed.emit()
+
+    def _on_edited(self) -> None:
+        if not self._blocking:
+            self.changed.emit()
+
+
 def _paint_scene_objects(
     rgba: list[float], fw: int, fh: int, project_root: Path, placements: list[dict[str, Any]]
 ) -> None:
@@ -1069,11 +1187,24 @@ def _normalize_row(
     r.pop("background", None)
     tile_layers = parse_tile_layers(r.get("tile_layers"), tile_px=tile_px, world_w=ww, world_h=wh)
     r["tile_layers"] = tile_layers_to_json_list(tile_layers)
-    placements = parse_scene_objects_raw(r.get("objects"), world_w=ww, world_h=wh)
-    r["objects"] = [
-        {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index}
-        for p in placements
-    ]
+    raw_objs_list = r.get("objects") or []
+    raw_by_id: dict[str, Any] = {}
+    for ro in raw_objs_list:
+        if isinstance(ro, dict):
+            rid = str(ro.get("id", ""))
+            if rid:
+                raw_by_id[rid] = ro
+    placements = parse_scene_objects_raw(raw_objs_list, world_w=ww, world_h=wh)
+    norm_objs: list[dict[str, Any]] = []
+    for p in placements:
+        entry: dict[str, Any] = {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index}
+        raw_ro = raw_by_id.get(p.id)
+        if isinstance(raw_ro, dict):
+            rp = raw_ro.get("props")
+            if isinstance(rp, dict) and rp:
+                entry["props"] = {k: v for k, v in rp.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool))}
+        norm_objs.append(entry)
+    r["objects"] = norm_objs
     labels = parse_scene_text_labels_raw(r.get("text_labels"), world_w=ww, world_h=wh)
     r["text_labels"] = [
         {
@@ -1640,6 +1771,10 @@ class SceneEditorWidget(QWidget):
         self.edit_object_tags.editingFinished.connect(self._on_object_tags_edited)
         tags_row.addWidget(self.edit_object_tags)
         layout.addLayout(tags_row)
+
+        self.props_widget = _PropsWidget()
+        self.props_widget.changed.connect(self._on_object_props_edited)
+        layout.addWidget(self.props_widget)
 
         pos_row = QHBoxLayout()
         pos_row.addWidget(QLabel(tr("scene.x_label")))
@@ -3057,6 +3192,7 @@ class SceneEditorWidget(QWidget):
             self.edit_object_tags.blockSignals(True)
             self.edit_object_tags.setText(", ".join(tags))
             self.edit_object_tags.blockSignals(False)
+            self.props_widget.load(p.get("props") or {})
         self._refresh_canvas()
 
     def _on_object_xy_changed(self, _value: int) -> None:
@@ -3130,6 +3266,21 @@ class SceneEditorWidget(QWidget):
         self.list_objects.blockSignals(False)
         self._mark_dirty()
         self._refresh_canvas()
+
+    def _on_object_props_edited(self) -> None:
+        row = self._current_row()
+        if row is None:
+            return
+        idx = self.list_objects.currentRow()
+        objs = row.get("objects") or []
+        if not (0 <= idx < len(objs)):
+            return
+        props = self.props_widget.get_props()
+        if props:
+            objs[idx]["props"] = props
+        elif "props" in objs[idx]:
+            del objs[idx]["props"]
+        self._mark_dirty()
 
     # ------------------------------------------------------------------
     # Slots — text labels (spec/scene-text-labels-v0.md)

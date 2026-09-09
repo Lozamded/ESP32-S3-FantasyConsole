@@ -114,6 +114,8 @@ scene.object_id_tooltip,Identificador unico de esta instancia en la escena (find
 scene.object_tags_label,Tags:,Tags:
 scene.object_tags_placeholder,separados por coma,comma-separated
 scene.object_tags_tooltip,Tags separados por coma para find_by_tag en scripts (hasta 6 tags de hasta 20 caracteres cada uno).,Comma-separated tags for find_by_tag in scripts (up to 6 tags of up to 20 characters each).
+scene.object_props_label,Props,Props
+scene.object_props_add_tooltip,Agregar variable exportada,Add exported variable
 scene.text_labels_group,Etiquetas de texto,Text labels
 scene.add_label,Añadir,Add
 scene.remove_label,Quitar,Remove

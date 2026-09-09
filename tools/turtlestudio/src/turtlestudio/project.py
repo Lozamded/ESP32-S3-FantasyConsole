@@ -402,6 +402,17 @@ def parse_scene_objects_raw(
     return tuple(out)
 
 
+def _extract_props(raw: Any) -> dict[str, Any]:
+    """Extrae y valida el dict 'props' de un placement raw. Solo acepta valores
+    primitivos (str, int, float, bool) -- suficiente para variables exportadas."""
+    if not isinstance(raw, dict):
+        return {}
+    rp = raw.get("props")
+    if not isinstance(rp, dict):
+        return {}
+    return {k: v for k, v in rp.items() if isinstance(k, str) and isinstance(v, (str, int, float, bool))}
+
+
 def normalize_scene_objects_for_save(
     root: Path,
     scene_palette_rel: str,
@@ -413,6 +424,15 @@ def normalize_scene_objects_for_save(
     from turtlestudio.objects import list_object_ids_for_scene_palette
     from turtlestudio.sprites import normalize_palette_rel as normpal
 
+    # Mapa id→raw para recuperar 'props' tras la normalizacion (que no pasa props por dataclass).
+    raw_by_id: dict[str, Any] = {}
+    if isinstance(raw_objs, list):
+        for ro in raw_objs:
+            if isinstance(ro, dict):
+                rid = str(ro.get("id", ""))
+                if rid:
+                    raw_by_id[rid] = ro
+
     placements = parse_scene_objects_raw(raw_objs, world_w=world_w, world_h=world_h)
     allowed = set(list_object_ids_for_scene_palette(root, scene_palette_rel))
     sp = normpal(scene_palette_rel)
@@ -422,9 +442,14 @@ def normalize_scene_objects_for_save(
             raise ValueError(
                 f"Objeto {p.object_id!r}: no existe o su sprite no usa la paleta de esta escena ({sp})."
             )
-        out.append(
-            {"object": p.object_id, "id": p.id, "x": p.x, "y": p.y, "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index}
-        )
+        entry: dict[str, Any] = {
+            "object": p.object_id, "id": p.id, "x": p.x, "y": p.y,
+            "tags": list(p.tags), "visible": p.visible, "z_index": p.z_index,
+        }
+        props = _extract_props(raw_by_id.get(p.id))
+        if props:
+            entry["props"] = props
+        out.append(entry)
     return out
 
 
