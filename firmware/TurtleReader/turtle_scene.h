@@ -4,6 +4,15 @@
 #include <stdint.h>
 
 /**
+ * Sistema de traduccion: idioma actual, lookup de clave, y cambio de idioma.
+ * set_language acepta codigos de hasta 7 chars (p. ej. "en", "es").
+ * translate busca `key` en la tabla del bundle activo; si falta, copia `key` como fallback.
+ */
+void turtle_scene_set_language(const char* code);
+const char* turtle_scene_get_language(void);
+bool turtle_scene_translate(const char* key, char* out, size_t out_size);
+
+/**
  * Dibuja en el framebuffer la escena `scene_id` del bundle (un solo fotograma, sin loop).
  * Ver turtle_scene_begin_runtime() para animacion continua.
  */

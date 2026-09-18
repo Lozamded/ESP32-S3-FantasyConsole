@@ -47,7 +47,7 @@
   "text_labels": [
     {
       "id": "label_presstotryagain",
-      "text": "Press to restart",
+      "text": "[t[presstorestart]]",
       "x": 19,
       "y": 6,
       "font": "default",

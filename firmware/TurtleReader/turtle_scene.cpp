@@ -271,6 +271,10 @@ static int s_runtime_tile_px = 16;
 static char s_active_scene_id[64] = "";
 static char s_pending_scene_switch[64] = "";
 static bool s_pending_scene_switch_valid = false;
+// Puntero al array "translations" del bundle activo. Nulo si no hay traducciones.
+static const char* s_translations_arr = nullptr;
+static const char* s_translations_arr_end = nullptr;
+static char s_language_code[8] = "en";
 // spec/lua/scene-script-v0.md: stem del script de escena declarado en el JSON de la
 // escena activa ("script": "<stem>"), vacio si no declara ninguno. turtle_actor_lua_
 // bind_scene_script lo consume al final de begin_runtime.
@@ -3597,8 +3601,70 @@ static bool parse_placements(const char* scene_start, const char* scene_end, Pla
 }
 
 /** spec/scene-text-labels-v0.md: mismo shape que parse_placements, pero una entrada
- *  invalida (sin "text"/"font" resoluble) se salta en vez de abortar toda la escena --
- *  el resto de las etiquetas y de la escena cargan igual. */
+/** Localiza el array "translations" del bundle; guarda punteros para busquedas subsiguientes. */
+static void locate_translations(const char* json, const char* json_end) {
+  s_translations_arr = nullptr;
+  s_translations_arr_end = nullptr;
+  const char* p = strstr_bounded(json, json_end, "\"translations\"");
+  if (!p) {
+    return;
+  }
+  p += 14;  // saltar "\"translations\""
+  while (p < json_end && *p != ':') {
+    ++p;
+  }
+  if (p >= json_end) {
+    return;
+  }
+  ++p;
+  while (p < json_end && isspace(static_cast<unsigned char>(*p))) {
+    ++p;
+  }
+  if (p >= json_end || *p != '[') {
+    return;
+  }
+  const char* arr_end = json_array_end(p);
+  if (!arr_end) {
+    return;
+  }
+  s_translations_arr = p;
+  s_translations_arr_end = arr_end;
+}
+
+/** Sustituye todas las ocurrencias de [t[key]] en `text` con la traduccion activa. */
+static void resolve_t_placeholders(char* text, size_t text_size) {
+  char buf[64];
+  size_t di = 0;
+  const char* p = text;
+  while (*p && di + 1 < text_size) {
+    if (p[0] == '[' && p[1] == 't' && p[2] == '[') {
+      const char* key_start = p + 3;
+      const char* close = strstr(key_start, "]]");
+      if (close) {
+        char key[64];
+        size_t klen = static_cast<size_t>(close - key_start);
+        if (klen >= sizeof key) {
+          klen = sizeof key - 1;
+        }
+        memcpy(key, key_start, klen);
+        key[klen] = '\0';
+        char translated[64];
+        turtle_scene_translate(key, translated, sizeof translated);
+        for (const char* t = translated; *t && di + 1 < text_size; ++t) {
+          buf[di++] = *t;
+        }
+        p = close + 2;
+        continue;
+      }
+    }
+    buf[di++] = *p++;
+  }
+  buf[di] = '\0';
+  strncpy(text, buf, text_size);
+  text[text_size - 1] = '\0';
+}
+
+/** Etiqueta invalida (sin "text"/"font" resoluble) se salta sin abortar la escena. */
 static void parse_scene_text_labels(const char* scene_start, const char* scene_end) {
   s_text_label_count = 0;
   const char* ok = strstr_bounded(scene_start, scene_end, "\"text_labels\"");
@@ -3645,6 +3711,7 @@ static void parse_scene_text_labels(const char* scene_start, const char* scene_e
         !lbl->text[0]) {
       continue;
     }
+    resolve_t_placeholders(lbl->text, sizeof(lbl->text));
     if (!json_extract_string_for_key(ob, oe, "font", lbl->font_id, sizeof(lbl->font_id)) ||
         !lbl->font_id[0]) {
       continue;
@@ -4705,6 +4772,64 @@ static void tick_text_labels(uint32_t delta_ms) {
 
 }  // namespace
 
+bool turtle_scene_translate(const char* key, char* out, size_t out_size) {
+  if (!out || out_size == 0) {
+    return false;
+  }
+  if (!key || !key[0]) {
+    if (out_size > 0) out[0] = '\0';
+    return false;
+  }
+  if (!s_translations_arr || !s_translations_arr_end) {
+    snprintf(out, out_size, "%s", key);
+    return false;
+  }
+  const char* p = s_translations_arr + 1;  // saltar '['
+  while (p < s_translations_arr_end) {
+    while (p < s_translations_arr_end &&
+           (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
+      ++p;
+    }
+    if (p >= s_translations_arr_end || *p == ']') {
+      break;
+    }
+    if (*p != '{') {
+      break;
+    }
+    const char* ob = p;
+    const char* oe = json_object_end(ob);
+    if (!oe) {
+      break;
+    }
+    p = oe;
+    char row_key[64];
+    if (!json_extract_string_for_key(ob, oe, "key", row_key, sizeof row_key)) {
+      continue;
+    }
+    if (strcmp(row_key, key) != 0) {
+      continue;
+    }
+    if (!json_extract_string_for_key(ob, oe, s_language_code, out, out_size)) {
+      snprintf(out, out_size, "%s", key);
+      return false;
+    }
+    return true;
+  }
+  snprintf(out, out_size, "%s", key);
+  return false;
+}
+
+void turtle_scene_set_language(const char* code) {
+  if (!code || !code[0]) {
+    return;
+  }
+  snprintf(s_language_code, sizeof s_language_code, "%s", code);
+}
+
+const char* turtle_scene_get_language(void) {
+  return s_language_code;
+}
+
 bool turtle_scene_draw_cart_bundle(const char* json, size_t json_len, const char* scene_id) {
   if (!json || json_len == 0 || !scene_id || !scene_id[0]) {
     return false;
@@ -4828,6 +4953,7 @@ bool turtle_scene_begin_runtime(const char* json, size_t json_len, const char* s
   }
   // spec/gui-layer-v0.md: parsear catalogo global de capas (top-level "guilayers") ANTES
   // que campos de escena. Todas arrancan ocultas; el cart las muestra desde _hud_init/_hud.
+  locate_translations(json, json_end);
   turtle_gui_layer_begin_scene(json, json_len);
   // spec/gui-layer-v0.md "Auto-show por escena": aplicar `gui_layers_autoshow` (array de
   // ids) despues del reset y antes del primer frame. Ids ausentes en el catalogo cuentan

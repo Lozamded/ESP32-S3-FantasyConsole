@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import json
 import re
 import shutil
@@ -335,6 +336,32 @@ def _asset_ref_entry(asset_id: str, sd_relpath: str, ref_kind: str) -> dict[str,
     }
 
 
+def _load_project_translations(project_root: Path) -> list[dict[str, str]]:
+    """Merge every translations/*.csv into a flat list of {key, lang: value, ...} dicts."""
+    translations_dir = project_root / "translations"
+    if not translations_dir.is_dir():
+        return []
+    merged: dict[str, dict[str, str]] = {}
+    for csv_path in sorted(translations_dir.glob("*.csv")):
+        try:
+            with csv_path.open("r", encoding="utf-8", newline="") as f:
+                rows = list(csv.reader(f))
+        except OSError:
+            continue
+        if not rows:
+            continue
+        langs = [code.strip() for code in rows[0][1:] if code.strip()]
+        for row in rows[1:]:
+            if not row or not row[0].strip():
+                continue
+            key = row[0].strip()
+            entry = merged.setdefault(key, {})
+            for i, lang in enumerate(langs):
+                val = row[i + 1].strip() if i + 1 < len(row) else ""
+                entry[lang] = val
+    return [{"key": k, **vals} for k, vals in merged.items()]
+
+
 def collect_studio_bundle_files(
     project_root: Path,
     *,
@@ -551,6 +578,7 @@ def collect_studio_bundle_files(
     # para poder descubrir sus sprites; aca solo se serializan al bundle. Orden estable
     # (alfabetico por stem) para que el desempate por z-manifest sea reproducible entre exports.
     guilayers_list: list[dict[str, Any]] = [gui_layer_to_json(ly) for ly in guilayers_loaded]
+    translations_list = _load_project_translations(root)
 
     bundle: dict[str, Any] = {
         "format_version": 1,
@@ -568,6 +596,7 @@ def collect_studio_bundle_files(
         "tilesets": tilesets_map,
         "fonts": fonts_map,
         "guilayers": guilayers_list,
+        "translations": translations_list,
     }
     bundle_rel = "studio/project_bundle.json"
     bundle_text = json.dumps(bundle, separators=(",", ":"), ensure_ascii=False) + "\n"

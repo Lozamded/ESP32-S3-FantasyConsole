@@ -275,6 +275,28 @@ static int l_gui_layer_set_sprite(lua_State* L) {
   return 0;
 }
 
+/** tr("key") -> string traducida; fallback a la clave si no esta en la tabla activa. */
+static int l_tr(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  char buf[128];
+  turtle_scene_translate(key, buf, sizeof buf);
+  lua_pushstring(L, buf);
+  return 1;
+}
+
+/** set_lang("es") -- cambia el idioma activo; la escena debe recargarse para aplicar etiquetas. */
+static int l_set_lang(lua_State* L) {
+  const char* code = luaL_checkstring(L, 1);
+  turtle_scene_set_language(code);
+  return 0;
+}
+
+/** get_lang() -> "en" -- devuelve el codigo del idioma activo. */
+static int l_get_lang(lua_State* L) {
+  lua_pushstring(L, turtle_scene_get_language());
+  return 1;
+}
+
 static bool runCartEntryLua(const char* source, size_t source_len, const char* chunkName) {
   if (!source || source_len == 0) {
     Serial.println("Lua: ENTRY vacio");
@@ -331,6 +353,13 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_setglobal(L, "gui_layer_set_pips");
   lua_pushcfunction(L, l_gui_layer_set_sprite);
   lua_setglobal(L, "gui_layer_set_sprite");
+
+  lua_pushcfunction(L, l_tr);
+  lua_setglobal(L, "tr");
+  lua_pushcfunction(L, l_set_lang);
+  lua_setglobal(L, "set_lang");
+  lua_pushcfunction(L, l_get_lang);
+  lua_setglobal(L, "get_lang");
 
   turtle_state_register_lua(L);
 

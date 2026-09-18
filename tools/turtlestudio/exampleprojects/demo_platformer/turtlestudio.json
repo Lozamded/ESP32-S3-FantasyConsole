@@ -54,12 +54,21 @@
       "text_labels": [
         {
           "id": "startlabel",
-          "text": "Press to Start",
-          "x": 25,
-          "y": 11,
+          "text": "[t[presstostart]]",
+          "x": 4,
+          "y": 16,
           "font": "default",
           "color_index": 30,
           "blink_ms": 200
+        },
+        {
+          "id": "currentlanguage",
+          "text": "[t[labelcurrlang]]",
+          "x": 10,
+          "y": 4,
+          "font": "default",
+          "color_index": -1,
+          "blink_ms": 0
         }
       ],
       "tile_layers": [
@@ -4746,7 +4755,7 @@
       "text_labels": [
         {
           "id": "label_presstotryagain",
-          "text": "Press to restart",
+          "text": "[t[presstorestart]]",
           "x": 19,
           "y": 6,
           "font": "default",

@@ -390,6 +390,9 @@ static int l_actor_set(lua_State* L);
 static int l_actor_get(lua_State* L);
 static int l_obj_set(lua_State* L);
 static int l_obj_get(lua_State* L);
+static int l_tr(lua_State* L);
+static int l_set_lang(lua_State* L);
+static int l_get_lang(lua_State* L);
 
 static void register_api(lua_State* L) {
   lua_pushcfunction(L, l_serial_print);
@@ -504,6 +507,13 @@ static void register_api(lua_State* L) {
 
   lua_pushcfunction(L, l_obj_get);
   lua_setglobal(L, "obj_get");
+
+  lua_pushcfunction(L, l_tr);
+  lua_setglobal(L, "tr");
+  lua_pushcfunction(L, l_set_lang);
+  lua_setglobal(L, "set_lang");
+  lua_pushcfunction(L, l_get_lang);
+  lua_setglobal(L, "get_lang");
 
   turtle_state_register_lua(L);
 }
@@ -645,6 +655,28 @@ static int l_actor_set(lua_State* L) {
   const double val = (double)luaL_checknumber(L, 2);
   turtle_scene_actor_var_set_self(key, val);
   return 0;
+}
+
+// tr("key") -> string traducida al idioma activo; fallback a la clave si no esta.
+static int l_tr(lua_State* L) {
+  const char* key = luaL_checkstring(L, 1);
+  char buf[128];
+  turtle_scene_translate(key, buf, sizeof buf);
+  lua_pushstring(L, buf);
+  return 1;
+}
+
+// set_lang("es") -- cambia el idioma activo; la escena debe recargarse para aplicar etiquetas.
+static int l_set_lang(lua_State* L) {
+  const char* code = luaL_checkstring(L, 1);
+  turtle_scene_set_language(code);
+  return 0;
+}
+
+// get_lang() -> "en" -- devuelve el codigo del idioma activo.
+static int l_get_lang(lua_State* L) {
+  lua_pushstring(L, turtle_scene_get_language());
+  return 1;
 }
 
 // actor_get("key" [, default]) -- lee una variable del actor activo.
