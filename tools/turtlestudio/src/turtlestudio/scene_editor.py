@@ -909,11 +909,19 @@ class TilePickerWidget(QListWidget):
         self.currentRowChanged.connect(self._on_row_changed)
 
     def set_tiles(self, tiles: list[list[list[int]]], rgbs: list[tuple[float, float, float]]) -> None:
+        # Update icons in-place rather than clear()+rebuild to avoid the
+        # deferred currentRowChanged(last_item) that Qt queues after clear(),
+        # which would reset the canvas to the wrong tile after paste/load.
         self.blockSignals(True)
-        self.clear()
+        n = len(tiles)
+        while self.count() > n:
+            self.takeItem(self.count() - 1)
         for i, rows in enumerate(tiles):
-            item = QListWidgetItem(_tile_icon(rows, rgbs), str(i))
-            self.addItem(item)
+            icon = _tile_icon(rows, rgbs)
+            if i < self.count():
+                self.item(i).setIcon(icon)
+            else:
+                self.addItem(QListWidgetItem(icon, str(i)))
         self.blockSignals(False)
 
     def _on_row_changed(self, row: int) -> None:

@@ -190,6 +190,20 @@ tileset.import_alpha_cutoff_label,Umbral alfa (%):,Alpha cutoff (%):
 tileset.import_no_tileset_open,Abre o crea un tileset primero.,Open or create a tileset first.
 tileset.import_load_error,No se pudo cargar la imagen: {e},Could not load the image: {e}
 tileset.import_tile_note,Se reemplaza el tile actual ({n}).,Replaces the current tile ({n}).
+tileset.copy_tileset,Copiar todos los tiles,Copy all tiles
+tileset.paste_tileset,Reemplazar todos los tiles…,Replace all tiles…
+tileset.copied,Todos los tiles copiados al portapapeles.,All tiles copied to clipboard.
+tileset.clipboard_empty,No hay tiles copiados.,No tiles copied yet.
+tileset.paste_confirm_title,Reemplazar todos los tiles,Replace all tiles
+tileset.paste_size_note,Los tiles del portapapeles son de {src}px; este tileset usa {dst}px. Se redimensionarán al pegar.,Clipboard tiles are {src}px; this tileset uses {dst}px. They will be resized on paste.
+tileset.pasted_ok,Reemplazados: {n} tiles desde «{src}».,Replaced: {n} tiles from «{src}».
+tileset.unsaved_switch_title,Cambios sin guardar,Unsaved changes
+tileset.unsaved_switch_msg,El tileset «{id}» tiene cambios sin guardar. ¿Guardar antes de cambiar?,Tileset «{id}» has unsaved changes. Save before switching?
+tileset.copy_tile,Copiar tile,Copy tile
+tileset.paste_tile,Pegar tile,Paste tile
+tileset.tile_copied,Tile copiado.,Tile copied.
+tileset.tile_pasted,Tile pegado.,Tile pasted.
+tileset.tile_clipboard_empty,No hay tile copiado.,No tile copied yet.
 background.label,Fondo:,Background:
 background.mode_label,Modo:,Mode:
 background.mode_solid,Solido,Solid
@@ -288,6 +302,10 @@ font.open_error_title,Abrir fuente,Open font
 font.new_title,Nueva fuente,New font
 font.new_id_label,Id de la fuente:,Font id:
 font.save_error_title,Guardar fuente,Save font
+font.add_chars_placeholder,Escribir caracteres…,Type characters…
+font.add_chars_btn,+ Añadir,+ Add
+font.remove_char_btn,− Quitar seleccionado,− Remove selected
+font.add_group_label,Grupos:,Groups:
 build.name_label,Nombre:,Name:
 build.short_name_label,Nombre corto:,Short name:
 build.output_label,Carpeta de salida:,Output folder:

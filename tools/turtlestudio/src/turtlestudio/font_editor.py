@@ -29,11 +29,14 @@ from turtlestudio.backgrounds import list_palette_relpaths
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines, load_palette_rgb01_for_preview
 from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.fonts import (
+    CHAR_GROUPS,
     DEFAULT_GLYPH_PX,
     GLYPH_PX_STEP,
     LATIN_CHARSET,
     MAX_GLYPH_PX,
     MIN_GLYPH_PX,
+    charset_add_chars,
+    charset_remove_char,
     empty_glyph_rows,
     font_char_label,
     font_charset_from_data,
@@ -231,6 +234,33 @@ class FontEditorWidget(QWidget):
         canvas_col.addLayout(tools)
 
         canvas_col.addWidget(QLabel(tr("font.charset_label")))
+
+        add_row = QHBoxLayout()
+        self.edit_add_chars = QLineEdit()
+        self.edit_add_chars.setPlaceholderText(tr("font.add_chars_placeholder"))
+        self.edit_add_chars.setMaximumWidth(160)
+        self.edit_add_chars.returnPressed.connect(self._action_add_from_input)
+        add_row.addWidget(self.edit_add_chars)
+        btn_add = QPushButton(tr("font.add_chars_btn"))
+        btn_add.clicked.connect(self._action_add_from_input)
+        add_row.addWidget(btn_add)
+        add_row.addSpacing(8)
+        self.btn_remove_char = QPushButton(tr("font.remove_char_btn"))
+        self.btn_remove_char.clicked.connect(self._action_remove_current_char)
+        add_row.addWidget(self.btn_remove_char)
+        add_row.addStretch()
+        canvas_col.addLayout(add_row)
+
+        group_row = QHBoxLayout()
+        group_row.addWidget(QLabel(tr("font.add_group_label")))
+        for group_name, group_chars in CHAR_GROUPS.items():
+            btn = QPushButton(group_name)
+            btn.setToolTip(group_chars)
+            btn.clicked.connect(lambda _checked, c=group_chars: self._action_add_chars(c))
+            group_row.addWidget(btn)
+        group_row.addStretch()
+        canvas_col.addLayout(group_row)
+
         self.glyph_picker = GlyphPickerWidget()
         self.glyph_picker.glyph_selected.connect(self._on_glyph_selected)
         canvas_col.addWidget(self.glyph_picker)
@@ -362,6 +392,7 @@ class FontEditorWidget(QWidget):
     def _snapshot(self) -> dict[str, Any]:
         return {
             "glyphs": self.glyphs,
+            "charset": self.charset,
             "current_char": self.current_char,
             "glyph_px": self.glyph_px,
             "line_height": self.line_height,
@@ -377,6 +408,7 @@ class FontEditorWidget(QWidget):
         self._restoring = True
         try:
             self.glyphs = state["glyphs"]
+            self.charset = state.get("charset", self.charset)
             self.current_char = state["current_char"]
             self.glyph_px = int(state["glyph_px"])
             self.line_height = int(state["line_height"])
@@ -492,6 +524,42 @@ class FontEditorWidget(QWidget):
         self._refresh_canvas()
         self._refresh_glyph_thumb()
         self._refresh_preview()
+        self._commit_history()
+
+    def _action_add_from_input(self) -> None:
+        chars = self.edit_add_chars.text()
+        self.edit_add_chars.clear()
+        self._action_add_chars(chars)
+
+    def _action_add_chars(self, chars: str) -> None:
+        if not chars or not self.font_id:
+            return
+        new_charset = charset_add_chars(self.charset, chars)
+        if new_charset == self.charset:
+            return
+        for ch in new_charset:
+            if ch not in self.glyphs:
+                self.glyphs[ch] = empty_glyph_rows(self.glyph_px, fill_index=TRANSPARENT_PALETTE_INDEX)
+        self.charset = new_charset
+        self._mark_dirty()
+        self._refresh_glyph_thumb()
+        self._commit_history()
+
+    def _action_remove_current_char(self) -> None:
+        if not self.font_id or not self.current_char:
+            return
+        if len(self.charset) <= 1:
+            return
+        ch = self.current_char
+        new_charset = charset_remove_char(self.charset, ch)
+        if new_charset == self.charset:
+            return
+        self.charset = new_charset
+        self.glyphs.pop(ch, None)
+        self.current_char = self.charset[0] if self.charset else ""
+        self._mark_dirty()
+        self._refresh_glyph_thumb()
+        self._refresh_canvas()
         self._commit_history()
 
     def _action_new_font(self) -> None:

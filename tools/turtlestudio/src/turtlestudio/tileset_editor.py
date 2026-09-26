@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
+
+# Module-level clipboards shared across all open tilesets within the same session.
+_TILESET_CLIPBOARD: dict[str, Any] | None = None
+# Single-tile clipboard: pixel rows of one tile (for canvas-to-canvas copy/paste).
+_TILE_CLIPBOARD: dict[str, Any] | None = None
 
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QMouseEvent, QPainter, QPen
@@ -274,6 +280,12 @@ class TilesetEditorWidget(QWidget):
         self.btn_save = QPushButton(tr("common.save"))
         self.btn_save.clicked.connect(self._action_save)
         top_row.addWidget(self.btn_save)
+        self.btn_copy_tileset = QPushButton(tr("tileset.copy_tileset"))
+        self.btn_copy_tileset.clicked.connect(self._action_copy_tileset)
+        top_row.addWidget(self.btn_copy_tileset)
+        self.btn_paste_tileset = QPushButton(tr("tileset.paste_tileset"))
+        self.btn_paste_tileset.clicked.connect(self._action_paste_tileset)
+        top_row.addWidget(self.btn_paste_tileset)
         top_row.addStretch()
         self.lbl_status = QLabel("")
         self.lbl_status.setStyleSheet("color: #888;")
@@ -331,6 +343,13 @@ class TilesetEditorWidget(QWidget):
         self.zoom_spin.setValue(16)
         self.zoom_spin.valueChanged.connect(self.canvas.set_zoom)
         tools.addWidget(self.zoom_spin)
+        tools.addSpacing(8)
+        self.btn_copy_tile = QPushButton(tr("tileset.copy_tile"))
+        self.btn_copy_tile.clicked.connect(self._action_copy_tile)
+        tools.addWidget(self.btn_copy_tile)
+        self.btn_paste_tile = QPushButton(tr("tileset.paste_tile"))
+        self.btn_paste_tile.clicked.connect(self._action_paste_tile)
+        tools.addWidget(self.btn_paste_tile)
         tools.addStretch()
         canvas_col.addLayout(tools)
 
@@ -558,9 +577,19 @@ class TilesetEditorWidget(QWidget):
 
     def _on_canvas_context_menu(self, global_pos: Any) -> None:
         menu, action_to_button = self._build_tool_menu()
+        menu.addSeparator()
+        act_copy = menu.addAction(tr("tileset.copy_tile"))
+        act_paste = menu.addAction(tr("tileset.paste_tile"))
+        act_paste.setEnabled(_TILE_CLIPBOARD is not None)
         chosen = menu.exec(global_pos)
-        if chosen is not None and chosen in action_to_button:
+        if chosen is None:
+            return
+        if chosen in action_to_button:
             action_to_button[chosen].click()
+        elif chosen == act_copy:
+            self._action_copy_tile()
+        elif chosen == act_paste:
+            self._action_paste_tile()
 
     def _current_collision(self) -> dict[str, Any]:
         if not self._collision:
@@ -599,8 +628,27 @@ class TilesetEditorWidget(QWidget):
     # ------------------------------------------------------------------
 
     def _on_tileset_combo_changed(self, stem: str) -> None:
-        if stem:
-            self._load_tileset(stem)
+        if not stem:
+            return
+        if self._dirty and stem != self.tileset_id:
+            reply = QMessageBox.question(
+                self,
+                tr("tileset.unsaved_switch_title"),
+                tr("tileset.unsaved_switch_msg").format(id=self.tileset_id),
+                QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                # Revert combo to current tileset without re-triggering this slot.
+                self.combo_tileset.blockSignals(True)
+                idx = self.combo_tileset.findText(self.tileset_id)
+                if idx >= 0:
+                    self.combo_tileset.setCurrentIndex(idx)
+                self.combo_tileset.blockSignals(False)
+                return
+            if reply == QMessageBox.StandardButton.Save:
+                self._action_save()
+        self._load_tileset(stem)
 
     def _on_tile_selected(self, index: int) -> None:
         if 0 <= index < len(self._tiles):
@@ -726,6 +774,76 @@ class TilesetEditorWidget(QWidget):
         self._mark_dirty()
         self._refresh_collision_form()
         self._commit_history()
+
+    def _action_copy_tile(self) -> None:
+        global _TILE_CLIPBOARD
+        if not self._tiles:
+            return
+        _TILE_CLIPBOARD = {
+            "rows": copy.deepcopy(self._tiles[self._tile_index]),
+            "tile_px": self.tile_px,
+        }
+        self.lbl_status.setText(tr("tileset.tile_copied"))
+
+    def _action_paste_tile(self) -> None:
+        global _TILE_CLIPBOARD
+        if _TILE_CLIPBOARD is None:
+            QMessageBox.information(self, tr("tileset.paste_confirm_title"), tr("tileset.tile_clipboard_empty"))
+            return
+        if not self._tiles:
+            return
+        src_px: int = _TILE_CLIPBOARD["tile_px"]
+        dst_px: int = self.tile_px
+        rows = copy.deepcopy(_TILE_CLIPBOARD["rows"])
+        if src_px != dst_px:
+            rows = normalize_palette_rows(rows, dst_px, dst_px, fill_index=1)
+        self._tiles[self._tile_index] = rows
+        self._mark_dirty()
+        self._refresh_canvas()
+        self._refresh_tile_strip_icons()
+        self._commit_history()
+        self.lbl_status.setText(tr("tileset.tile_pasted"))
+
+    def _action_copy_tileset(self) -> None:
+        global _TILESET_CLIPBOARD
+        _TILESET_CLIPBOARD = {
+            "tiles": copy.deepcopy(self._tiles),
+            "collision": copy.deepcopy(self._collision),
+            "tile_px": self.tile_px,
+            "source_id": self.tileset_id,
+        }
+        self.lbl_status.setText(tr("tileset.copied"))
+
+    def _action_paste_tileset(self) -> None:
+        global _TILESET_CLIPBOARD
+        if _TILESET_CLIPBOARD is None:
+            QMessageBox.information(self, tr("tileset.paste_confirm_title"), tr("tileset.clipboard_empty"))
+            return
+        src_px: int = _TILESET_CLIPBOARD["tile_px"]
+        dst_px: int = self.tile_px
+        if src_px != dst_px:
+            QMessageBox.information(
+                self,
+                tr("tileset.paste_confirm_title"),
+                tr("tileset.paste_size_note").format(src=src_px, dst=dst_px),
+            )
+        tiles = copy.deepcopy(_TILESET_CLIPBOARD["tiles"])
+        collision = copy.deepcopy(_TILESET_CLIPBOARD["collision"])
+        if src_px != dst_px:
+            tiles = [normalize_palette_rows(rows, dst_px, dst_px, fill_index=1) for rows in tiles]
+        while len(collision) < len(tiles):
+            collision.append(default_tile_collision_meta())
+        collision = collision[: len(tiles)]
+        self._tiles = tiles
+        self._collision = collision
+        self._tile_index = min(self._tile_index, len(self._tiles) - 1)
+        self._mark_dirty()
+        self._refresh_tile_strip_icons()
+        self._refresh_canvas()
+        self._refresh_collision_form()
+        self._commit_history()
+        src_id = _TILESET_CLIPBOARD.get("source_id", "?")
+        self.lbl_status.setText(tr("tileset.pasted_ok").format(n=len(self._tiles), src=src_id))
 
     def _action_save(self) -> None:
         if not self.tileset_id:

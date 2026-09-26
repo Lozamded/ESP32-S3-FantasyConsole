@@ -33,6 +33,14 @@ LATIN_CHARSET: str = (
     + ".,!?:;'-"
 )
 
+# Grupos de caracteres predefinidos para anadir rapidamente al charset.
+CHAR_GROUPS: dict[str, str] = {
+    "Español":  "ñÑáÁéÉíÍóÓúÚüÜ¡¿",
+    "Français": "àâæçéèêëïîôœùûüÿÀÂÆÇÉÈÊËÏÎÔŒÙÛÜŸ«»",
+    "Deutsch":  "äöüÄÖÜß",
+    "Punct+":   "\"&@#%*+=/\\<>()[]{}^~|",
+}
+
 
 def font_char_label(ch: str) -> str:
     if ch == " ":
@@ -48,9 +56,25 @@ def font_char_from_label(label: str) -> str | None:
         return " "
     if s.startswith("apostrofo"):
         return "'"
-    if len(s) == 1 and s in LATIN_CHARSET:
+    if len(s) == 1:
         return s
     return None
+
+
+def charset_add_chars(charset: str, chars: str) -> str:
+    """Devuelve charset con los chars nuevos anexados al final (sin duplicados, orden preservado)."""
+    seen = set(charset)
+    result = list(charset)
+    for ch in chars:
+        if len(ch) == 1 and ch not in seen:
+            result.append(ch)
+            seen.add(ch)
+    return "".join(result)
+
+
+def charset_remove_char(charset: str, char: str) -> str:
+    """Devuelve charset sin el caracter `char`."""
+    return "".join(ch for ch in charset if ch != char)
 
 
 def latin_charset_labels() -> list[str]:
