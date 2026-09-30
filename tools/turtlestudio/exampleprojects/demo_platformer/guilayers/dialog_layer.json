@@ -1,0 +1,12 @@
+{
+  "id": "dialog_layer",
+  "x": 0,
+  "y": 0,
+  "w": 164,
+  "h": 124,
+  "bg_color_index": 0,
+  "transparent_bg": false,
+  "pauses_scene": false,
+  "captures_input": false,
+  "z": 0
+}

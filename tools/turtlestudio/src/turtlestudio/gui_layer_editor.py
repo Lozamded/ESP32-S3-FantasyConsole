@@ -13,12 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QIcon, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFormLayout,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -50,16 +53,19 @@ from turtlestudio.guilayers import (
     GUI_LAYER_TEXT_MAX_CHARS,
     MAX_GUI_BAR_RANGES,
     MAX_GUI_LAYER_LABELS,
+    MAX_GUI_LAYER_PANELS,
     MAX_GUI_LAYER_PIP_BARS,
     MAX_GUI_LAYER_PROGRESS_BARS,
     MAX_GUI_LAYER_RECTS,
     MAX_GUI_LAYER_SPRITES,
     MAX_PIP_COUNT,
+    PANEL_SLICE_COUNT,
     PIP_DIRECTIONS,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
     GuiBarRange,
     GuiLayer,
+    GuiPanel,
     GuiPipBar,
     GuiProgressBar,
     GuiRect,
@@ -76,11 +82,134 @@ from turtlestudio.sprites import (
     parse_sprite_all_frame_rows,
     read_sprite_file,
 )
+from turtlestudio.tiles import (
+    list_tileset_json_stems,
+    parse_tileset_all_tiles,
+    read_tileset_file,
+)
 from turtlestudio.i18n import tr
 from turtlestudio.palette_policy import PALETTE_SIZE
 
 # Escala del preview (canvas 164x124 * PREVIEW_ZOOM).
 PREVIEW_ZOOM = 3
+
+# Zoom de los tiles en el selector de slices de paneles 9-slice.
+SLICE_PICKER_ZOOM = 4
+
+
+def _tile_pixmap(rows: list[list[int]], rgbs: list[tuple[float, float, float]], zoom: int) -> QPixmap:
+    """Pixmap RGBA de un tile indexado (indice 31 = transparente, se ve el damero del boton)."""
+    th = len(rows)
+    tw = len(rows[0]) if th else 0
+    buf = bytearray(tw * th * 4)
+    for y, row in enumerate(rows):
+        for x, idx in enumerate(row):
+            i = (y * tw + x) * 4
+            if idx < 0 or idx >= len(rgbs) or idx == PALETTE_SIZE - 1:
+                continue
+            r, g, b = rgbs[idx]
+            buf[i] = int(r * 255)
+            buf[i + 1] = int(g * 255)
+            buf[i + 2] = int(b * 255)
+            buf[i + 3] = 255
+    img = QImage(bytes(buf), tw, th, tw * 4, QImage.Format.Format_RGBA8888).copy()
+    return QPixmap.fromImage(img).scaled(
+        tw * zoom, th * zoom,
+        Qt.AspectRatioMode.IgnoreAspectRatio,
+        Qt.TransformationMode.FastTransformation,
+    )
+
+
+class PanelSlicePickerDialog(QDialog):
+    """Selector visual de los 9 slices de un panel: click en un slot de la rejilla 3x3 y luego
+    en un tile del tileset para asignarlo. "Vaciar slot" lo deja en -1 (no se pinta)."""
+
+    def __init__(self, tiles: list[list[list[int]]], rgbs: list[tuple[float, float, float]],
+                 slices: tuple[int, ...], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(tr("guilayer.panel_pick_title"))
+        self.tiles = tiles
+        self.rgbs = rgbs
+        self.slices = list(slices)
+        self.active_slot = 0
+        self._icons = [QIcon(_tile_pixmap(t, rgbs, SLICE_PICKER_ZOOM)) for t in tiles]
+        tile_px = len(tiles[0]) if tiles else 8
+        btn_px = tile_px * SLICE_PICKER_ZOOM + 8
+
+        outer = QVBoxLayout(self)
+        outer.addWidget(QLabel(tr("guilayer.panel_pick_hint")))
+        body = QHBoxLayout()
+        outer.addLayout(body)
+
+        slots_grid = QGridLayout()
+        slots_grid.setSpacing(2)
+        self.slot_buttons: list[QPushButton] = []
+        for i in range(PANEL_SLICE_COUNT):
+            b = QPushButton()
+            b.setCheckable(True)
+            b.setFixedSize(btn_px, btn_px)
+            b.setIconSize(b.size() * 0.8)
+            b.clicked.connect(lambda _c=False, slot=i: self._select_slot(slot))
+            slots_grid.addWidget(b, i // 3, i % 3)
+            self.slot_buttons.append(b)
+        slots_col = QVBoxLayout()
+        slots_col.addLayout(slots_grid)
+        btn_clear = QPushButton(tr("guilayer.panel_clear_slot"))
+        btn_clear.clicked.connect(self._clear_active_slot)
+        slots_col.addWidget(btn_clear)
+        slots_col.addStretch()
+        body.addLayout(slots_col)
+
+        tiles_holder = QWidget()
+        tiles_grid = QGridLayout(tiles_holder)
+        tiles_grid.setSpacing(2)
+        cols = 8
+        for ti, icon in enumerate(self._icons):
+            b = QPushButton()
+            b.setFixedSize(btn_px, btn_px)
+            b.setIcon(icon)
+            b.setIconSize(b.size() * 0.8)
+            b.setToolTip(str(ti))
+            b.clicked.connect(lambda _c=False, tile=ti: self._assign_tile(tile))
+            tiles_grid.addWidget(b, ti // cols, ti % cols)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(tiles_holder)
+        body.addWidget(scroll, stretch=1)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        outer.addWidget(buttons)
+        self.resize(560, 320)
+        self._refresh_slots()
+
+    def _select_slot(self, slot: int) -> None:
+        self.active_slot = slot
+        self._refresh_slots()
+
+    def _assign_tile(self, tile: int) -> None:
+        self.slices[self.active_slot] = tile
+        # Avanza al siguiente slot: asignar los 9 en orden es solo 9 clicks en tiles.
+        self.active_slot = (self.active_slot + 1) % PANEL_SLICE_COUNT
+        self._refresh_slots()
+
+    def _clear_active_slot(self) -> None:
+        self.slices[self.active_slot] = -1
+        self._refresh_slots()
+
+    def _refresh_slots(self) -> None:
+        for i, b in enumerate(self.slot_buttons):
+            idx = self.slices[i]
+            b.setChecked(i == self.active_slot)
+            if 0 <= idx < len(self._icons):
+                b.setIcon(self._icons[idx])
+                b.setText("")
+            else:
+                b.setIcon(QIcon())
+                b.setText("-")
 
 
 class GuiLayerEditorWidget(QWidget):
@@ -102,6 +231,7 @@ class GuiLayerEditorWidget(QWidget):
         self.progress_bars: list[GuiProgressBar] = []
         self.pip_bars: list[GuiPipBar] = []
         self.sprites: list[GuiSpriteIcon] = []
+        self.panels: list[GuiPanel] = []
         self._dirty = False
         self._loading = False  # evita marcar dirty al reconstruir la UI desde disco
         self._build_ui()
@@ -265,6 +395,44 @@ class GuiLayerEditorWidget(QWidget):
         rects_btns.addWidget(self.btn_rect_remove)
         rects_btns.addStretch()
         sec_rects.content_layout().addLayout(rects_btns)
+
+        # Panels section (spec/gui-layer-v0.md "Paneles"): marcos 9-slice con tiles de un
+        # tileset -- cajas de dialogo, marcos de menu. Se pintan despues de rects.
+        sec_panels = CollapsibleSection(tr("guilayer.panels_title"), expanded=False)
+        form_col.addWidget(sec_panels)
+        # Columnas: id, x, y, w, h, tileset (combo), slices (solo lectura), fill_center (bool).
+        self.panels_table = QTableWidget(0, 8)
+        self.panels_table.setHorizontalHeaderLabels(
+            [
+                tr("guilayer.col_id"),
+                tr("guilayer.col_x"),
+                tr("guilayer.col_y"),
+                tr("guilayer.col_w"),
+                tr("guilayer.col_h"),
+                tr("guilayer.col_tileset"),
+                tr("guilayer.col_slices"),
+                tr("guilayer.col_fill_center"),
+            ]
+        )
+        self.panels_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.panels_table.verticalHeader().setDefaultSectionSize(24)
+        self.panels_table.setMinimumHeight(120)
+        self.panels_table.itemChanged.connect(self._on_panel_item_changed)
+        sec_panels.content_layout().addWidget(self.panels_table)
+        panels_btns = QHBoxLayout()
+        self.btn_panel_add = QPushButton(tr("guilayer.add_panel"))
+        self.btn_panel_add.clicked.connect(self._action_add_panel)
+        panels_btns.addWidget(self.btn_panel_add)
+        self.btn_panel_remove = QPushButton(tr("guilayer.remove_panel"))
+        self.btn_panel_remove.clicked.connect(self._action_remove_panel)
+        panels_btns.addWidget(self.btn_panel_remove)
+        self.btn_panel_pick = QPushButton(tr("guilayer.panel_pick_button"))
+        self.btn_panel_pick.clicked.connect(self._action_pick_panel_slices)
+        panels_btns.addWidget(self.btn_panel_pick)
+        panels_btns.addStretch()
+        sec_panels.content_layout().addLayout(panels_btns)
 
         # Labels section.
         sec_labels = CollapsibleSection(tr("guilayer.labels_title"), expanded=False)
@@ -444,6 +612,7 @@ class GuiLayerEditorWidget(QWidget):
         self.progress_bars = []
         self.pip_bars = []
         self.sprites = []
+        self.panels = []
         self._loading = True
         try:
             self.spin_x.setValue(0)
@@ -460,6 +629,7 @@ class GuiLayerEditorWidget(QWidget):
             self.progress_table.setRowCount(0)
             self.pip_table.setRowCount(0)
             self.sprites_table.setRowCount(0)
+            self.panels_table.setRowCount(0)
         finally:
             self._loading = False
         self._dirty = False
@@ -489,11 +659,13 @@ class GuiLayerEditorWidget(QWidget):
             self.progress_bars = list(layer.progress_bars)
             self.pip_bars = list(layer.pip_bars)
             self.sprites = list(layer.sprites)
+            self.panels = list(layer.panels)
             self._rebuild_rects_table()
             self._rebuild_labels_table()
             self._rebuild_progress_table()
             self._rebuild_pip_table()
             self._rebuild_sprites_table()
+            self._rebuild_panels_table()
         finally:
             self._loading = False
         self._dirty = False
@@ -517,6 +689,7 @@ class GuiLayerEditorWidget(QWidget):
             progress_bars=tuple(self.progress_bars),
             pip_bars=tuple(self.pip_bars),
             sprites=tuple(self.sprites),
+            panels=tuple(self.panels),
         )
 
     def _mark_dirty(self) -> None:
@@ -1277,6 +1450,185 @@ class GuiLayerEditorWidget(QWidget):
         self._refresh_preview()
 
     # ------------------------------------------------------------------
+    # Panels 9-slice (spec/gui-layer-v0.md "Paneles")
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _slices_text(slices: tuple[int, ...]) -> str:
+        return ",".join(str(v) for v in slices)
+
+    def _rebuild_panels_table(self) -> None:
+        self.panels_table.blockSignals(True)
+        try:
+            self.panels_table.setRowCount(len(self.panels))
+            for i, pn in enumerate(self.panels):
+                self.panels_table.setItem(i, 0, QTableWidgetItem(pn.id))
+                self._set_int_cell(self.panels_table, i, 1, pn.x)
+                self._set_int_cell(self.panels_table, i, 2, pn.y)
+                self._set_int_cell(self.panels_table, i, 3, pn.w)
+                self._set_int_cell(self.panels_table, i, 4, pn.h)
+                combo = self._new_tileset_combo(
+                    pn.tileset, on_change=lambda _t, row=i: self._on_panel_tileset_changed(row))
+                self.panels_table.setCellWidget(i, 5, combo)
+                # Slices editables como "a,b,c,..." ademas del selector visual.
+                self.panels_table.setItem(i, 6, QTableWidgetItem(self._slices_text(pn.slices)))
+                chk = self._new_flip_checkbox(
+                    pn.fill_center,
+                    lambda checked, row=i: self._on_panel_fill_center_changed(row, checked))
+                self.panels_table.setCellWidget(i, 7, chk)
+        finally:
+            self.panels_table.blockSignals(False)
+
+    def _new_tileset_combo(self, current: str, *, on_change) -> QComboBox:
+        combo = QComboBox()
+        stems = list_tileset_json_stems(self.project_root)
+        combo.addItems(stems)
+        if current and current not in stems:
+            combo.addItem(current)
+        idx = combo.findText(current) if current else 0
+        combo.setCurrentIndex(max(idx, 0))
+        combo.currentTextChanged.connect(on_change)
+        return combo
+
+    def _on_panel_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._loading:
+            return
+        row = item.row()
+        if row < 0 or row >= len(self.panels):
+            return
+        pn = self.panels[row]
+        col = item.column()
+        if col == 0:
+            new_id = item.text().strip()
+            if not is_valid_gui_layer_id(new_id):
+                QMessageBox.warning(self, tr("guilayer.label_id_error_title"),
+                                    tr("guilayer.label_id_error_msg"))
+                self.panels_table.blockSignals(True)
+                try:
+                    item.setText(pn.id)
+                finally:
+                    self.panels_table.blockSignals(False)
+                return
+            self.panels[row] = replace(pn, id=new_id)
+        elif col == 6:
+            from turtlestudio.guilayers import _parse_panel_slices
+
+            parts = [p.strip() for p in item.text().split(",") if p.strip()]
+            new_slices = _parse_panel_slices(parts)
+            self.panels[row] = replace(pn, slices=new_slices)
+            self.panels_table.blockSignals(True)
+            try:
+                item.setText(self._slices_text(new_slices))
+            finally:
+                self.panels_table.blockSignals(False)
+        else:
+            try:
+                v = int(item.text())
+            except (TypeError, ValueError):
+                v = 0
+            if col == 1:
+                v = max(0, min(SCENE_PIXEL_W, v))
+                self.panels[row] = replace(pn, x=v)
+            elif col == 2:
+                v = max(0, min(SCENE_PIXEL_H, v))
+                self.panels[row] = replace(pn, y=v)
+            elif col == 3:
+                v = max(1, min(SCENE_PIXEL_W, v))
+                self.panels[row] = replace(pn, w=v)
+            elif col == 4:
+                v = max(1, min(SCENE_PIXEL_H, v))
+                self.panels[row] = replace(pn, h=v)
+            self.panels_table.blockSignals(True)
+            try:
+                item.setText(str(v))
+            finally:
+                self.panels_table.blockSignals(False)
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _on_panel_tileset_changed(self, row: int) -> None:
+        if self._loading or row >= len(self.panels):
+            return
+        widget = self.panels_table.cellWidget(row, 5)
+        if isinstance(widget, QComboBox):
+            self.panels[row] = replace(self.panels[row], tileset=widget.currentText().strip())
+            self._mark_dirty()
+            self._refresh_preview()
+
+    def _on_panel_fill_center_changed(self, row: int, checked: bool) -> None:
+        if self._loading or row >= len(self.panels):
+            return
+        self.panels[row] = replace(self.panels[row], fill_center=checked)
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _action_add_panel(self) -> None:
+        if len(self.panels) >= MAX_GUI_LAYER_PANELS:
+            QMessageBox.information(self, tr("guilayer.panels_title"),
+                                    tr("guilayer.panel_cap_reached", cap=MAX_GUI_LAYER_PANELS))
+            return
+        tilesets = list_tileset_json_stems(self.project_root)
+        if not tilesets:
+            QMessageBox.warning(self, tr("guilayer.panels_title"),
+                                tr("guilayer.panel_needs_tileset_msg"))
+            return
+        existing_ids = {pn.id for pn in self.panels}
+        i = 1
+        while f"panel{i}" in existing_ids:
+            i += 1
+        # Default: los primeros 9 tiles en orden (tileset dibujado como bloque 3x3). Si el
+        # tileset esta armado distinto, el autor usa el selector visual.
+        self.panels.append(GuiPanel(
+            id=f"panel{i}",
+            tileset=tilesets[0],
+            x=0, y=0,
+            w=min(48, self.spin_w.value()), h=min(32, self.spin_h.value()),
+            slices=tuple(range(PANEL_SLICE_COUNT)),
+        ))
+        self._rebuild_panels_table()
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _action_remove_panel(self) -> None:
+        row = self.panels_table.currentRow()
+        if row < 0 or row >= len(self.panels):
+            return
+        del self.panels[row]
+        self._rebuild_panels_table()
+        self._mark_dirty()
+        self._refresh_preview()
+
+    def _load_tileset_tiles(self, stem: str) -> list[list[list[int]]]:
+        try:
+            data = read_tileset_file(self.project_root, stem)
+        except ValueError:
+            return []
+        return parse_tileset_all_tiles(data, fill_index=PALETTE_SIZE - 1)
+
+    def _action_pick_panel_slices(self) -> None:
+        row = self.panels_table.currentRow()
+        if row < 0 or row >= len(self.panels):
+            if len(self.panels) == 1:
+                row = 0
+            else:
+                QMessageBox.information(self, tr("guilayer.panels_title"),
+                                        tr("guilayer.panel_select_row_msg"))
+                return
+        pn = self.panels[row]
+        tiles = self._load_tileset_tiles(pn.tileset)
+        if not tiles:
+            QMessageBox.warning(self, tr("guilayer.panels_title"),
+                                tr("guilayer.panel_tileset_empty_msg", tileset=pn.tileset))
+            return
+        dlg = PanelSlicePickerDialog(tiles, self._load_preview_palette(), pn.slices, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        self.panels[row] = replace(pn, slices=tuple(dlg.slices))
+        self._rebuild_panels_table()
+        self._mark_dirty()
+        self._refresh_preview()
+
+    # ------------------------------------------------------------------
     # Bar helpers
     # ------------------------------------------------------------------
 
@@ -1406,6 +1758,61 @@ class GuiLayerEditorWidget(QWidget):
             rw = min(r.w, (lx + lw) - rx)
             rh = min(r.h, (ly + lh) - ry)
             paint_rect_absolute(rx, ry, rw, rh, r.color_index)
+
+        # Paneles 9-slice: mismo algoritmo que paint_panel del firmware (centro, bordes,
+        # esquinas al final; todo recortado a panel ∩ capa).
+        tileset_cache: dict[str, list[list[list[int]]]] = {}
+        for pn in self.panels:
+            if pn.tileset not in tileset_cache:
+                tileset_cache[pn.tileset] = self._load_tileset_tiles(pn.tileset)
+            tiles = tileset_cache[pn.tileset]
+            if not tiles:
+                continue
+            t = len(tiles[0])
+            px0, py0 = lx + pn.x, ly + pn.y
+            px1, py1 = px0 + pn.w, py0 + pn.h
+            cx0, cy0 = max(px0, lx), max(py0, ly)
+            cx1, cy1 = min(px1, lx + lw), min(py1, ly + lh)
+            if cx1 <= cx0 or cy1 <= cy0:
+                continue
+
+            def slice_tile(slot: int, _pn: GuiPanel = pn, _tiles=tiles) -> list[list[int]] | None:
+                idx = _pn.slices[slot]
+                return _tiles[idx] if 0 <= idx < len(_tiles) else None
+
+            def blit_tile(dx: int, dy: int, tile: list[list[int]] | None,
+                          k0: int, k1: int, k2: int, k3: int, _t: int = t) -> None:
+                if tile is None:
+                    return
+                for yy in range(max(dy, k1), min(dy + _t, k3)):
+                    for xx in range(max(dx, k0), min(dx + _t, k2)):
+                        v = tile[yy - dy][xx - dx]
+                        if v != PALETTE_SIZE - 1:
+                            paint_rect_absolute(xx, yy, 1, 1, v)
+
+            def strip(tile: list[list[int]] | None, x0: int, y0: int, x1: int, y1: int,
+                      _t: int = t, _c=(cx0, cy0, cx1, cy1)) -> None:
+                if tile is None or x1 <= x0 or y1 <= y0:
+                    return
+                k0, k1 = max(x0, _c[0]), max(y0, _c[1])
+                k2, k3 = min(x1, _c[2]), min(y1, _c[3])
+                if k2 <= k0 or k3 <= k1:
+                    return
+                for ty in range(y0, y1, _t):
+                    for tx in range(x0, x1, _t):
+                        blit_tile(tx, ty, tile, k0, k1, k2, k3)
+
+            ix0, iy0, ix1, iy1 = px0 + t, py0 + t, px1 - t, py1 - t
+            if pn.fill_center:
+                strip(slice_tile(4), ix0, iy0, ix1, iy1)
+            strip(slice_tile(1), ix0, py0, ix1, py0 + t)
+            strip(slice_tile(7), ix0, iy1, ix1, py1)
+            strip(slice_tile(3), px0, iy0, px0 + t, iy1)
+            strip(slice_tile(5), ix1, iy0, px1, iy1)
+            blit_tile(px0, py0, slice_tile(0), cx0, cy0, cx1, cy1)
+            blit_tile(px1 - t, py0, slice_tile(2), cx0, cy0, cx1, cy1)
+            blit_tile(px0, py1 - t, slice_tile(6), cx0, cy0, cx1, cy1)
+            blit_tile(px1 - t, py1 - t, slice_tile(8), cx0, cy0, cx1, cy1)
 
         # Progress bars y pip bars: mismo orden que firmware (rects -> progress -> pips -> labels).
         sprite_cache: dict[str, tuple[int, int, list[list[int]]]] = {}

@@ -329,6 +329,7 @@ static int s_bg_image_layer_count = 0;
 
 static void coll_tileset_cache_clear(void);
 static void live_tileset_cache_clear(void);
+static void gui_tileset_cache_clear(void);
 static void font_cache_clear_all(void);
 static uint8_t* alloc_scene_pixel_buffer(size_t need, int* out_in_psram);
 static void free_scene_pixel_buffer(uint8_t* p);
@@ -562,6 +563,7 @@ static void sprite_cache_clear_all(void) {
   object_cache_clear_all();
   coll_tileset_cache_clear();
   live_tileset_cache_clear();
+  gui_tileset_cache_clear();
   font_cache_clear_all();
   scene_asset_buffers_release();
 }
@@ -1009,6 +1011,24 @@ static bool live_tileset_cache_ensure(const char* json, const char* json_end,
   }
   snprintf(s_tileset_live_active_id, sizeof s_tileset_live_active_id, "%s", tileset_id);
   return true;
+}
+
+static AssetSdLoad s_tileset_gui_sd;
+
+/** Tileset residente para los paneles 9-slice de capas GUI (spec/gui-layer-v0.md "Paneles").
+ * Buffer propio (mismo patron que s_tileset_live): las capas GUI se pintan cada fotograma y
+ * suelen usar un tileset de UI distinto al de la escena, asi que compartir s_tileset_live
+ * provocaria un reload por fotograma. Single-entry: paneles con tilesets distintos en capas
+ * visibles a la vez se recargan entre si (autor: usar un solo tileset de UI). */
+TURTLE_BSS_PSRAM static TurtleTileset s_tileset_gui;
+static char s_tileset_gui_active_id[48];
+/** Ultimo id que fallo al cargar: evita reintentar el fopen en SD cada fotograma. */
+static char s_tileset_gui_failed_id[48];
+
+static void gui_tileset_cache_clear(void) {
+  turtle_tileset_free(&s_tileset_gui);
+  s_tileset_gui_active_id[0] = '\0';
+  s_tileset_gui_failed_id[0] = '\0';
 }
 
 static void coll_tileset_cache_prewarm(const char* json, const char* json_end) {
@@ -5761,4 +5781,27 @@ bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uin
   if (out_w) *out_w = pw;
   if (out_h) *out_h = ph;
   return true;
+}
+
+const TurtleTileset* turtle_scene_gui_tileset(const char* tileset_id) {
+  if (!s_runtime_json || !s_runtime_json_end || !tileset_id || !*tileset_id) {
+    return nullptr;
+  }
+  if (strcmp(s_tileset_gui_active_id, tileset_id) == 0 && s_tileset_gui.pixels) {
+    return &s_tileset_gui;
+  }
+  if (strcmp(s_tileset_gui_failed_id, tileset_id) == 0) {
+    return nullptr;
+  }
+  turtle_tileset_free(&s_tileset_gui);
+  s_tileset_gui_active_id[0] = '\0';
+  if (!resolve_tileset_tts(s_runtime_json, s_runtime_json_end, tileset_id, &s_tileset_gui_sd,
+                           &s_tileset_gui)) {
+    snprintf(s_tileset_gui_failed_id, sizeof s_tileset_gui_failed_id, "%s", tileset_id);
+    Serial.printf("turtle_scene: tileset GUI \"%s\" no se pudo cargar (panel invisible)\n",
+                  tileset_id);
+    return nullptr;
+  }
+  snprintf(s_tileset_gui_active_id, sizeof s_tileset_gui_active_id, "%s", tileset_id);
+  return &s_tileset_gui;
 }

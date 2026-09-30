@@ -463,6 +463,7 @@ def collect_studio_bundle_files(
     from turtlestudio.guilayers import (
         MAX_GUI_LAYERS,
         collect_gui_layer_sprite_ids,
+        collect_gui_layer_tileset_ids,
         gui_layer_to_json,
         list_gui_layer_stems,
         read_gui_layer_file,
@@ -480,6 +481,8 @@ def collect_studio_bundle_files(
         guilayers_loaded.append(ly)
         for sp in collect_gui_layer_sprite_ids(ly):
             sids.add(sp)
+        # Paneles 9-slice: su tileset viaja al paquete SD aunque ninguna escena lo use.
+        tile_stems |= collect_gui_layer_tileset_ids(ly)
 
     objects_map: dict[str, Any] = {}
     for oid in sorted(oids):
