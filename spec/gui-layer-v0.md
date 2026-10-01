@@ -6,7 +6,7 @@ Documento **complementario a `spec/scene-v0.md` y `spec/hud-border-v0.md`**: des
 
 ## Alcance v0
 
-- **Contenido**: **rectangulos solidos** (fondo, marcos), **etiquetas de texto** (fuente `.tfn` del bundle, con opcional tinte por color de paleta), **barras de progreso** (relleno fraccional en una direccion, con color solido o sprite tileado + marco opcional de 1 px + bandas de valor que cambian color/sprite) **barras de pips** (N iconos discretos que muestran un valor entero, con opcional swap de sprite por bandas de valor) y **paneles 9-slice** (marcos armados con tiles de un tileset `.tts`, para cajas de dialogo y marcos de menu). Sin rejilla de tiles libre.
+- **Contenido**: **rectangulos solidos** (fondo, marcos), **etiquetas de texto** (fuente `.tfn` del bundle, con opcional tinte por color de paleta), **barras de progreso** (relleno fraccional en una direccion, con color solido o sprite tileado + marco opcional de 1 px + bandas de valor que cambian color/sprite) **barras de pips** (N iconos discretos que muestran un valor entero, con opcional swap de sprite por bandas de valor) y una **capa de tiles** opcional por capa (rejilla de tiles de un tileset `.tts` pintada celda por celda — marcos de caja de dialogo, decoracion de menus, slots de inventario).
 - **Posicion/tamano**: rectangulo axis-aligned en coord de framebuffer (Y-abajo, top-left = `(0,0)`), independiente de la camara y del playfield. Una capa puede ir sobre el playfield, sobre la region HUD, o cubrir el framebuffer entero.
 - **Apilamiento**: hasta **8 capas simultaneamente visibles** en el firmware. Cada capa tiene un `z` (default 0); las capas con `z` mayor se pintan encima. Empate por orden de aparicion en el manifest.
 - **Persistencia entre escenas**: la visibilidad se **resetea a "oculto" al comenzar cada escena** (`turtle_scene_begin_runtime` limpia la lista de capas visibles) y luego se aplica el campo `gui_layers_autoshow` de la escena (ver seccion "Auto-show por escena"). Un cartucho que quiere el mismo HUD/menu en dos escenas puede listarlas en `gui_layers_autoshow` (declarativo, sin codigo Lua) o llamar `gui_layer_show(id)` desde `_hud_init` / `_update`.
@@ -77,7 +77,7 @@ Las capas viven fuera del bloque `scenes`: son un catalogo global que cualquier 
 | `progress_bars`   | array     | `[]`             | Ver "Barras de progreso" abajo.                                                                 |
 | `pip_bars`        | array     | `[]`             | Ver "Barras de pips" abajo.                                                                     |
 | `sprites`         | array     | `[]`             | Ver "Iconos sprite" abajo.                                                                      |
-| `panels`          | array     | `[]`             | Ver "Paneles 9-slice" abajo.                                                                    |
+| `tiles`           | object    | (ausente)        | Capa de tiles opcional. Ver "Capa de tiles" abajo. Ausente = sin tiles.                          |
 
 ### Rectangulos (`rects`)
 
@@ -160,40 +160,44 @@ Un blit 1:1 de un sprite del bundle en una posicion fija. Pensado como *iconogra
 
 Maximo por capa: **4 iconos sprite**.
 
-### Paneles 9-slice (`panels`)
+### Capa de tiles (`tiles`)
 
-Marco armado con 9 tiles de un tileset (`tiles/<id>.tts`, el mismo formato que las `tile_layers` de escena): 4 esquinas, 4 bordes y un centro. Las esquinas se pintan 1:1; los bordes y el centro se **repiten** para cubrir `w × h`, y el ultimo tile parcial de cada franja se recorta. Pensado para cajas de dialogo, marcos de menu de pausa, slots de inventario — un mismo juego de 9 tiles sirve para cualquier tamaño de caja.
+Rejilla opcional de tiles de un tileset (`tiles/<id>.tts`, el mismo formato que las `tile_layers` de escena), pintada celda por celda igual que una capa de tiles de escena. Sirve para el marco de una caja de dialogo, decoracion de un menu de pausa, slots de inventario, separadores — cualquier dibujo armado con tiles. Una capa GUI tiene como maximo una capa de tiles.
 
-Se pintan **despues** de `rects` y **antes** de `progress_bars` (el panel es el fondo/marco sobre el que van barras, iconos y texto).
+La rejilla tiene posicion y tamaño propios: `x`, `y` en px relativos a la capa y `cols` x `rows` en celdas. Todo lo que cae fuera del rect de la capa se **recorta pixel a pixel**, asi que una rejilla puede ser mas grande que la capa (ej. capa de 164 px con tiles de 8: 21 columnas, la ultima se ve a medias). En TurtleStudio el boton **Llenar capa** pone la rejilla en `(0, 0)` con las celdas justas para cubrir la capa entera (`ceil(w / tile_px)` x `ceil(h / tile_px)`), conservando lo pintado.
+
+Se pinta **justo despues del fondo** de la capa (`bg_color_index`, si no es `transparent_bg`) y **antes** de `rects`, barras, iconos y texto: todo el contenido va encima.
 
 | Campo          | Tipo      | Default        | Nota                                                                                              |
 |----------------|-----------|----------------|---------------------------------------------------------------------------------------------------|
-| `id`           | string    | (obligatorio)  | Stem-name, max 32 char. Unico dentro de la capa.                                                  |
-| `tileset`      | string    | (obligatorio)  | Stem del tileset. TurtleStudio lo exporta al paquete SD aunque ninguna escena lo use.             |
-| `x`, `y`       | int       | `0`, `0`       | Relativos al `(x, y)` de la capa. Esquina superior-izquierda del panel.                           |
-| `w`, `h`       | int       | `32`, `32`     | Tamaño del panel en px (no en tiles). No necesita ser multiplo del tamaño de tile.                |
-| `slices`       | int[9]    | todos `-1`     | Indices de tile en orden fila-mayor: `TL, T, TR, L, C, R, BL, B, BR`. `-1` = no pintar ese slice (ej. marco sin borde inferior). Indices fuera de rango del tileset tambien se saltean. Arrays mas cortos se completan con `-1`. |
-| `fill_center`  | bool      | `true`         | `false` = no pinta el centro (marco hueco: se ve la capa/escena debajo por dentro).               |
+| `tileset`      | string    | (obligatorio)  | Stem del tileset. Sin tileset la capa de tiles se ignora. TurtleStudio lo exporta al paquete SD aunque ninguna escena lo use. |
+| `x`, `y`       | int       | `0`, `0`       | Esquina superior-izquierda de la celda `(0, 0)`, relativa al `(x, y)` de la capa.                 |
+| `cols`, `rows` | int       | `1`, `1`       | Tamaño en celdas. Maximo **21 x 16** (cubre el framebuffer entero con tiles de 8 px).             |
+| `cells`        | int[]     | todas `-1`     | `cols * rows` indices de tile, fila-mayor (fila 0 = arriba). `-1` = celda vacia. Indices fuera de rango del tileset se saltean. Faltantes se completan con `-1`. |
 
-Reglas de pintado (firmware `paint_panel` y preview de TurtleStudio usan el mismo algoritmo):
-
-- Orden: centro → bordes (arriba, abajo, izquierda, derecha) → esquinas. Las esquinas van al final para que en paneles chicos (`w` o `h` < 2 tiles) ganen sobre los bordes.
-- Todo se recorta a `panel ∩ capa`. Un panel que desborda la capa se corta pixel a pixel (a diferencia de iconos/pips, que se omiten enteros).
-- Indice de paleta 31 dentro del tile = transparente (se ve lo pintado antes: fondo de la capa, rects, escena).
+- Indice de paleta 31 dentro del tile = transparente (se ve el fondo de la capa o la escena).
 - Paleta: los tiles son indices, se pintan con la paleta activa de la escena (igual que sprites).
+- Costo: proporcional a las celdas no vacias; un marco de caja (solo bordes) es mucho mas barato que una rejilla llena.
 
-Maximo por capa: **4 paneles**.
-
-Ejemplo — caja de dialogo en la parte baja de la pantalla con un tileset `gui` de 8 px dibujado como "tuberia" (tile 3 = esquina sup-izq, 1 = borde horizontal, 4 = esquina sup-der, 2 = borde vertical, 0 = relleno, 5/6 = esquinas inferiores):
+Ejemplo — caja de dialogo de 20x5 celdas con un tileset `gui` de 8 px dibujado como "tuberia" (3/4/5/6 = esquinas, 1 = borde horizontal, 2 = borde vertical), interior vacio:
 
 ```json
-"panels": [
-  { "id": "box", "tileset": "gui", "x": 4, "y": 84, "w": 156, "h": 36,
-    "slices": [3, 1, 4, 2, 0, 2, 5, 1, 6] }
-]
+{
+  "id": "dialog", "x": 2, "y": 82, "w": 160, "h": 40,
+  "transparent_bg": true, "pauses_scene": true, "captures_input": true,
+  "tiles": {
+    "tileset": "gui", "x": 0, "y": 0, "cols": 20, "rows": 5,
+    "cells": [3,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,4,
+              2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,
+              2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,
+              2,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,-1,2,
+              5,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,6]
+  },
+  "text_labels": [ { "id": "line1", "x": 10, "y": 10, "font": "font_main", "text": "" } ]
+}
 ```
 
-**Runtime y memoria**: el firmware mantiene una cache single-entry propia para el tileset de paneles (`turtle_scene_gui_tileset`, separada de las caches de tiles de la escena para no forzar recargas por fotograma). Si dos capas visibles a la vez usan tilesets distintos se recargan entre si cada fotograma — usar **un solo tileset de UI** por cartucho. Un tileset que no carga se loguea una vez en Serial y el panel queda invisible (sin reintentos por fotograma).
+**Runtime y memoria**: cada capa reserva 21x16 celdas (`int16_t`, ~700 bytes por capa en PSRAM). El firmware mantiene una cache single-entry propia para el tileset de capas GUI (`turtle_scene_gui_tileset`, separada de las caches de tiles de la escena para no forzar recargas por fotograma). Si dos capas visibles a la vez usan tilesets distintos se recargan entre si cada fotograma — usar **un solo tileset de UI** por cartucho. Un tileset que no carga se loguea una vez en Serial y los tiles quedan invisibles (sin reintentos por fotograma). `gui_layer_set_rect` mueve la rejilla junto con la capa; al achicar la capa la rejilla simplemente se recorta mas (no se estira).
 
 ### Bandas de valor (`ranges`)
 
@@ -228,10 +232,13 @@ Todos actuan sobre el catalogo cargado del bundle actual. `id` es siempre el `id
 | `gui_layer_set_pips(id, bar_id, val [, max])`      | Actualiza `value` de un pip bar. `max` opcional reemplaza `max_value`. `val` se clampea a `[0, max_value]` despues.  |
 | `gui_layer_set_sprite(id, icon_id, sprite_id [, frame])` | Reemplaza el `sprite_id` (y opcionalmente el `frame_index`) de un icono sprite. Util para cambiar iconografia dinamica (llave sin/con, cara del jugador segun estado). |
 | `gui_layer_hide_all()`                             | Oculta todas las capas activas (util para transiciones/cambios de estado).          |
+| `gui_layer_set_rect(id, x, y, w, h)`               | Mueve/redimensiona la capa (coord fb, clampeado al framebuffer igual que el manifest). Todo el contenido es relativo a `(x, y)` asi que se mueve con ella, y la capa de tiles se recorta al nuevo tamaño (no se estira). Persiste hasta el proximo cambio de escena (que recarga el rect del manifest). |
 
 `id`/`label_id`/`bar_id`/`icon_id` que no existan: no-op silencioso (para que el cart pueda llamar sin chequear existencia). En Serial se loguea la primera falla por id/label para debug.
 
-Fuera de estas 8 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto, valores de bars, iconos y visibilidad.
+Fuera de estas 9 funciones no hay API nueva de GUI en v0. El compositing lo hace el firmware — el cart solo cambia texto, valores de bars, iconos, rect de la capa y visibilidad.
+
+**Borrado al ocultar/mover**: `gui_layer_hide`, `gui_layer_hide_all` y `gui_layer_set_rect` (sobre una capa visible) encolan el rect que la capa deja de cubrir. En el proximo tick el redibujo de la escena lo restaura desde el fondo estatico y redibuja los actores quietos que estaban debajo (camino de camara fija: entra como rect activo de la Fase 2 de `draw_all_actors`; camino con scroll: el playfield ya se repinta entero, se restaura la parte en la franja HUD). Sin esto, en escenas de camara fija los pixeles de la capa quedaban pegados en pantalla.
 
 ## Auto-show por escena (`gui_layers_autoshow`)
 
@@ -306,8 +313,8 @@ Si `captures_input=false` (default), los actores siguen recibiendo input aunque 
 ## Fuera de alcance en v0
 
 - **Sprites completamente dinamicos con blit directo desde Lua** (`gui_layer_blit_sprite(x, y, sprite_id)`): reservado. En v0 los sprites son declarativos: `sprites` en el manifest para iconos estaticos (posicion fija, cambio de sprite/frame desde Lua via `gui_layer_set_sprite`), `progress_bars` con `fill_mode="sprite"` para tileado, `pip_bars` para repetidos discretos.
-- **Rejilla de tiles libre en capas**: reservado — patron muy usado en Semi (`.tortuguilayer` tiene un tile layer completo). Los paneles 9-slice cubren el caso concreto (cajas/marcos); una rejilla libre queda para v2 si aparece necesidad concreta.
-- **Paneles redimensionables desde Lua** (`gui_layer_set_panel(id, panel_id, x, y, w, h)` para que la caja crezca con el texto): reservado. Requiere restaurar el rect previo desde `s_static_fb` al achicar (mismo problema que resuelven las etiquetas con `prev_blit_*`).
+- **Varias capas de tiles por capa GUI**: no — una rejilla por capa. Para varias cajas simultaneas, varias capas.
+- **Editar celdas desde Lua** (`gui_layer_set_tile`): reservado.
 - **Animaciones dentro de la capa** (blink de texto, sprites animados): el cart lo puede simular con `gui_layer_set_text` desde el `_hud(dt)`.
 - **Transiciones/fade** de capa: fuera de scope. Cart lo puede simular tinteando texto o cambiando `bg_color_index` via campos futuros.
 - **Anchoring/layout dinamico**: todas las posiciones son fijas al momento del manifest. Sin "center_horizontal" o wrapper de padding.

@@ -433,20 +433,18 @@ guilayer.col_sprite,Sprite,Sprite
 guilayer.col_frame_index,Frame,Frame
 guilayer.col_flip_h,Flip H,Flip H
 guilayer.col_flip_v,Flip V,Flip V
-guilayer.panels_title,Paneles (tiles 9-slice),Panels (9-slice tiles)
-guilayer.add_panel,Agregar panel,Add panel
-guilayer.remove_panel,Quitar panel,Remove panel
-guilayer.panel_pick_button,Elegir tiles…,Pick tiles…
-guilayer.panel_pick_title,Tiles del panel (9-slice),Panel tiles (9-slice)
-guilayer.panel_pick_hint,"Elegi un slot de la rejilla 3x3 (esquinas, bordes, centro) y luego un tile del tileset. El slot avanza solo.","Pick a slot in the 3x3 grid (corners, edges, center), then a tile from the tileset. The slot advances automatically."
-guilayer.panel_clear_slot,Vaciar slot,Clear slot
-guilayer.panel_cap_reached,"Limite de {cap} paneles por capa alcanzado.","Panel cap per layer reached ({cap})."
-guilayer.panel_needs_tileset_msg,"Se necesita al menos un tileset en el proyecto para crear un panel.","At least one tileset is required in the project to create a panel."
-guilayer.panel_select_row_msg,"Selecciona una fila de panel primero.","Select a panel row first."
-guilayer.panel_tileset_empty_msg,"El tileset '{tileset}' no existe o no tiene tiles.","Tileset '{tileset}' is missing or has no tiles."
+guilayer.tiles_title,Capa de tiles,Tile layer
+guilayer.tiles_enabled_label,Usar tiles,Use tiles
+guilayer.tiles_position_label,Posicion (px),Position (px)
+guilayer.tiles_size_label,Tamaño (celdas),Size (cells)
+guilayer.tiles_cols,Columnas,Columns
+guilayer.tiles_rows,Filas,Rows
+guilayer.tiles_fill_layer,Llenar capa,Fill layer
+guilayer.tiles_fill_layer_tooltip,"Mueve la rejilla a (0,0) y le da las celdas justas para cubrir toda la capa. Conserva lo pintado.","Moves the grid to (0,0) and sizes it to cover the whole layer. Keeps what you painted."
+guilayer.tiles_clear,Limpiar,Clear
+guilayer.tiles_paint_hint,"Elegi un tile y hace clic (o arrastra) sobre las celdas en el preview.","Pick a tile, then click (or drag) on the cells in the preview."
+guilayer.tiles_needs_tileset_msg,"Se necesita al menos un tileset en el proyecto para usar una capa de tiles.","At least one tileset is required in the project to use a tile layer."
 guilayer.col_tileset,Tileset,Tileset
-guilayer.col_slices,Slices (TL..BR),Slices (TL..BR)
-guilayer.col_fill_center,Centro,Center
 scene.gui_layers_group,Capas GUI (auto-show),GUI layers (auto-show)
 scene.gui_layers_hint,"Capas GUI que se muestran automaticamente al entrar a esta escena (HUDs de nivel). Los menus modales (pausa, dialogo) se abren desde Lua, no se listan aca.","GUI layers auto-shown when entering this scene (level HUDs). Modal menus (pause, dialogs) open from Lua and don't belong here."
 scene.gui_layers_missing_suffix,capa faltante,missing layer

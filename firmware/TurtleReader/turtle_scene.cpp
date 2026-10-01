@@ -1015,10 +1015,10 @@ static bool live_tileset_cache_ensure(const char* json, const char* json_end,
 
 static AssetSdLoad s_tileset_gui_sd;
 
-/** Tileset residente para los paneles 9-slice de capas GUI (spec/gui-layer-v0.md "Paneles").
+/** Tileset residente para la capa de tiles de capas GUI (spec/gui-layer-v0.md "Capa de tiles").
  * Buffer propio (mismo patron que s_tileset_live): las capas GUI se pintan cada fotograma y
  * suelen usar un tileset de UI distinto al de la escena, asi que compartir s_tileset_live
- * provocaria un reload por fotograma. Single-entry: paneles con tilesets distintos en capas
+ * provocaria un reload por fotograma. Single-entry: capas de tiles con tilesets distintos en capas
  * visibles a la vez se recargan entre si (autor: usar un solo tileset de UI). */
 TURTLE_BSS_PSRAM static TurtleTileset s_tileset_gui;
 static char s_tileset_gui_active_id[48];
@@ -4502,6 +4502,12 @@ static void draw_all_actors(void) {
   update_camera_follow_player();
 
   if (scene_uses_scrolling()) {
+    // spec/gui-layer-v0.md: rects que una capa GUI dejo de cubrir (hide / set_rect). El
+    // playfield se repinta entero abajo; esto cubre la parte que cae en la franja HUD.
+    int ex = 0, ey = 0, ew = 0, eh = 0;
+    while (turtle_gui_layer_pop_erase_rect(&ex, &ey, &ew, &eh)) {
+      turtle_gpu_restore_static_rect_fb(ex, ey, ew, eh);
+    }
     paint_scene_static_layers();
 
     int cam_x = 0;
@@ -4635,6 +4641,26 @@ static void draw_all_actors(void) {
     turtle_gpu_dirty_mark_scene_rect(lx0, ly0, lw, lh);
     if (active_rect_count < kMaxActiveRects) {
       s_active_rects[active_rect_count++] = {lx0, ly0, lx0 + lw - 1, ly0 + lh - 1};
+    }
+  }
+
+  // spec/gui-layer-v0.md: rects que una capa GUI dejo de cubrir (gui_layer_hide/hide_all o
+  // gui_layer_set_rect). Se marcan dirty (restore_static_dirty de abajo devuelve el fondo
+  // estatico ahi) y entran a s_active_rects para que la Fase 2 redibuje los actores quietos
+  // que la capa tapaba -- si no, quedaria el fondo pintado encima de ellos.
+  {
+    int pf_ox = 0, pf_oy = 0, pf_w = 0, pf_h = 0;
+    turtle_gpu_get_playfield(&pf_ox, &pf_oy, &pf_w, &pf_h);
+    int ex = 0, ey = 0, ew = 0, eh = 0;
+    while (turtle_gui_layer_pop_erase_rect(&ex, &ey, &ew, &eh)) {
+      // fb (Y-abajo) -> escena viewport-relativa (Y-arriba), inversa de
+      // turtle_gpu_dirty_mark_scene_rect.
+      const int sx0 = ex - pf_ox;
+      const int sy0 = pf_oy + pf_h - ey - eh;
+      turtle_gpu_dirty_mark_scene_rect(sx0, sy0, ew, eh);
+      if (active_rect_count < kMaxActiveRects) {
+        s_active_rects[active_rect_count++] = {sx0, sy0, sx0 + ew - 1, sy0 + eh - 1};
+      }
     }
   }
 
@@ -5798,7 +5824,7 @@ const TurtleTileset* turtle_scene_gui_tileset(const char* tileset_id) {
   if (!resolve_tileset_tts(s_runtime_json, s_runtime_json_end, tileset_id, &s_tileset_gui_sd,
                            &s_tileset_gui)) {
     snprintf(s_tileset_gui_failed_id, sizeof s_tileset_gui_failed_id, "%s", tileset_id);
-    Serial.printf("turtle_scene: tileset GUI \"%s\" no se pudo cargar (panel invisible)\n",
+    Serial.printf("turtle_scene: tileset GUI \"%s\" no se pudo cargar (tiles invisibles)\n",
                   tileset_id);
     return nullptr;
   }

@@ -12,16 +12,13 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QIcon, QImage, QPixmap
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox,
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
     QFormLayout,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -39,6 +36,7 @@ from PyQt6.QtWidgets import (
 
 from turtlestudio.build import hex_line_to_rgb01, load_palette_lines
 from turtlestudio.collapsible import CollapsibleSection
+from turtlestudio.edit_history import SnapshotHistory
 from turtlestudio.fonts import (
     blit_text_scene,
     font_metrics_from_data,
@@ -53,19 +51,19 @@ from turtlestudio.guilayers import (
     GUI_LAYER_TEXT_MAX_CHARS,
     MAX_GUI_BAR_RANGES,
     MAX_GUI_LAYER_LABELS,
-    MAX_GUI_LAYER_PANELS,
     MAX_GUI_LAYER_PIP_BARS,
     MAX_GUI_LAYER_PROGRESS_BARS,
     MAX_GUI_LAYER_RECTS,
     MAX_GUI_LAYER_SPRITES,
     MAX_PIP_COUNT,
-    PANEL_SLICE_COUNT,
+    GUI_TILE_MAX_COLS,
+    GUI_TILE_MAX_ROWS,
     PIP_DIRECTIONS,
     SCENE_PIXEL_H,
     SCENE_PIXEL_W,
     GuiBarRange,
     GuiLayer,
-    GuiPanel,
+    GuiTileGrid,
     GuiPipBar,
     GuiProgressBar,
     GuiRect,
@@ -73,6 +71,7 @@ from turtlestudio.guilayers import (
     GuiTextLabel,
     is_valid_gui_layer_id,
     list_gui_layer_stems,
+    resize_tile_grid,
     read_gui_layer_file,
     write_gui_layer_file,
 )
@@ -87,129 +86,56 @@ from turtlestudio.tiles import (
     parse_tileset_all_tiles,
     read_tileset_file,
 )
+from turtlestudio.scene_editor import TilePickerWidget
 from turtlestudio.i18n import tr
 from turtlestudio.palette_policy import PALETTE_SIZE
 
 # Escala del preview (canvas 164x124 * PREVIEW_ZOOM).
 PREVIEW_ZOOM = 3
 
-# Zoom de los tiles en el selector de slices de paneles 9-slice.
-SLICE_PICKER_ZOOM = 4
+class GuiPreviewCanvas(QLabel):
+    """Preview de la capa que acepta pintar con el mouse, como SceneCanvas del editor de
+    escenas: clic o arrastre emite cell_clicked(x, y) en coord de framebuffer."""
 
+    cell_clicked = pyqtSignal(int, int)
+    stroke_started = pyqtSignal()
+    stroke_finished = pyqtSignal()
 
-def _tile_pixmap(rows: list[list[int]], rgbs: list[tuple[float, float, float]], zoom: int) -> QPixmap:
-    """Pixmap RGBA de un tile indexado (indice 31 = transparente, se ve el damero del boton)."""
-    th = len(rows)
-    tw = len(rows[0]) if th else 0
-    buf = bytearray(tw * th * 4)
-    for y, row in enumerate(rows):
-        for x, idx in enumerate(row):
-            i = (y * tw + x) * 4
-            if idx < 0 or idx >= len(rgbs) or idx == PALETTE_SIZE - 1:
-                continue
-            r, g, b = rgbs[idx]
-            buf[i] = int(r * 255)
-            buf[i + 1] = int(g * 255)
-            buf[i + 2] = int(b * 255)
-            buf[i + 3] = 255
-    img = QImage(bytes(buf), tw, th, tw * 4, QImage.Format.Format_RGBA8888).copy()
-    return QPixmap.fromImage(img).scaled(
-        tw * zoom, th * zoom,
-        Qt.AspectRatioMode.IgnoreAspectRatio,
-        Qt.TransformationMode.FastTransformation,
-    )
-
-
-class PanelSlicePickerDialog(QDialog):
-    """Selector visual de los 9 slices de un panel: click en un slot de la rejilla 3x3 y luego
-    en un tile del tileset para asignarlo. "Vaciar slot" lo deja en -1 (no se pinta)."""
-
-    def __init__(self, tiles: list[list[list[int]]], rgbs: list[tuple[float, float, float]],
-                 slices: tuple[int, ...], parent: QWidget | None = None) -> None:
+    def __init__(self, zoom: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setWindowTitle(tr("guilayer.panel_pick_title"))
-        self.tiles = tiles
-        self.rgbs = rgbs
-        self.slices = list(slices)
-        self.active_slot = 0
-        self._icons = [QIcon(_tile_pixmap(t, rgbs, SLICE_PICKER_ZOOM)) for t in tiles]
-        tile_px = len(tiles[0]) if tiles else 8
-        btn_px = tile_px * SLICE_PICKER_ZOOM + 8
+        self.zoom = zoom
+        self.paintable = False
+        self._drawing = False
 
-        outer = QVBoxLayout(self)
-        outer.addWidget(QLabel(tr("guilayer.panel_pick_hint")))
-        body = QHBoxLayout()
-        outer.addLayout(body)
+    def _fb_xy(self, event: QMouseEvent) -> tuple[int, int] | None:
+        x = int(event.position().x()) // self.zoom
+        y = int(event.position().y()) // self.zoom
+        if 0 <= x < SCENE_PIXEL_W and 0 <= y < SCENE_PIXEL_H:
+            return x, y
+        return None
 
-        slots_grid = QGridLayout()
-        slots_grid.setSpacing(2)
-        self.slot_buttons: list[QPushButton] = []
-        for i in range(PANEL_SLICE_COUNT):
-            b = QPushButton()
-            b.setCheckable(True)
-            b.setFixedSize(btn_px, btn_px)
-            b.setIconSize(b.size() * 0.8)
-            b.clicked.connect(lambda _c=False, slot=i: self._select_slot(slot))
-            slots_grid.addWidget(b, i // 3, i % 3)
-            self.slot_buttons.append(b)
-        slots_col = QVBoxLayout()
-        slots_col.addLayout(slots_grid)
-        btn_clear = QPushButton(tr("guilayer.panel_clear_slot"))
-        btn_clear.clicked.connect(self._clear_active_slot)
-        slots_col.addWidget(btn_clear)
-        slots_col.addStretch()
-        body.addLayout(slots_col)
+    def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self.paintable or event.button() != Qt.MouseButton.LeftButton:
+            return
+        self._drawing = True
+        self.stroke_started.emit()
+        xy = self._fb_xy(event)
+        if xy is not None:
+            self.cell_clicked.emit(*xy)
 
-        tiles_holder = QWidget()
-        tiles_grid = QGridLayout(tiles_holder)
-        tiles_grid.setSpacing(2)
-        cols = 8
-        for ti, icon in enumerate(self._icons):
-            b = QPushButton()
-            b.setFixedSize(btn_px, btn_px)
-            b.setIcon(icon)
-            b.setIconSize(b.size() * 0.8)
-            b.setToolTip(str(ti))
-            b.clicked.connect(lambda _c=False, tile=ti: self._assign_tile(tile))
-            tiles_grid.addWidget(b, ti // cols, ti % cols)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setWidget(tiles_holder)
-        body.addWidget(scroll, stretch=1)
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._drawing or not (event.buttons() & Qt.MouseButton.LeftButton):
+            return
+        xy = self._fb_xy(event)
+        if xy is not None:
+            self.cell_clicked.emit(*xy)
 
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        outer.addWidget(buttons)
-        self.resize(560, 320)
-        self._refresh_slots()
-
-    def _select_slot(self, slot: int) -> None:
-        self.active_slot = slot
-        self._refresh_slots()
-
-    def _assign_tile(self, tile: int) -> None:
-        self.slices[self.active_slot] = tile
-        # Avanza al siguiente slot: asignar los 9 en orden es solo 9 clicks en tiles.
-        self.active_slot = (self.active_slot + 1) % PANEL_SLICE_COUNT
-        self._refresh_slots()
-
-    def _clear_active_slot(self) -> None:
-        self.slices[self.active_slot] = -1
-        self._refresh_slots()
-
-    def _refresh_slots(self) -> None:
-        for i, b in enumerate(self.slot_buttons):
-            idx = self.slices[i]
-            b.setChecked(i == self.active_slot)
-            if 0 <= idx < len(self._icons):
-                b.setIcon(self._icons[idx])
-                b.setText("")
-            else:
-                b.setIcon(QIcon())
-                b.setText("-")
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if not self._drawing:
+            return
+        # Un solo checkpoint de historial por trazo, no uno por celda (como SceneCanvas).
+        self._drawing = False
+        self.stroke_finished.emit()
 
 
 class GuiLayerEditorWidget(QWidget):
@@ -231,9 +157,12 @@ class GuiLayerEditorWidget(QWidget):
         self.progress_bars: list[GuiProgressBar] = []
         self.pip_bars: list[GuiPipBar] = []
         self.sprites: list[GuiSpriteIcon] = []
-        self.panels: list[GuiPanel] = []
         self._dirty = False
         self._loading = False  # evita marcar dirty al reconstruir la UI desde disco
+        # Undo/redo (Ctrl+Z / Ctrl+Y via mainwindow): snapshots de la capa entera. Un trazo de
+        # pintura de tiles en el preview es un solo paso (ver _in_stroke).
+        self._history = SnapshotHistory()
+        self._in_stroke = False
         self._build_ui()
 
     # ------------------------------------------------------------------
@@ -299,7 +228,7 @@ class GuiLayerEditorWidget(QWidget):
         top_row.addWidget(QLabel(tr("guilayer.preview_palette_label")))
         self.combo_preview_palette = QComboBox()
         self.combo_preview_palette.setMinimumWidth(160)
-        self.combo_preview_palette.currentTextChanged.connect(lambda _t: self._refresh_preview())
+        self.combo_preview_palette.currentTextChanged.connect(self._on_preview_palette_changed)
         top_row.addWidget(self.combo_preview_palette)
         top_row.addStretch()
         self.lbl_status = QLabel("")
@@ -396,43 +325,68 @@ class GuiLayerEditorWidget(QWidget):
         rects_btns.addStretch()
         sec_rects.content_layout().addLayout(rects_btns)
 
-        # Panels section (spec/gui-layer-v0.md "Paneles"): marcos 9-slice con tiles de un
-        # tileset -- cajas de dialogo, marcos de menu. Se pintan despues de rects.
-        sec_panels = CollapsibleSection(tr("guilayer.panels_title"), expanded=False)
-        form_col.addWidget(sec_panels)
-        # Columnas: id, x, y, w, h, tileset (combo), slices (solo lectura), fill_center (bool).
-        self.panels_table = QTableWidget(0, 8)
-        self.panels_table.setHorizontalHeaderLabels(
-            [
-                tr("guilayer.col_id"),
-                tr("guilayer.col_x"),
-                tr("guilayer.col_y"),
-                tr("guilayer.col_w"),
-                tr("guilayer.col_h"),
-                tr("guilayer.col_tileset"),
-                tr("guilayer.col_slices"),
-                tr("guilayer.col_fill_center"),
-            ]
-        )
-        self.panels_table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.ResizeToContents
-        )
-        self.panels_table.verticalHeader().setDefaultSectionSize(24)
-        self.panels_table.setMinimumHeight(120)
-        self.panels_table.itemChanged.connect(self._on_panel_item_changed)
-        sec_panels.content_layout().addWidget(self.panels_table)
-        panels_btns = QHBoxLayout()
-        self.btn_panel_add = QPushButton(tr("guilayer.add_panel"))
-        self.btn_panel_add.clicked.connect(self._action_add_panel)
-        panels_btns.addWidget(self.btn_panel_add)
-        self.btn_panel_remove = QPushButton(tr("guilayer.remove_panel"))
-        self.btn_panel_remove.clicked.connect(self._action_remove_panel)
-        panels_btns.addWidget(self.btn_panel_remove)
-        self.btn_panel_pick = QPushButton(tr("guilayer.panel_pick_button"))
-        self.btn_panel_pick.clicked.connect(self._action_pick_panel_slices)
-        panels_btns.addWidget(self.btn_panel_pick)
-        panels_btns.addStretch()
-        sec_panels.content_layout().addLayout(panels_btns)
+        # Tiles section (spec/gui-layer-v0.md "Capa de tiles"): rejilla opcional de tiles que se
+        # pinta celda por celda sobre el preview, como las capas de tiles del editor de escenas.
+        sec_tiles = CollapsibleSection(tr("guilayer.tiles_title"), expanded=False)
+        form_col.addWidget(sec_tiles)
+        tiles_holder = QWidget()
+        tiles_form = QFormLayout(tiles_holder)
+        tiles_form.setContentsMargins(0, 0, 0, 0)
+        sec_tiles.content_layout().addWidget(tiles_holder)
+        self.chk_tiles = QCheckBox()
+        self.chk_tiles.toggled.connect(self._on_tiles_enabled_changed)
+        tiles_form.addRow(tr("guilayer.tiles_enabled_label"), self.chk_tiles)
+        self.combo_tiles_tileset = QComboBox()
+        self.combo_tiles_tileset.currentTextChanged.connect(self._on_tiles_tileset_changed)
+        tiles_form.addRow(tr("guilayer.col_tileset"), self.combo_tiles_tileset)
+        pos_row = QHBoxLayout()
+        self.spin_tiles_x = QSpinBox()
+        self.spin_tiles_x.setRange(0, SCENE_PIXEL_W)
+        self.spin_tiles_y = QSpinBox()
+        self.spin_tiles_y.setRange(0, SCENE_PIXEL_H)
+        for lbl, spin in ((tr("guilayer.col_x"), self.spin_tiles_x), (tr("guilayer.col_y"), self.spin_tiles_y)):
+            pos_row.addWidget(QLabel(lbl))
+            spin.valueChanged.connect(self._on_tiles_geometry_changed)
+            pos_row.addWidget(spin, stretch=1)
+        tiles_form.addRow(tr("guilayer.tiles_position_label"), pos_row)
+        size_row = QHBoxLayout()
+        self.spin_tiles_cols = QSpinBox()
+        self.spin_tiles_cols.setRange(1, GUI_TILE_MAX_COLS)
+        self.spin_tiles_rows = QSpinBox()
+        self.spin_tiles_rows.setRange(1, GUI_TILE_MAX_ROWS)
+        for lbl, spin in ((tr("guilayer.tiles_cols"), self.spin_tiles_cols),
+                          (tr("guilayer.tiles_rows"), self.spin_tiles_rows)):
+            size_row.addWidget(QLabel(lbl))
+            spin.valueChanged.connect(self._on_tiles_geometry_changed)
+            size_row.addWidget(spin, stretch=1)
+        tiles_form.addRow(tr("guilayer.tiles_size_label"), size_row)
+        tiles_btns = QHBoxLayout()
+        self.btn_tiles_fill = QPushButton(tr("guilayer.tiles_fill_layer"))
+        self.btn_tiles_fill.setToolTip(tr("guilayer.tiles_fill_layer_tooltip"))
+        self.btn_tiles_fill.clicked.connect(self._action_tiles_fill_layer)
+        tiles_btns.addWidget(self.btn_tiles_fill)
+        self.btn_tiles_clear = QPushButton(tr("guilayer.tiles_clear"))
+        self.btn_tiles_clear.clicked.connect(self._action_tiles_clear)
+        tiles_btns.addWidget(self.btn_tiles_clear)
+        tiles_btns.addStretch()
+        sec_tiles.content_layout().addLayout(tiles_btns)
+        # Pintado estilo editor de escenas: tira de tiles + clic/arrastre sobre el preview.
+        self.tiles_picker = TilePickerWidget()
+        self.tiles_picker.tile_selected.connect(self._on_tiles_tile_selected)
+        sec_tiles.content_layout().addWidget(self.tiles_picker)
+        paint_row = QHBoxLayout()
+        self.chk_tiles_erase = QCheckBox(tr("common.eraser"))
+        paint_row.addWidget(self.chk_tiles_erase)
+        self.lbl_tiles_paint_hint = QLabel(tr("guilayer.tiles_paint_hint"))
+        self.lbl_tiles_paint_hint.setStyleSheet("color: #888;")
+        self.lbl_tiles_paint_hint.setWordWrap(True)
+        paint_row.addWidget(self.lbl_tiles_paint_hint, stretch=1)
+        sec_tiles.content_layout().addLayout(paint_row)
+        self._tiles_paint_tile = 0
+        self._tileset_tiles: list[list[list[int]]] = []
+        # Rejilla en edicion. Se conserva aunque se destilde "Usar tiles" (asi re-tildar no
+        # pierde lo pintado); solo se guarda si el checkbox esta activo.
+        self._tile_grid: GuiTileGrid | None = None
 
         # Labels section.
         sec_labels = CollapsibleSection(tr("guilayer.labels_title"), expanded=False)
@@ -589,7 +543,11 @@ class GuiLayerEditorWidget(QWidget):
         preview_col = QVBoxLayout()
         body.addLayout(preview_col)
         preview_col.addWidget(QLabel(tr("guilayer.preview_title")))
-        self.preview = QLabel()
+        self.preview = GuiPreviewCanvas(PREVIEW_ZOOM)
+        self.preview.cell_clicked.connect(self._on_preview_cell_clicked)
+        self.preview.stroke_started.connect(self._on_stroke_started)
+        self.preview.stroke_finished.connect(self._on_stroke_finished)
+        self._set_tiles_controls_enabled(False)
         self.preview.setFixedSize(SCENE_PIXEL_W * PREVIEW_ZOOM, SCENE_PIXEL_H * PREVIEW_ZOOM)
         self.preview.setStyleSheet("border: 1px solid #444; background: #222;")
         self.preview.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -607,12 +565,12 @@ class GuiLayerEditorWidget(QWidget):
 
     def _clear_editor_state(self) -> None:
         self.layer_id = ""
+        self._history = SnapshotHistory()  # sin capa abierta no hay nada que deshacer
         self.rects = []
         self.labels = []
         self.progress_bars = []
         self.pip_bars = []
         self.sprites = []
-        self.panels = []
         self._loading = True
         try:
             self.spin_x.setValue(0)
@@ -629,7 +587,7 @@ class GuiLayerEditorWidget(QWidget):
             self.progress_table.setRowCount(0)
             self.pip_table.setRowCount(0)
             self.sprites_table.setRowCount(0)
-            self.panels_table.setRowCount(0)
+            self._apply_tiles_to_controls(None)
         finally:
             self._loading = False
         self._dirty = False
@@ -642,6 +600,13 @@ class GuiLayerEditorWidget(QWidget):
         except ValueError as e:
             QMessageBox.warning(self, tr("guilayer.open_error_title"), str(e))
             return
+        self._apply_layer(layer)
+        self._dirty = False
+        self.lbl_status.setText("")
+        self._history.reset(self._current_layer())
+
+    def _apply_layer(self, layer: GuiLayer) -> None:
+        """Carga `layer` en la UI sin marcar dirty ni tocar el historial."""
         self._loading = True
         try:
             self.layer_id = layer.id
@@ -659,17 +624,14 @@ class GuiLayerEditorWidget(QWidget):
             self.progress_bars = list(layer.progress_bars)
             self.pip_bars = list(layer.pip_bars)
             self.sprites = list(layer.sprites)
-            self.panels = list(layer.panels)
             self._rebuild_rects_table()
             self._rebuild_labels_table()
             self._rebuild_progress_table()
             self._rebuild_pip_table()
             self._rebuild_sprites_table()
-            self._rebuild_panels_table()
+            self._apply_tiles_to_controls(layer.tiles)
         finally:
             self._loading = False
-        self._dirty = False
-        self.lbl_status.setText("")
         self._refresh_preview()
 
     def _current_layer(self) -> GuiLayer:
@@ -689,7 +651,7 @@ class GuiLayerEditorWidget(QWidget):
             progress_bars=tuple(self.progress_bars),
             pip_bars=tuple(self.pip_bars),
             sprites=tuple(self.sprites),
-            panels=tuple(self.panels),
+            tiles=self._current_tiles(),
         )
 
     def _mark_dirty(self) -> None:
@@ -697,6 +659,35 @@ class GuiLayerEditorWidget(QWidget):
             return
         self._dirty = True
         self.lbl_status.setText(tr("common.unsaved_changes"))
+        if not self._in_stroke:
+            self._history.commit(self._current_layer())
+
+    # ------------------------------------------------------------------
+    # Undo / redo
+    # ------------------------------------------------------------------
+
+    def _on_stroke_started(self) -> None:
+        self._in_stroke = True
+
+    def _on_stroke_finished(self) -> None:
+        self._in_stroke = False
+        if self.layer_id:
+            self._history.commit(self._current_layer())
+
+    def _restore(self, layer: GuiLayer) -> None:
+        self._apply_layer(layer)
+        self._dirty = True
+        self.lbl_status.setText(tr("common.unsaved_changes"))
+
+    def undo(self) -> None:
+        state = self._history.undo()
+        if state is not None:
+            self._restore(state)
+
+    def redo(self) -> None:
+        state = self._history.redo()
+        if state is not None:
+            self._restore(state)
 
     # ------------------------------------------------------------------
     # Rects/labels tables
@@ -1450,153 +1441,170 @@ class GuiLayerEditorWidget(QWidget):
         self._refresh_preview()
 
     # ------------------------------------------------------------------
-    # Panels 9-slice (spec/gui-layer-v0.md "Paneles")
+    # Capa de tiles (spec/gui-layer-v0.md "Capa de tiles")
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _slices_text(slices: tuple[int, ...]) -> str:
-        return ",".join(str(v) for v in slices)
-
-    def _rebuild_panels_table(self) -> None:
-        self.panels_table.blockSignals(True)
+    def _refresh_tiles_tileset_combo(self, current: str = "") -> None:
+        current = current or self.combo_tiles_tileset.currentText()
+        self.combo_tiles_tileset.blockSignals(True)
         try:
-            self.panels_table.setRowCount(len(self.panels))
-            for i, pn in enumerate(self.panels):
-                self.panels_table.setItem(i, 0, QTableWidgetItem(pn.id))
-                self._set_int_cell(self.panels_table, i, 1, pn.x)
-                self._set_int_cell(self.panels_table, i, 2, pn.y)
-                self._set_int_cell(self.panels_table, i, 3, pn.w)
-                self._set_int_cell(self.panels_table, i, 4, pn.h)
-                combo = self._new_tileset_combo(
-                    pn.tileset, on_change=lambda _t, row=i: self._on_panel_tileset_changed(row))
-                self.panels_table.setCellWidget(i, 5, combo)
-                # Slices editables como "a,b,c,..." ademas del selector visual.
-                self.panels_table.setItem(i, 6, QTableWidgetItem(self._slices_text(pn.slices)))
-                chk = self._new_flip_checkbox(
-                    pn.fill_center,
-                    lambda checked, row=i: self._on_panel_fill_center_changed(row, checked))
-                self.panels_table.setCellWidget(i, 7, chk)
+            self.combo_tiles_tileset.clear()
+            stems = list_tileset_json_stems(self.project_root)
+            self.combo_tiles_tileset.addItems(stems)
+            if current and current not in stems:
+                self.combo_tiles_tileset.addItem(current)
+            idx = self.combo_tiles_tileset.findText(current) if current else 0
+            self.combo_tiles_tileset.setCurrentIndex(max(idx, 0))
         finally:
-            self.panels_table.blockSignals(False)
+            self.combo_tiles_tileset.blockSignals(False)
 
-    def _new_tileset_combo(self, current: str, *, on_change) -> QComboBox:
-        combo = QComboBox()
-        stems = list_tileset_json_stems(self.project_root)
-        combo.addItems(stems)
-        if current and current not in stems:
-            combo.addItem(current)
-        idx = combo.findText(current) if current else 0
-        combo.setCurrentIndex(max(idx, 0))
-        combo.currentTextChanged.connect(on_change)
-        return combo
+    def _set_tiles_controls_enabled(self, enabled: bool) -> None:
+        for w in (self.combo_tiles_tileset, self.spin_tiles_x, self.spin_tiles_y,
+                  self.spin_tiles_cols, self.spin_tiles_rows, self.btn_tiles_fill,
+                  self.btn_tiles_clear, self.tiles_picker, self.chk_tiles_erase,
+                  self.lbl_tiles_paint_hint):
+            w.setEnabled(enabled)
+        self.preview.paintable = enabled
+        self.preview.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
 
-    def _on_panel_item_changed(self, item: QTableWidgetItem) -> None:
-        if self._loading:
+    def _tile_px(self) -> int:
+        return len(self._tileset_tiles[0]) if self._tileset_tiles else 8
+
+    def _refresh_tiles_picker(self) -> None:
+        tileset = self.combo_tiles_tileset.currentText().strip()
+        self._tileset_tiles = self._load_tileset_tiles(tileset) if tileset else []
+        if not self._tileset_tiles:
+            self.tiles_picker.clear()
             return
-        row = item.row()
-        if row < 0 or row >= len(self.panels):
-            return
-        pn = self.panels[row]
-        col = item.column()
-        if col == 0:
-            new_id = item.text().strip()
-            if not is_valid_gui_layer_id(new_id):
-                QMessageBox.warning(self, tr("guilayer.label_id_error_title"),
-                                    tr("guilayer.label_id_error_msg"))
-                self.panels_table.blockSignals(True)
-                try:
-                    item.setText(pn.id)
-                finally:
-                    self.panels_table.blockSignals(False)
-                return
-            self.panels[row] = replace(pn, id=new_id)
-        elif col == 6:
-            from turtlestudio.guilayers import _parse_panel_slices
+        self.tiles_picker.set_tiles(self._tileset_tiles, self._load_preview_palette())
+        self._tiles_paint_tile = min(self._tiles_paint_tile, len(self._tileset_tiles) - 1)
+        self.tiles_picker.select_index(self._tiles_paint_tile)
 
-            parts = [p.strip() for p in item.text().split(",") if p.strip()]
-            new_slices = _parse_panel_slices(parts)
-            self.panels[row] = replace(pn, slices=new_slices)
-            self.panels_table.blockSignals(True)
+    def _set_geometry_spins(self, grid: GuiTileGrid) -> None:
+        spins = (self.spin_tiles_x, self.spin_tiles_y, self.spin_tiles_cols, self.spin_tiles_rows)
+        for spin in spins:
+            spin.blockSignals(True)
+        try:
+            self.spin_tiles_x.setValue(grid.x)
+            self.spin_tiles_y.setValue(grid.y)
+            self.spin_tiles_cols.setValue(grid.cols)
+            self.spin_tiles_rows.setValue(grid.rows)
+        finally:
+            for spin in spins:
+                spin.blockSignals(False)
+
+    def _fill_layer_grid(self, base: GuiTileGrid | None) -> GuiTileGrid:
+        """Rejilla en (0,0) con las celdas justas para cubrir la capa entera (la ultima
+        fila/columna parcial se recorta al pintar). Conserva lo ya pintado."""
+        t = self._tile_px()
+        cols = -(-self.spin_w.value() // t)
+        rows = -(-self.spin_h.value() // t)
+        tileset = self.combo_tiles_tileset.currentText().strip()
+        grid = base or GuiTileGrid(tileset=tileset)
+        grid = replace(grid, tileset=tileset, x=0, y=0)
+        return resize_tile_grid(grid, cols, rows)
+
+    def _apply_tiles_to_controls(self, grid: GuiTileGrid | None) -> None:
+        """Carga la capa de tiles en los controles (llamado con _loading=True)."""
+        self.chk_tiles.blockSignals(True)
+        try:
+            self.chk_tiles.setChecked(grid is not None)
+        finally:
+            self.chk_tiles.blockSignals(False)
+        self._refresh_tiles_tileset_combo(grid.tileset if grid else "")
+        self._refresh_tiles_picker()
+        self._tile_grid = grid
+        if grid is not None:
+            self._set_geometry_spins(grid)
+        self._set_tiles_controls_enabled(grid is not None)
+
+    def _current_tiles(self) -> GuiTileGrid | None:
+        if not self.chk_tiles.isChecked() or self._tile_grid is None:
+            return None
+        tileset = self.combo_tiles_tileset.currentText().strip()
+        if not tileset:
+            return None
+        return replace(self._tile_grid, tileset=tileset)
+
+    def _on_tiles_enabled_changed(self, checked: bool) -> None:
+        if checked and not list_tileset_json_stems(self.project_root):
+            QMessageBox.warning(self, tr("guilayer.tiles_title"),
+                                tr("guilayer.tiles_needs_tileset_msg"))
+            self.chk_tiles.blockSignals(True)
             try:
-                item.setText(self._slices_text(new_slices))
+                self.chk_tiles.setChecked(False)
             finally:
-                self.panels_table.blockSignals(False)
-        else:
-            try:
-                v = int(item.text())
-            except (TypeError, ValueError):
-                v = 0
-            if col == 1:
-                v = max(0, min(SCENE_PIXEL_W, v))
-                self.panels[row] = replace(pn, x=v)
-            elif col == 2:
-                v = max(0, min(SCENE_PIXEL_H, v))
-                self.panels[row] = replace(pn, y=v)
-            elif col == 3:
-                v = max(1, min(SCENE_PIXEL_W, v))
-                self.panels[row] = replace(pn, w=v)
-            elif col == 4:
-                v = max(1, min(SCENE_PIXEL_H, v))
-                self.panels[row] = replace(pn, h=v)
-            self.panels_table.blockSignals(True)
-            try:
-                item.setText(str(v))
-            finally:
-                self.panels_table.blockSignals(False)
-        self._mark_dirty()
+                self.chk_tiles.blockSignals(False)
+            return
+        if checked:
+            self._refresh_tiles_tileset_combo()
+            self._refresh_tiles_picker()
+            if self._tile_grid is None:
+                # Primera vez: rejilla vacia que cubre toda la capa.
+                self._tile_grid = self._fill_layer_grid(None)
+                self._set_geometry_spins(self._tile_grid)
+        self._set_tiles_controls_enabled(checked)
+        self._on_meta_changed()
+
+    def _on_tiles_tileset_changed(self, _text: str) -> None:
+        self._refresh_tiles_picker()
+        self._on_meta_changed()
+
+    def _on_tiles_geometry_changed(self, *_args: Any) -> None:
+        if self._loading or self._tile_grid is None:
+            return
+        grid = replace(self._tile_grid, x=self.spin_tiles_x.value(), y=self.spin_tiles_y.value())
+        self._tile_grid = resize_tile_grid(grid, self.spin_tiles_cols.value(),
+                                           self.spin_tiles_rows.value())
+        self._on_meta_changed()
+
+    def _action_tiles_fill_layer(self) -> None:
+        if not self.chk_tiles.isChecked():
+            return
+        self._tile_grid = self._fill_layer_grid(self._tile_grid)
+        self._set_geometry_spins(self._tile_grid)
+        self._on_meta_changed()
+
+    def _action_tiles_clear(self) -> None:
+        if self._tile_grid is None:
+            return
+        self._tile_grid = replace(self._tile_grid, cells=(-1,) * len(self._tile_grid.cells))
+        self._on_meta_changed()
+
+    def _on_preview_palette_changed(self, _text: str) -> None:
+        if hasattr(self, "tiles_picker"):
+            self._refresh_tiles_picker()
         self._refresh_preview()
 
-    def _on_panel_tileset_changed(self, row: int) -> None:
-        if self._loading or row >= len(self.panels):
-            return
-        widget = self.panels_table.cellWidget(row, 5)
-        if isinstance(widget, QComboBox):
-            self.panels[row] = replace(self.panels[row], tileset=widget.currentText().strip())
-            self._mark_dirty()
-            self._refresh_preview()
+    def _on_tiles_tile_selected(self, index: int) -> None:
+        self._tiles_paint_tile = index
+        self.chk_tiles_erase.setChecked(False)
 
-    def _on_panel_fill_center_changed(self, row: int, checked: bool) -> None:
-        if self._loading or row >= len(self.panels):
+    def _on_preview_cell_clicked(self, x: int, y: int) -> None:
+        """Pinta el tile seleccionado (o -1 con Borrador) en la celda bajo el cursor."""
+        grid = self._tile_grid
+        if not self.chk_tiles.isChecked() or grid is None or not self._tileset_tiles:
             return
-        self.panels[row] = replace(self.panels[row], fill_center=checked)
-        self._mark_dirty()
-        self._refresh_preview()
-
-    def _action_add_panel(self) -> None:
-        if len(self.panels) >= MAX_GUI_LAYER_PANELS:
-            QMessageBox.information(self, tr("guilayer.panels_title"),
-                                    tr("guilayer.panel_cap_reached", cap=MAX_GUI_LAYER_PANELS))
+        lx, ly = self.spin_x.value(), self.spin_y.value()
+        lw = min(self.spin_w.value(), SCENE_PIXEL_W - lx)
+        lh = min(self.spin_h.value(), SCENE_PIXEL_H - ly)
+        if not (lx <= x < lx + lw and ly <= y < ly + lh):
+            return  # fuera de la capa: la celda no se veria
+        t = self._tile_px()
+        gx, gy = x - lx - grid.x, y - ly - grid.y
+        if gx < 0 or gy < 0:
             return
-        tilesets = list_tileset_json_stems(self.project_root)
-        if not tilesets:
-            QMessageBox.warning(self, tr("guilayer.panels_title"),
-                                tr("guilayer.panel_needs_tileset_msg"))
+        col, row = gx // t, gy // t
+        if col >= grid.cols or row >= grid.rows:
             return
-        existing_ids = {pn.id for pn in self.panels}
-        i = 1
-        while f"panel{i}" in existing_ids:
-            i += 1
-        # Default: los primeros 9 tiles en orden (tileset dibujado como bloque 3x3). Si el
-        # tileset esta armado distinto, el autor usa el selector visual.
-        self.panels.append(GuiPanel(
-            id=f"panel{i}",
-            tileset=tilesets[0],
-            x=0, y=0,
-            w=min(48, self.spin_w.value()), h=min(32, self.spin_h.value()),
-            slices=tuple(range(PANEL_SLICE_COUNT)),
-        ))
-        self._rebuild_panels_table()
-        self._mark_dirty()
-        self._refresh_preview()
-
-    def _action_remove_panel(self) -> None:
-        row = self.panels_table.currentRow()
-        if row < 0 or row >= len(self.panels):
-            return
-        del self.panels[row]
-        self._rebuild_panels_table()
-        self._mark_dirty()
-        self._refresh_preview()
+        value = -1 if self.chk_tiles_erase.isChecked() else self._tiles_paint_tile
+        i = row * grid.cols + col
+        if grid.cells[i] == value:
+            return  # arrastre dentro de la misma celda: no repintar el preview cada pixel
+        cells = list(grid.cells)
+        cells[i] = value
+        self._tile_grid = replace(grid, cells=tuple(cells))
+        self._on_meta_changed()
 
     def _load_tileset_tiles(self, stem: str) -> list[list[list[int]]]:
         try:
@@ -1604,29 +1612,6 @@ class GuiLayerEditorWidget(QWidget):
         except ValueError:
             return []
         return parse_tileset_all_tiles(data, fill_index=PALETTE_SIZE - 1)
-
-    def _action_pick_panel_slices(self) -> None:
-        row = self.panels_table.currentRow()
-        if row < 0 or row >= len(self.panels):
-            if len(self.panels) == 1:
-                row = 0
-            else:
-                QMessageBox.information(self, tr("guilayer.panels_title"),
-                                        tr("guilayer.panel_select_row_msg"))
-                return
-        pn = self.panels[row]
-        tiles = self._load_tileset_tiles(pn.tileset)
-        if not tiles:
-            QMessageBox.warning(self, tr("guilayer.panels_title"),
-                                tr("guilayer.panel_tileset_empty_msg", tileset=pn.tileset))
-            return
-        dlg = PanelSlicePickerDialog(tiles, self._load_preview_palette(), pn.slices, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        self.panels[row] = replace(pn, slices=tuple(dlg.slices))
-        self._rebuild_panels_table()
-        self._mark_dirty()
-        self._refresh_preview()
 
     # ------------------------------------------------------------------
     # Bar helpers
@@ -1751,6 +1736,25 @@ class GuiLayerEditorWidget(QWidget):
         if not self.chk_transparent.isChecked():
             paint_rect_absolute(lx, ly, lw, lh, self.spin_bg.value())
 
+        # Capa de tiles: encima del fondo y debajo del resto, recortada al rect de la capa
+        # (mismo algoritmo que paint_tile_grid del firmware).
+        grid = self._current_tiles()
+        tiles = self._load_tileset_tiles(grid.tileset) if grid else []
+        if grid is not None and tiles and lw > 0 and lh > 0:
+            t = len(tiles[0])
+            for row in range(grid.rows):
+                for col in range(grid.cols):
+                    idx = grid.cell(col, row)
+                    if not 0 <= idx < len(tiles):
+                        continue
+                    dx, dy = lx + grid.x + col * t, ly + grid.y + row * t
+                    tile = tiles[idx]
+                    for yy in range(max(dy, ly), min(dy + t, ly + lh)):
+                        for xx in range(max(dx, lx), min(dx + t, lx + lw)):
+                            v = tile[yy - dy][xx - dx]
+                            if v != PALETTE_SIZE - 1:
+                                paint_rect_absolute(xx, yy, 1, 1, v)
+
         # Rects internos (orden array, 0 primero, N-1 encima).
         for r in self.rects:
             rx = lx + r.x
@@ -1758,61 +1762,6 @@ class GuiLayerEditorWidget(QWidget):
             rw = min(r.w, (lx + lw) - rx)
             rh = min(r.h, (ly + lh) - ry)
             paint_rect_absolute(rx, ry, rw, rh, r.color_index)
-
-        # Paneles 9-slice: mismo algoritmo que paint_panel del firmware (centro, bordes,
-        # esquinas al final; todo recortado a panel ∩ capa).
-        tileset_cache: dict[str, list[list[list[int]]]] = {}
-        for pn in self.panels:
-            if pn.tileset not in tileset_cache:
-                tileset_cache[pn.tileset] = self._load_tileset_tiles(pn.tileset)
-            tiles = tileset_cache[pn.tileset]
-            if not tiles:
-                continue
-            t = len(tiles[0])
-            px0, py0 = lx + pn.x, ly + pn.y
-            px1, py1 = px0 + pn.w, py0 + pn.h
-            cx0, cy0 = max(px0, lx), max(py0, ly)
-            cx1, cy1 = min(px1, lx + lw), min(py1, ly + lh)
-            if cx1 <= cx0 or cy1 <= cy0:
-                continue
-
-            def slice_tile(slot: int, _pn: GuiPanel = pn, _tiles=tiles) -> list[list[int]] | None:
-                idx = _pn.slices[slot]
-                return _tiles[idx] if 0 <= idx < len(_tiles) else None
-
-            def blit_tile(dx: int, dy: int, tile: list[list[int]] | None,
-                          k0: int, k1: int, k2: int, k3: int, _t: int = t) -> None:
-                if tile is None:
-                    return
-                for yy in range(max(dy, k1), min(dy + _t, k3)):
-                    for xx in range(max(dx, k0), min(dx + _t, k2)):
-                        v = tile[yy - dy][xx - dx]
-                        if v != PALETTE_SIZE - 1:
-                            paint_rect_absolute(xx, yy, 1, 1, v)
-
-            def strip(tile: list[list[int]] | None, x0: int, y0: int, x1: int, y1: int,
-                      _t: int = t, _c=(cx0, cy0, cx1, cy1)) -> None:
-                if tile is None or x1 <= x0 or y1 <= y0:
-                    return
-                k0, k1 = max(x0, _c[0]), max(y0, _c[1])
-                k2, k3 = min(x1, _c[2]), min(y1, _c[3])
-                if k2 <= k0 or k3 <= k1:
-                    return
-                for ty in range(y0, y1, _t):
-                    for tx in range(x0, x1, _t):
-                        blit_tile(tx, ty, tile, k0, k1, k2, k3)
-
-            ix0, iy0, ix1, iy1 = px0 + t, py0 + t, px1 - t, py1 - t
-            if pn.fill_center:
-                strip(slice_tile(4), ix0, iy0, ix1, iy1)
-            strip(slice_tile(1), ix0, py0, ix1, py0 + t)
-            strip(slice_tile(7), ix0, iy1, ix1, py1)
-            strip(slice_tile(3), px0, iy0, px0 + t, iy1)
-            strip(slice_tile(5), ix1, iy0, px1, iy1)
-            blit_tile(px0, py0, slice_tile(0), cx0, cy0, cx1, cy1)
-            blit_tile(px1 - t, py0, slice_tile(2), cx0, cy0, cx1, cy1)
-            blit_tile(px0, py1 - t, slice_tile(6), cx0, cy0, cx1, cy1)
-            blit_tile(px1 - t, py1 - t, slice_tile(8), cx0, cy0, cx1, cy1)
 
         # Progress bars y pip bars: mismo orden que firmware (rects -> progress -> pips -> labels).
         sprite_cache: dict[str, tuple[int, int, list[list[int]]]] = {}
@@ -2020,4 +1969,34 @@ class GuiLayerEditorWidget(QWidget):
             Qt.AspectRatioMode.IgnoreAspectRatio,
             Qt.TransformationMode.FastTransformation,
         )
+        if self.chk_tiles.isChecked() and self._tile_grid is not None and lw > 0 and lh > 0:
+            self._draw_tile_grid_overlay(pix, lx, ly, lw, lh)
         self.preview.setPixmap(pix)
+
+    def _draw_tile_grid_overlay(self, pix: QPixmap, lx: int, ly: int, lw: int, lh: int) -> None:
+        """Lineas de celda de la capa de tiles sobre el preview (solo editor, como la rejilla
+        del editor de escenas), recortadas al rect de la capa."""
+        grid = self._tile_grid
+        assert grid is not None
+        t = self._tile_px()
+        z = PREVIEW_ZOOM
+        gx0, gy0 = lx + grid.x, ly + grid.y
+        x_end = min(gx0 + grid.cols * t, lx + lw)
+        y_end = min(gy0 + grid.rows * t, ly + lh)
+        if x_end <= gx0 or y_end <= gy0:
+            return
+        painter = QPainter(pix)
+        painter.setPen(QPen(QColor(255, 255, 255, 60), 1))
+        for c in range(grid.cols + 1):
+            x = gx0 + c * t
+            if x > x_end:
+                break
+            painter.drawLine(x * z, gy0 * z, x * z, y_end * z)
+        for r in range(grid.rows + 1):
+            y = gy0 + r * t
+            if y > y_end:
+                break
+            painter.drawLine(gx0 * z, y * z, x_end * z, y * z)
+        painter.setPen(QPen(QColor(255, 140, 40, 200), 1))
+        painter.drawRect(gx0 * z, gy0 * z, (x_end - gx0) * z - 1, (y_end - gy0) * z - 1)
+        painter.end()

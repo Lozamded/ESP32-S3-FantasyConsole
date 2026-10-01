@@ -51,6 +51,20 @@ void turtle_gui_layer_hide_all(void);
 bool turtle_gui_layer_set_text(const char* id, const char* label_id, const char* str);
 
 /**
+ * Mueve/redimensiona la capa (coord fb, clampeado al framebuffer). Todo el contenido es
+ * relativo al (x, y) de la capa asi que se mueve con ella (incluida la capa de tiles, que se
+ * recorta al nuevo tamaño). Si la capa esta visible, el rect viejo se encola para borrado.
+ */
+bool turtle_gui_layer_set_rect(const char* id, int x, int y, int w, int h);
+
+/**
+ * Drena un rect (coord fb) que una capa dejo de cubrir (gui_layer_hide/hide_all o set_rect).
+ * turtle_scene lo llama en el redibujo de cada tick hasta que devuelve false, restaura el
+ * fondo estatico ahi y redibuja los actores quietos que queden debajo.
+ */
+bool turtle_gui_layer_pop_erase_rect(int* x, int* y, int* w, int* h);
+
+/**
  * Actualiza el valor de una barra de progreso. `value_num` reemplaza siempre; si `has_max`
  * es true, `value_den` se reemplaza tambien (util cuando el maximo cambia en runtime, por
  * ejemplo un nivel-up que sube el HP maximo). Devuelve false si la capa o el bar no existen.

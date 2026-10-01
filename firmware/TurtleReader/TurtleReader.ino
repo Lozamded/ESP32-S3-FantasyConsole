@@ -242,6 +242,17 @@ static int l_gui_layer_set_text(lua_State* L) {
   return 0;
 }
 
+/** gui_layer_set_rect(id, x, y, w, h) -- mueve/redimensiona la capa (y su capa de tiles). */
+static int l_gui_layer_set_rect(lua_State* L) {
+  const char* id = luaL_checkstring(L, 1);
+  const int x = static_cast<int>(luaL_checkinteger(L, 2));
+  const int y = static_cast<int>(luaL_checkinteger(L, 3));
+  const int w = static_cast<int>(luaL_checkinteger(L, 4));
+  const int h = static_cast<int>(luaL_checkinteger(L, 5));
+  turtle_gui_layer_set_rect(id, x, y, w, h);
+  return 0;
+}
+
 /** gui_layer_set_progress(id, bar_id, value_num [, value_den]) */
 static int l_gui_layer_set_progress(lua_State* L) {
   const char* id = luaL_checkstring(L, 1);
@@ -353,6 +364,8 @@ static bool runCartEntryLua(const char* source, size_t source_len, const char* c
   lua_setglobal(L, "gui_layer_set_pips");
   lua_pushcfunction(L, l_gui_layer_set_sprite);
   lua_setglobal(L, "gui_layer_set_sprite");
+  lua_pushcfunction(L, l_gui_layer_set_rect);
+  lua_setglobal(L, "gui_layer_set_rect");
 
   lua_pushcfunction(L, l_tr);
   lua_setglobal(L, "tr");

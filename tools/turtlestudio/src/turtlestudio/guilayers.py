@@ -24,8 +24,10 @@ MAX_GUI_LAYER_LABELS = 16
 MAX_GUI_LAYER_PROGRESS_BARS = 4
 MAX_GUI_LAYER_PIP_BARS = 4
 MAX_GUI_LAYER_SPRITES = 4
-MAX_GUI_LAYER_PANELS = 4
-PANEL_SLICE_COUNT = 9
+# Capa de tiles: tiles minimos de 8 px -> 21x16 celdas cubren el framebuffer entero.
+# Alineado con kGuiTileMaxCols/kGuiTileMaxRows del firmware (turtle_gui_layer.cpp).
+GUI_TILE_MAX_COLS = 21
+GUI_TILE_MAX_ROWS = 16
 MAX_GUI_BAR_RANGES = 3
 MAX_PIP_COUNT = 32
 GUI_LAYER_TEXT_MAX_CHARS = 63  # el buffer del firmware es 64 (63 + nul)
@@ -117,21 +119,35 @@ class GuiSpriteIcon:
 
 
 @dataclass(frozen=True)
-class GuiPanel:
-    """spec/gui-layer-v0.md "Paneles": marco 9-slice armado con tiles de un tileset.
+class GuiTileGrid:
+    """spec/gui-layer-v0.md "Capa de tiles": rejilla opcional de tiles dentro de la capa,
+    pintada celda por celda como las tile_layers de escena.
 
-    `slices` va en orden fila-mayor: TL, T, TR, L, C, R, BL, B, BR. Cada entrada es un
-    indice de tile del tileset o -1 (no pintar ese slice). Esquinas 1:1, bordes y centro se
-    repiten para cubrir `w`x`h` (el ultimo tile parcial se recorta)."""
+    `x`, `y` en px relativos a la capa; `cols` x `rows` en celdas. `cells` es fila-mayor con
+    `cols * rows` indices de tile (-1 = celda vacia). Lo que cae fuera de la capa se recorta."""
 
-    id: str
     tileset: str
     x: int = 0
     y: int = 0
-    w: int = 32
-    h: int = 32
-    slices: tuple[int, ...] = (-1,) * PANEL_SLICE_COUNT
-    fill_center: bool = True
+    cols: int = 1
+    rows: int = 1
+    cells: tuple[int, ...] = (-1,)
+
+    def cell(self, col: int, row: int) -> int:
+        return self.cells[row * self.cols + col]
+
+
+def resize_tile_grid(grid: GuiTileGrid, cols: int, rows: int) -> GuiTileGrid:
+    """Nuevo tamaño conservando las celdas existentes (anclado arriba-izquierda)."""
+    cols = max(1, min(GUI_TILE_MAX_COLS, cols))
+    rows = max(1, min(GUI_TILE_MAX_ROWS, rows))
+    cells = [
+        grid.cell(c, r) if c < grid.cols and r < grid.rows else -1
+        for r in range(rows)
+        for c in range(cols)
+    ]
+    return GuiTileGrid(tileset=grid.tileset, x=grid.x, y=grid.y, cols=cols, rows=rows,
+                       cells=tuple(cells))
 
 
 @dataclass(frozen=True)
@@ -151,7 +167,7 @@ class GuiLayer:
     progress_bars: tuple[GuiProgressBar, ...] = field(default_factory=tuple)
     pip_bars: tuple[GuiPipBar, ...] = field(default_factory=tuple)
     sprites: tuple[GuiSpriteIcon, ...] = field(default_factory=tuple)
-    panels: tuple[GuiPanel, ...] = field(default_factory=tuple)
+    tiles: GuiTileGrid | None = None  # None = sin capa de tiles (default)
 
 
 def _clamp_int(v: object, lo: int, hi: int, default: int) -> int:
@@ -338,38 +354,31 @@ def parse_gui_sprite_icon(raw: Any) -> GuiSpriteIcon | None:
     )
 
 
-def _parse_panel_slices(raw: Any) -> tuple[int, ...]:
-    out: list[int] = []
-    if isinstance(raw, list):
-        for v in raw[:PANEL_SLICE_COUNT]:
-            try:
-                n = int(v)
-            except (TypeError, ValueError):
-                n = -1
-            out.append(-1 if n < 0 else min(255, n))
-    while len(out) < PANEL_SLICE_COUNT:
-        out.append(-1)
-    return tuple(out)
-
-
-def parse_gui_panel(raw: Any) -> GuiPanel | None:
+def parse_gui_tile_grid(raw: Any) -> GuiTileGrid | None:
     if not isinstance(raw, dict):
-        return None
-    ident = str(raw.get("id", "") or "").strip()
-    if not is_valid_gui_layer_id(ident):
         return None
     tileset = _clamp_sprite_stem(raw.get("tileset", ""))
     if not tileset:
         return None
-    return GuiPanel(
-        id=ident,
+    cols = _clamp_int(raw.get("cols", 1), 1, GUI_TILE_MAX_COLS, default=1)
+    rows = _clamp_int(raw.get("rows", 1), 1, GUI_TILE_MAX_ROWS, default=1)
+    raw_cells = raw.get("cells")
+    cells: list[int] = []
+    if isinstance(raw_cells, list):
+        for v in raw_cells[: cols * rows]:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                n = -1
+            cells.append(-1 if n < 0 else min(255, n))
+    cells.extend([-1] * (cols * rows - len(cells)))
+    return GuiTileGrid(
         tileset=tileset,
         x=_clamp_int(raw.get("x", 0), 0, SCENE_PIXEL_W, default=0),
         y=_clamp_int(raw.get("y", 0), 0, SCENE_PIXEL_H, default=0),
-        w=_clamp_int(raw.get("w", 32), 1, SCENE_PIXEL_W, default=32),
-        h=_clamp_int(raw.get("h", 32), 1, SCENE_PIXEL_H, default=32),
-        slices=_parse_panel_slices(raw.get("slices")),
-        fill_center=bool(raw.get("fill_center", True)),
+        cols=cols,
+        rows=rows,
+        cells=tuple(cells),
     )
 
 
@@ -423,13 +432,6 @@ def parse_gui_layer(raw: Any) -> GuiLayer | None:
         parsed_sp = parse_gui_sprite_icon(sp_raw)
         if parsed_sp is not None:
             sprites.append(parsed_sp)
-    panels: list[GuiPanel] = []
-    for pn_raw in (raw.get("panels", []) or []):
-        if len(panels) >= MAX_GUI_LAYER_PANELS:
-            break
-        parsed_pn = parse_gui_panel(pn_raw)
-        if parsed_pn is not None:
-            panels.append(parsed_pn)
     return GuiLayer(
         id=ident,
         x=x,
@@ -446,7 +448,7 @@ def parse_gui_layer(raw: Any) -> GuiLayer | None:
         progress_bars=tuple(progress),
         pip_bars=tuple(pips),
         sprites=tuple(sprites),
-        panels=tuple(panels),
+        tiles=parse_gui_tile_grid(raw.get("tiles")),
     )
 
 
@@ -539,19 +541,15 @@ def gui_sprite_icon_to_json(icon: GuiSpriteIcon) -> dict[str, Any]:
     return out
 
 
-def gui_panel_to_json(panel: GuiPanel) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "id": panel.id,
-        "tileset": panel.tileset,
-        "x": int(panel.x),
-        "y": int(panel.y),
-        "w": int(panel.w),
-        "h": int(panel.h),
-        "slices": [int(v) for v in panel.slices],
+def gui_tile_grid_to_json(grid: GuiTileGrid) -> dict[str, Any]:
+    return {
+        "tileset": grid.tileset,
+        "x": int(grid.x),
+        "y": int(grid.y),
+        "cols": int(grid.cols),
+        "rows": int(grid.rows),
+        "cells": [int(v) for v in grid.cells],
     }
-    if not panel.fill_center:
-        out["fill_center"] = False
-    return out
 
 
 def gui_layer_to_json(ly: GuiLayer) -> dict[str, Any]:
@@ -577,8 +575,8 @@ def gui_layer_to_json(ly: GuiLayer) -> dict[str, Any]:
         out["pip_bars"] = [gui_pip_bar_to_json(b) for b in ly.pip_bars]
     if ly.sprites:
         out["sprites"] = [gui_sprite_icon_to_json(sp) for sp in ly.sprites]
-    if ly.panels:
-        out["panels"] = [gui_panel_to_json(pn) for pn in ly.panels]
+    if ly.tiles is not None:
+        out["tiles"] = gui_tile_grid_to_json(ly.tiles)
     return out
 
 
@@ -609,9 +607,11 @@ def collect_gui_layer_sprite_ids(layer: GuiLayer) -> set[str]:
 
 
 def collect_gui_layer_tileset_ids(layer: GuiLayer) -> set[str]:
-    """Stems de tilesets referenciados por los paneles 9-slice de la capa. El exportador los
-    agrega al bundle aunque ninguna escena los use en sus `tile_layers`."""
-    return {pn.tileset for pn in layer.panels if pn.tileset}
+    """Stem del tileset de la capa de tiles (si tiene). El exportador lo agrega al bundle
+    aunque ninguna escena lo use en sus `tile_layers`."""
+    if layer.tiles is not None and layer.tiles.tileset:
+        return {layer.tiles.tileset}
+    return set()
 
 
 def list_gui_layer_stems(project_root: Path) -> list[str]:

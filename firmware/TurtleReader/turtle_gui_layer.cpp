@@ -23,8 +23,14 @@ constexpr int kMaxGuiLayerLabels = 16;
 constexpr int kMaxGuiLayerProgressBars = 4;
 constexpr int kMaxGuiLayerPipBars = 4;
 constexpr int kMaxGuiLayerSprites = 4;
-constexpr int kMaxGuiLayerPanels = 4;
-constexpr int kGuiPanelSlices = 9;
+// Rejilla de tiles por capa (spec/gui-layer-v0.md "Capa de tiles"). Tiles minimos de 8 px:
+// 21x16 celdas cubren el framebuffer entero (164/8 y 124/8 redondeado hacia arriba).
+constexpr int kGuiTileMaxCols = 21;
+constexpr int kGuiTileMaxRows = 16;
+constexpr int kGuiTileMaxCells = kGuiTileMaxCols * kGuiTileMaxRows;
+// Rects de capas ocultadas/movidas pendientes de borrar en el proximo tick (ver
+// turtle_gui_layer_pop_erase_rect). Si se llena, el ultimo slot absorbe la union.
+constexpr int kMaxPendingErase = 8;
 constexpr int kMaxGuiBarRanges = 3;
 constexpr int kMaxPipCount = 32;
 constexpr size_t kGuiLayerTextCap = 64;   // 63 chars + nul
@@ -138,17 +144,16 @@ struct GuiSpriteIcon {
   bool flip_v;
 };
 
-// spec/gui-layer-v0.md "Paneles": marco 9-slice armado con tiles de un tileset (.tts).
-// slices en orden fila-mayor: TL, T, TR, L, C, R, BL, B, BR. -1 = no pintar ese slice.
-struct GuiPanel {
-  char id[kGuiLayerLabelIdCap];
+// spec/gui-layer-v0.md "Capa de tiles": rejilla opcional de tiles de un tileset (.tts) dentro
+// de la capa, pintada celda por celda como las tile_layers de escena. Posicion en px relativa
+// a la capa, tamaño en celdas; todo lo que cae fuera del rect de la capa se recorta.
+struct GuiTileGrid {
+  char tileset_id[kGuiSpriteIdCap];
   int16_t x;
   int16_t y;
-  int16_t w;
-  int16_t h;
-  char tileset_id[kGuiSpriteIdCap];
-  int16_t slices[kGuiPanelSlices];
-  bool fill_center;
+  uint8_t cols;
+  uint8_t rows;
+  int16_t cells[kGuiTileMaxCells];  // fila-mayor, cols x rows usados; -1 = celda vacia
 };
 
 struct GuiLayer {
@@ -170,13 +175,13 @@ struct GuiLayer {
   int progress_bar_count;
   int pip_bar_count;
   int sprite_count;
-  int panel_count;
+  bool has_tiles;
   GuiRect rects[kMaxGuiLayerRects];
   GuiLabel labels[kMaxGuiLayerLabels];
   GuiProgressBar progress_bars[kMaxGuiLayerProgressBars];
   GuiPipBar pip_bars[kMaxGuiLayerPipBars];
   GuiSpriteIcon sprites[kMaxGuiLayerSprites];
-  GuiPanel panels[kMaxGuiLayerPanels];
+  GuiTileGrid tiles;
 };
 
 // El array vive en el heap (preferentemente PSRAM). sizeof(GuiLayer) * 8 ~= 38 KB con
@@ -192,6 +197,33 @@ size_t s_bundle_json_len = 0;
 // PSRAM. Reutilizado entre bars dentro del mismo paint (cache de sprites de turtle_scene se
 // encarga de no re-parsear el mismo sprite). Se aloja perezosamente igual que s_layers.
 uint8_t* s_gui_sprite_scratch = nullptr;
+
+// Cola de rects (coord fb) que una capa dejo de cubrir: capa ocultada o movida/achicada con
+// gui_layer_set_rect. turtle_scene los drena al comienzo del redibujo del proximo tick para
+// restaurar el fondo estatico ahi y redibujar actores quietos que esten debajo. Sin esto, en
+// escenas de camara fija los pixeles de la capa quedan pegados en pantalla.
+struct GuiEraseRect {
+  int16_t x, y, w, h;
+};
+GuiEraseRect s_pending_erase[kMaxPendingErase];
+int s_pending_erase_count = 0;
+
+void queue_erase_rect(int x, int y, int w, int h) {
+  if (w <= 0 || h <= 0) return;
+  if (s_pending_erase_count < kMaxPendingErase) {
+    s_pending_erase[s_pending_erase_count++] = {static_cast<int16_t>(x), static_cast<int16_t>(y),
+                                                static_cast<int16_t>(w), static_cast<int16_t>(h)};
+    return;
+  }
+  // Cola llena: el ultimo slot crece hasta cubrir tambien este rect (borra de mas, nunca de menos).
+  GuiEraseRect& r = s_pending_erase[kMaxPendingErase - 1];
+  const int x0 = x < r.x ? x : r.x;
+  const int y0 = y < r.y ? y : r.y;
+  const int x1 = (x + w) > (r.x + r.w) ? (x + w) : (r.x + r.w);
+  const int y1 = (y + h) > (r.y + r.h) ? (y + h) : (r.y + r.h);
+  r = {static_cast<int16_t>(x0), static_cast<int16_t>(y0), static_cast<int16_t>(x1 - x0),
+       static_cast<int16_t>(y1 - y0)};
+}
 
 // Cache de sprites que fallaron al cargar (id no existe en bundle ni SD). El pipeline de
 // turtle_scene NO cachea misses: reintenta el fopen cada vez. Como el pintado de capas GUI
@@ -587,54 +619,43 @@ void parse_sprites_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
   }
 }
 
-void parse_panels_array(const char* arr_s, const char* arr_e, GuiLayer* ly) {
-  ly->panel_count = 0;
-  const char* p = arr_s;
-  while (p < arr_e && ly->panel_count < kMaxGuiLayerPanels) {
-    while (p < arr_e && (isspace(static_cast<unsigned char>(*p)) || *p == ',')) {
-      ++p;
-    }
-    if (p >= arr_e || *p == ']') break;
-    if (*p != '{') break;
-    const char* oe = json_object_end(p);
-    if (!oe) break;
-    GuiPanel panel{};
-    panel.id[0] = '\0';
-    panel.tileset_id[0] = '\0';
-    panel.fill_center = true;
-    for (int i = 0; i < kGuiPanelSlices; ++i) panel.slices[i] = -1;
-    json_extract_string_for_key(p, oe, "id", panel.id, sizeof panel.id);
-    json_extract_string_for_key(p, oe, "tileset", panel.tileset_id, sizeof panel.tileset_id);
-    int v = 0;
-    panel.x = json_extract_int_for_key(p, oe, "x", &v) ? static_cast<int16_t>(v) : 0;
-    panel.y = json_extract_int_for_key(p, oe, "y", &v) ? static_cast<int16_t>(v) : 0;
-    panel.w = json_extract_int_for_key(p, oe, "w", &v) ? static_cast<int16_t>(clamp_int(v, 1, kSceneW)) : 1;
-    panel.h = json_extract_int_for_key(p, oe, "h", &v) ? static_cast<int16_t>(clamp_int(v, 1, kSceneH)) : 1;
-    json_extract_bool_for_key(p, oe, "fill_center", &panel.fill_center);
-    // "slices": [TL, T, TR, L, C, R, BL, B, BR] -- array plano de enteros.
-    const char* sk = strstr_bounded(p, oe, "\"slices\"");
-    if (sk) {
-      const char* sp = sk + 8;
-      while (sp < oe && *sp != '[') ++sp;
-      const char* se = (sp < oe) ? json_array_end(sp) : nullptr;
-      if (se) {
-        ++sp;
-        int n = 0;
-        while (sp < se && n < kGuiPanelSlices) {
-          while (sp < se && (isspace(static_cast<unsigned char>(*sp)) || *sp == ',')) ++sp;
-          if (sp >= se || *sp == ']') break;
-          char* num_end = nullptr;
-          const long idx = strtol(sp, &num_end, 10);
-          if (num_end == sp) break;  // token no numerico: cortar
-          panel.slices[n++] = static_cast<int16_t>(idx < 0 ? -1 : clamp_int(static_cast<int>(idx), 0, 255));
-          sp = num_end;
-        }
+/** Parsea el objeto "tiles" de la capa. false si falta tileset o la rejilla es vacia. */
+bool parse_tile_grid_object(const char* obj_s, const char* obj_e, GuiTileGrid* grid) {
+  grid->tileset_id[0] = '\0';
+  json_extract_string_for_key(obj_s, obj_e, "tileset", grid->tileset_id, sizeof grid->tileset_id);
+  int v = 0;
+  grid->x = json_extract_int_for_key(obj_s, obj_e, "x", &v) ? static_cast<int16_t>(clamp_int(v, 0, kSceneW)) : 0;
+  grid->y = json_extract_int_for_key(obj_s, obj_e, "y", &v) ? static_cast<int16_t>(clamp_int(v, 0, kSceneH)) : 0;
+  grid->cols = json_extract_int_for_key(obj_s, obj_e, "cols", &v)
+                   ? static_cast<uint8_t>(clamp_int(v, 0, kGuiTileMaxCols))
+                   : 0;
+  grid->rows = json_extract_int_for_key(obj_s, obj_e, "rows", &v)
+                   ? static_cast<uint8_t>(clamp_int(v, 0, kGuiTileMaxRows))
+                   : 0;
+  const int n_cells = grid->cols * grid->rows;
+  for (int i = 0; i < n_cells; ++i) grid->cells[i] = -1;
+  // "cells": [..] -- array plano fila-mayor de cols*rows enteros. Faltantes = -1.
+  const char* ck = strstr_bounded(obj_s, obj_e, "\"cells\"");
+  if (ck) {
+    const char* cp = ck + 7;
+    while (cp < obj_e && *cp != '[') ++cp;
+    const char* ce = (cp < obj_e) ? json_array_end(cp) : nullptr;
+    if (ce) {
+      ++cp;
+      int n = 0;
+      while (cp < ce && n < n_cells) {
+        while (cp < ce && (isspace(static_cast<unsigned char>(*cp)) || *cp == ',')) ++cp;
+        if (cp >= ce || *cp == ']') break;
+        char* num_end = nullptr;
+        const long idx = strtol(cp, &num_end, 10);
+        if (num_end == cp) break;  // token no numerico: cortar
+        grid->cells[n++] =
+            static_cast<int16_t>(idx < 0 ? -1 : clamp_int(static_cast<int>(idx), 0, 255));
+        cp = num_end;
       }
     }
-    p = oe;
-    if (!panel.id[0] || !panel.tileset_id[0]) continue;  // sin id o tileset, panel invalido
-    ly->panels[ly->panel_count++] = panel;
   }
+  return grid->tileset_id[0] != '\0' && n_cells > 0;
 }
 
 bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
@@ -724,14 +745,15 @@ bool parse_one_layer(const char* obj_s, const char* obj_e, GuiLayer* ly) {
       }
     }
   }
-  const char* nk = strstr_bounded(obj_s, obj_e, "\"panels\"");
-  if (nk) {
-    const char* np = nk + 8;
-    while (np < obj_e && *np != '[') ++np;
-    if (np < obj_e && *np == '[') {
-      const char* ne = json_array_end(np);
-      if (ne) {
-        parse_panels_array(np + 1, ne, ly);
+  ly->has_tiles = false;
+  const char* tk = strstr_bounded(obj_s, obj_e, "\"tiles\"");
+  if (tk) {
+    const char* tp = tk + 7;
+    while (tp < obj_e && (isspace(static_cast<unsigned char>(*tp)) || *tp == ':')) ++tp;
+    if (tp < obj_e && *tp == '{') {
+      const char* te = json_object_end(tp);
+      if (te) {
+        ly->has_tiles = parse_tile_grid_object(tp, te, &ly->tiles);
       }
     }
   }
@@ -843,8 +865,8 @@ void paint_sprite_icon(const GuiLayer* ly, const GuiSpriteIcon* icon) {
 
 /**
  * Blit de un tile tile_px x tile_px en (dx, dy) coord fb, recortado al rect [cx0, cx1) x
- * [cy0, cy1). Indice 31 transparente. Usado por los paneles 9-slice: los tiles de borde/centro
- * se repiten y el ultimo tile parcial se corta en el limite de su franja.
+ * [cy0, cy1). Indice 31 transparente. Usado por la capa de tiles: las celdas
+ * que desbordan el rect de la capa se cortan pixel a pixel.
  */
 void blit_tile_clipped_raw(int dx, int dy, const uint8_t* tile, int tile_px, int cx0, int cy0,
                            int cx1, int cy1) {
@@ -863,60 +885,30 @@ void blit_tile_clipped_raw(int dx, int dy, const uint8_t* tile, int tile_px, int
   }
 }
 
-/** Repite un tile a lo largo de la franja [x0, x1) x [y0, y1), recortando el ultimo parcial. */
-void fill_tiled_strip_raw(const uint8_t* tile, int tile_px, int x0, int y0, int x1, int y1,
-                          int cx0, int cy0, int cx1, int cy1) {
-  if (!tile || x1 <= x0 || y1 <= y0) return;
-  // Interseccion de la franja con el clip (rect del panel ∩ rect de la capa).
-  const int sx0 = x0 < cx0 ? cx0 : x0;
-  const int sy0 = y0 < cy0 ? cy0 : y0;
-  const int sx1 = x1 > cx1 ? cx1 : x1;
-  const int sy1 = y1 > cy1 ? cy1 : y1;
-  if (sx1 <= sx0 || sy1 <= sy0) return;
-  for (int ty = y0; ty < y1; ty += tile_px) {
-    for (int tx = x0; tx < x1; tx += tile_px) {
-      blit_tile_clipped_raw(tx, ty, tile, tile_px, sx0, sy0, sx1, sy1);
-    }
-  }
-}
-
-void paint_panel(const GuiLayer* ly, const GuiPanel* panel) {
-  const TurtleTileset* ts = turtle_scene_gui_tileset(panel->tileset_id);
+/** Pinta las celdas no vacias de la rejilla de tiles, recortadas al rect de la capa. */
+void paint_tile_grid(const GuiLayer* ly) {
+  const GuiTileGrid* grid = &ly->tiles;
+  const TurtleTileset* ts = turtle_scene_gui_tileset(grid->tileset_id);
   if (!ts) return;
   const int t = ts->tile_px;
   if (t <= 0) return;
-  const int px0 = ly->x + panel->x;
-  const int py0 = ly->y + panel->y;
-  const int px1 = px0 + panel->w;
-  const int py1 = py0 + panel->h;
-  // Clip: rect del panel ∩ rect de la capa.
-  const int cx0 = px0 > ly->x ? px0 : ly->x;
-  const int cy0 = py0 > ly->y ? py0 : ly->y;
-  const int cx1 = px1 < ly->x + ly->w ? px1 : ly->x + ly->w;
-  const int cy1 = py1 < ly->y + ly->h ? py1 : ly->y + ly->h;
-  if (cx1 <= cx0 || cy1 <= cy0) return;
-  auto tile = [&](int slot) -> const uint8_t* {
-    const int idx = panel->slices[slot];
-    return idx < 0 ? nullptr : turtle_tileset_tile(ts, idx);
-  };
-  // Franjas interiores (entre esquinas). Con paneles < 2 tiles por eje quedan vacias y solo
-  // se ven las esquinas (recortadas).
-  const int ix0 = px0 + t;
-  const int iy0 = py0 + t;
-  const int ix1 = px1 - t;
-  const int iy1 = py1 - t;
-  if (panel->fill_center) {
-    fill_tiled_strip_raw(tile(4), t, ix0, iy0, ix1, iy1, cx0, cy0, cx1, cy1);
+  const int cx0 = ly->x;
+  const int cy0 = ly->y;
+  const int cx1 = ly->x + ly->w;
+  const int cy1 = ly->y + ly->h;
+  const int ox = ly->x + grid->x;
+  const int oy = ly->y + grid->y;
+  for (int r = 0; r < grid->rows; ++r) {
+    const int dy = oy + r * t;
+    if (dy >= cy1) break;
+    for (int c = 0; c < grid->cols; ++c) {
+      const int dx = ox + c * t;
+      if (dx >= cx1) break;
+      const int idx = grid->cells[r * grid->cols + c];
+      if (idx < 0) continue;
+      blit_tile_clipped_raw(dx, dy, turtle_tileset_tile(ts, idx), t, cx0, cy0, cx1, cy1);
+    }
   }
-  fill_tiled_strip_raw(tile(1), t, ix0, py0, ix1, py0 + t, cx0, cy0, cx1, cy1);  // top
-  fill_tiled_strip_raw(tile(7), t, ix0, iy1, ix1, py1, cx0, cy0, cx1, cy1);      // bottom
-  fill_tiled_strip_raw(tile(3), t, px0, iy0, px0 + t, iy1, cx0, cy0, cx1, cy1);  // left
-  fill_tiled_strip_raw(tile(5), t, ix1, iy0, px1, iy1, cx0, cy0, cx1, cy1);      // right
-  // Esquinas al final: en paneles chicos ganan sobre los bordes.
-  blit_tile_clipped_raw(px0, py0, tile(0), t, cx0, cy0, cx1, cy1);
-  blit_tile_clipped_raw(px1 - t, py0, tile(2), t, cx0, cy0, cx1, cy1);
-  blit_tile_clipped_raw(px0, py1 - t, tile(6), t, cx0, cy0, cx1, cy1);
-  blit_tile_clipped_raw(px1 - t, py1 - t, tile(8), t, cx0, cy0, cx1, cy1);
 }
 
 void paint_progress_bar(const GuiLayer* ly, const GuiProgressBar* bar) {
@@ -1062,6 +1054,11 @@ void paint_one_layer(GuiLayer* ly) {
   if (!ly->transparent_bg) {
     turtle_gpu_fill_rect_raw(ly->x, ly->y, ly->w, ly->h, ly->bg_color_index);
   }
+  // Capa de tiles: justo encima del fondo, debajo de todo el contenido (rects, barras, iconos,
+  // texto) -- marcos de caja, decoracion, slots de inventario.
+  if (ly->has_tiles) {
+    paint_tile_grid(ly);
+  }
   // Rectangulos internos, orden del array (0 primero, N-1 encima).
   for (int i = 0; i < ly->rect_count; ++i) {
     const GuiRect& r = ly->rects[i];
@@ -1074,11 +1071,6 @@ void paint_one_layer(GuiLayer* ly) {
     if (ry + rh > ly->y + ly->h) rh = (ly->y + ly->h) - ry;
     if (rw <= 0 || rh <= 0) continue;
     turtle_gpu_fill_rect_raw(rx, ry, rw, rh, r.color_index);
-  }
-  // Paneles 9-slice -- despues de rects y antes de todo lo demas: son el marco/fondo sobre el
-  // que van barras, iconos y texto (caja de dialogo).
-  for (int i = 0; i < ly->panel_count; ++i) {
-    paint_panel(ly, &ly->panels[i]);
   }
   // Barras de progreso -- se pintan despues de rects (asi los rects pueden servir de marco
   // externo) y antes de labels (asi un label puede quedar encima como texto del valor).
@@ -1163,6 +1155,7 @@ void paint_one_layer(GuiLayer* ly) {
 
 void turtle_gui_layer_begin_scene(const char* bundle_json, size_t bundle_json_len) {
   s_layer_count = 0;
+  s_pending_erase_count = 0;
   s_bundle_json = bundle_json;
   s_bundle_json_len = bundle_json_len;
   reset_missing_sprite_cache();
@@ -1208,6 +1201,7 @@ void turtle_gui_layer_begin_scene(const char* bundle_json, size_t bundle_json_le
 
 void turtle_gui_layer_release(void) {
   s_layer_count = 0;
+  s_pending_erase_count = 0;
   s_bundle_json = nullptr;
   s_bundle_json_len = 0;
   reset_missing_sprite_cache();
@@ -1271,6 +1265,9 @@ bool turtle_gui_layer_hide(const char* id) {
   const int idx = find_layer_index(id);
   if (idx < 0) return false;
   GuiLayer* ly = &s_layers[idx];
+  if (ly->visible) {
+    queue_erase_rect(ly->x, ly->y, ly->w, ly->h);
+  }
   ly->visible = false;
   ly->z_override_set = false;
   return true;
@@ -1284,9 +1281,46 @@ bool turtle_gui_layer_is_visible(const char* id) {
 
 void turtle_gui_layer_hide_all(void) {
   for (int i = 0; i < s_layer_count; ++i) {
+    if (s_layers[i].visible) {
+      queue_erase_rect(s_layers[i].x, s_layers[i].y, s_layers[i].w, s_layers[i].h);
+    }
     s_layers[i].visible = false;
     s_layers[i].z_override_set = false;
   }
+}
+
+bool turtle_gui_layer_set_rect(const char* id, int x, int y, int w, int h) {
+  const int idx = find_layer_index(id);
+  if (idx < 0) return false;
+  GuiLayer* ly = &s_layers[idx];
+  // Mismo clampeo que parse_one_layer: el rect siempre queda dentro del framebuffer.
+  x = clamp_int(x, 0, kSceneW - 1);
+  y = clamp_int(y, 0, kSceneH - 1);
+  w = clamp_int(w, 1, kSceneW);
+  h = clamp_int(h, 1, kSceneH);
+  if (x + w > kSceneW) w = kSceneW - x;
+  if (y + h > kSceneH) h = kSceneH - y;
+  if (x == ly->x && y == ly->y && w == ly->w && h == ly->h) return true;
+  if (ly->visible) {
+    // Borra el rect viejo entero (simple y correcto tanto al mover como al achicar); el nuevo
+    // se pinta completo en el paint_all de este mismo tick.
+    queue_erase_rect(ly->x, ly->y, ly->w, ly->h);
+  }
+  ly->x = static_cast<int16_t>(x);
+  ly->y = static_cast<int16_t>(y);
+  ly->w = static_cast<int16_t>(w);
+  ly->h = static_cast<int16_t>(h);
+  return true;
+}
+
+bool turtle_gui_layer_pop_erase_rect(int* x, int* y, int* w, int* h) {
+  if (s_pending_erase_count <= 0) return false;
+  const GuiEraseRect& r = s_pending_erase[--s_pending_erase_count];
+  *x = r.x;
+  *y = r.y;
+  *w = r.w;
+  *h = r.h;
+  return true;
 }
 
 bool turtle_gui_layer_set_text(const char* id, const char* label_id, const char* str) {

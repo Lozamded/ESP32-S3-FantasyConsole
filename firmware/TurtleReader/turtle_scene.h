@@ -207,7 +207,7 @@ bool turtle_scene_load_sprite_pixels(const char* sprite_id, int frame_index, uin
                                      size_t out_cap, int* out_w, int* out_h);
 
 /**
- * Tileset para paneles 9-slice de capas GUI (spec/gui-layer-v0.md "Paneles"). Cache
+ * Tileset para la capa de tiles de capas GUI (spec/gui-layer-v0.md "Capa de tiles"). Cache
  * single-entry propia (no pisa las caches de tiles de la escena). Resuelve desde el bundle
  * activo o /tiles/<id>.tts en SD. nullptr si no hay escena activa o la carga fallo (el fallo
  * se memoriza para no reintentar en SD cada fotograma).

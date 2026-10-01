@@ -19,7 +19,7 @@ The HUD border strip is always visible during gameplay. GUI layers are transient
 | Feature | Support |
 |---------|---------|
 | **Content** | Solid rectangles, text labels (`.tfn` font, optional palette tint), progress bars, pip bars, sprite icons |
-| **Tiles** | Not in v0 |
+| **Tiles** | One optional **tile layer** per GUI layer: a grid of tiles from a tileset, painted cell by cell like scene tile layers |
 | **Transparency** | `transparent_bg` skips the background fill; index 31 is transparent in glyphs and sprites |
 | **Animation** | Not built-in — update text/values from Lua each frame |
 | **Max visible simultaneously** | 8 layers |
@@ -47,7 +47,8 @@ GUI layers live outside the `scenes` block — they form a global catalogue that
       "text_labels": [...],
       "progress_bars": [...],
       "pip_bars": [...],
-      "sprites": [...]
+      "sprites": [...],
+      "tiles": { "tileset": "gui", "x": 0, "y": 0, "cols": 20, "rows": 5, "cells": [...] }
     }
   ]
 }
@@ -70,6 +71,7 @@ GUI layers live outside the `scenes` block — they form a global catalogue that
 | `progress_bars` | array | `[]` | Fractional fill bars. Max 4 per layer. |
 | `pip_bars` | array | `[]` | Discrete icon bars. Max 4 per layer. |
 | `sprites` | array | `[]` | Static sprite icons. Max 4 per layer. |
+| `tiles` | object | absent | Optional tile layer. See [Tile layer](#tile-layer-tiles). |
 
 ---
 
@@ -146,6 +148,31 @@ Drawn **after** pip bars and **before** text labels.
 | `flip_h` | bool | `false` | Horizontal mirror at blit time. |
 | `flip_v` | bool | `false` | Vertical mirror at blit time. |
 
+### Tile layer (`tiles`)
+
+An optional grid of tiles from a tileset (`tiles/<id>.tts`, same format as scene tile layers), painted cell by cell like a scene tile layer. Use it for dialogue box borders, pause menu decoration, inventory slots, dividers — anything built from tiles. One tile layer per GUI layer.
+
+The grid has its own position and size: `x`, `y` in pixels relative to the layer, and `cols` × `rows` in cells. Anything outside the layer rect is **clipped pixel by pixel**, so the grid may be larger than the layer.
+
+Drawn **right after** the layer background and **before** rects, bars, icons and text — everything else sits on top of it.
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `tileset` | string | required | Tileset stem. Without it the tile layer is ignored. TurtleStudio exports it to the SD package even if no scene uses it. |
+| `x`, `y` | int | `0`, `0` | Top-left of cell `(0, 0)`, relative to the layer. |
+| `cols`, `rows` | int | `1`, `1` | Size in cells. Max **21 × 16** (covers the whole screen with 8 px tiles). |
+| `cells` | int[] | all `-1` | `cols * rows` tile indices, row-major (row 0 = top). `-1` = empty cell. |
+
+Palette index 31 inside a tile is transparent. Cost is proportional to the non-empty cells, so a box border (edges only) is much cheaper than a full grid. Use **one UI tileset per cartridge**: the firmware caches a single GUI tileset, so two visible layers with different tilesets reload each other every frame.
+
+In TurtleStudio, open the **Tile layer** section and check **Use tiles** — an empty grid covering the whole layer is created. Paint like in the scene editor: pick a tile in the tile strip and click (or drag) on the cells in the preview; **Eraser** clears cells. **Columns**/**Rows** and **Position** resize and move the grid (painted cells are kept, anchored top-left). **Fill layer** moves the grid to `(0, 0)` and sizes it to cover the whole layer; **Clear** empties every cell.
+
+```lua
+-- Move the dialogue box up: the tile layer and the text move with it.
+gui_layer_set_rect("dialog", 2, 50, 160, 40)
+gui_layer_show("dialog")
+```
+
 ---
 
 ## Value ranges (`ranges`)
@@ -184,6 +211,7 @@ All functions operate on the catalogue loaded from the current bundle. An unknow
 | `gui_layer_set_pips(id, bar_id, val [, max])` | Update `value` of a pip bar. Optional `max` replaces `max_value`. `val` is clamped to `[0, max_value]` after the update. |
 | `gui_layer_set_sprite(id, icon_id, sprite_id [, frame])` | Replace the `sprite_id` (and optionally `frame_index`) of a sprite icon. Useful for dynamic iconography (key present/absent, player face by state). |
 | `gui_layer_hide_all()` | Hide all currently visible layers. Useful for transitions and state changes. |
+| `gui_layer_set_rect(id, x, y, w, h)` | Move/resize the layer (framebuffer coords, clamped to the screen). All contents are relative to the layer so they move with it, and the tile layer is clipped to the new size (it does not stretch). Lasts until the next scene change. |
 
 ---
 
@@ -260,7 +288,8 @@ GUI layers use `turtle_gpu_pixel_raw` internally, which bypasses the playfield w
 ## Out of scope in v0
 
 - Direct Lua sprite blits (`gui_layer_blit_sprite`) — sprite icons are declarative; the cart can swap sprite/frame via `gui_layer_set_sprite`
-- Tile layers inside GUI layers (planned for v2)
+- More than one tile layer per GUI layer — use one GUI layer per box
+- Editing tile cells from Lua
 - Built-in text blink or sprite animation — simulate from `_hud(dt)` with `gui_layer_set_text` / `gui_layer_set_sprite`
 - Layer fade/transition effects
 - Dynamic layout (center, padding) — all positions are fixed in the manifest
