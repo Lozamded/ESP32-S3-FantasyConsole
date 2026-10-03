@@ -74,10 +74,13 @@ from turtlestudio.tile_collision import (
 )
 from turtlestudio.tiles import read_tileset_file
 
-MAX_BUTTONS = 8
-# 0-3 direccion (izq/der/arriba/abajo), 4-7 A-D. Orden confirmado en
-# firmware/TurtleReader/turtle_input.cpp (tabla k_pins).
-BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_A, BTN_B, BTN_C, BTN_D = range(8)
+MAX_BUTTONS = 12
+# 0-3 direccion (izq/der/arriba/abajo), 4-7 A-D, 8 START, 9 BACK, 10 L, 11 R. Orden
+# confirmado en firmware/TurtleReader/turtle_input.cpp (tabla k_pins).
+(
+    BTN_LEFT, BTN_RIGHT, BTN_UP, BTN_DOWN, BTN_A, BTN_B, BTN_C, BTN_D,
+    BTN_START, BTN_BACK, BTN_L, BTN_R,
+) = range(12)
 
 
 def _trunc_div(a: int, b: int) -> int:

@@ -29,7 +29,8 @@ from turtlestudio.project import MANIFEST_NAME, manifest_path, parse_viewport_fr
 from turtlestudio.scene_editor import _normalize_row, _rgba_floats_to_qimage
 from turtlestudio.tiles import parse_tile_px_from_manifest
 
-# Arrow keys -> D-pad; Z/X/C/V -> A/B/C/D (convencion tipo emulador SNES9x).
+# Arrow keys -> D-pad; Z/X/C/V -> A/B/C/D (convencion tipo emulador SNES9x);
+# Enter/Backspace -> START/BACK, A/S -> L/R (como mGBA).
 _KEYMAP: dict[int, int] = {
     Qt.Key.Key_Left: pr.BTN_LEFT,
     Qt.Key.Key_Right: pr.BTN_RIGHT,
@@ -39,6 +40,11 @@ _KEYMAP: dict[int, int] = {
     Qt.Key.Key_X: pr.BTN_B,
     Qt.Key.Key_C: pr.BTN_C,
     Qt.Key.Key_V: pr.BTN_D,
+    Qt.Key.Key_Return: pr.BTN_START,
+    Qt.Key.Key_Enter: pr.BTN_START,
+    Qt.Key.Key_Backspace: pr.BTN_BACK,
+    Qt.Key.Key_A: pr.BTN_L,
+    Qt.Key.Key_S: pr.BTN_R,
 }
 
 

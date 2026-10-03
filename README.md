@@ -12,7 +12,7 @@ A fantasy game console running on the **ESP32-S3**. Games are distributed as `.t
 | Color palette | **32 colors** (index 31 = transparent), per scene, palette via `PALETTE:` block |
 | Display | ILI9488 driven by LovyanGFX, scaled to 320 × 240 |
 | Scripting | Lua 5.4.6 — two independent VMs (ENTRY + per-actor) |
-| Input | 8 buttons: 4 directional + 4 action (`btn` / `btnp`) |
+| Input | 12 buttons: 4 directional + 4 action + START/BACK + L/R (`btn` / `btnp`) |
 | Assets | Sprites `.tsp`, backgrounds `.tbg`, tilemaps `.tts`, fonts `.tfn` |
 | Physics | Per-axis tile collision with AABB, one-way platforms |
 | Camera | Follow or fixed, world up to 2× the viewport per axis |

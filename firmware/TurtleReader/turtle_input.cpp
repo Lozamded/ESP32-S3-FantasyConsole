@@ -24,38 +24,42 @@ static const BtnPin k_pins[TURTLE_BTN_COUNT] = {
     {static_cast<int8_t>(TURTLE_BTN_PIN_B)},
     {static_cast<int8_t>(TURTLE_BTN_PIN_C)},
     {static_cast<int8_t>(TURTLE_BTN_PIN_D)},
+    {static_cast<int8_t>(TURTLE_BTN_PIN_START)},
+    {static_cast<int8_t>(TURTLE_BTN_PIN_BACK)},
+    {static_cast<int8_t>(TURTLE_BTN_PIN_L)},
+    {static_cast<int8_t>(TURTLE_BTN_PIN_R)},
 };
 
-static uint8_t s_stable = 0;
-static uint8_t s_prev_stable = 0;
-static uint8_t s_pressed = 0;
-static uint8_t s_released = 0;
+static uint16_t s_stable = 0;
+static uint16_t s_prev_stable = 0;
+static uint16_t s_pressed = 0;
+static uint16_t s_released = 0;
 /** Flancos de pulsacion retenidos hasta que Lua llama btnp (sobreviven polls extra). */
-static uint8_t s_pressed_latch = 0;
+static uint16_t s_pressed_latch = 0;
 static uint8_t s_debounce_count[TURTLE_BTN_COUNT];
-static uint8_t s_debounce_candidate[TURTLE_BTN_COUNT];
+static uint16_t s_debounce_candidate[TURTLE_BTN_COUNT];
 
 static bool valid_btn(int btn) {
   return btn >= 0 && btn < TURTLE_BTN_COUNT;
 }
 
-static uint8_t read_raw_mask(void) {
-  uint8_t mask = 0;
+static uint16_t read_raw_mask(void) {
+  uint16_t mask = 0;
   for (int i = 0; i < TURTLE_BTN_COUNT; ++i) {
     const int pin = k_pins[i].gpio;
     if (pin < 0) {
       continue;
     }
     if (digitalRead(pin) == LOW) {
-      mask |= static_cast<uint8_t>(1u << i);
+      mask |= static_cast<uint16_t>(1u << i);
     }
   }
   return mask;
 }
 
-static void debounce_update(uint8_t raw) {
+static void debounce_update(uint16_t raw) {
   for (int i = 0; i < TURTLE_BTN_COUNT; ++i) {
-    const uint8_t bit = static_cast<uint8_t>(1u << i);
+    const uint16_t bit = static_cast<uint16_t>(1u << i);
     const bool raw_on = (raw & bit) != 0;
     const bool stable_on = (s_stable & bit) != 0;
 
@@ -77,7 +81,7 @@ static void debounce_update(uint8_t raw) {
       if (raw_on) {
         s_stable |= bit;
       } else {
-        s_stable &= static_cast<uint8_t>(~bit);
+        s_stable &= static_cast<uint16_t>(~bit);
       }
       s_debounce_count[i] = 0;
     }
@@ -146,17 +150,17 @@ void turtle_input_init(void) {
     pinMode(pin, INPUT_PULLUP);
   }
 
-  const uint8_t raw = read_raw_mask();
+  const uint16_t raw = read_raw_mask();
   s_stable = raw;
   s_prev_stable = raw;
 }
 
 void turtle_input_poll(void) {
-  const uint8_t raw = read_raw_mask();
+  const uint16_t raw = read_raw_mask();
   debounce_update(raw);
-  s_pressed = static_cast<uint8_t>(s_stable & ~s_prev_stable);
+  s_pressed = static_cast<uint16_t>(s_stable & ~s_prev_stable);
   s_pressed_latch |= s_pressed;
-  s_released = static_cast<uint8_t>(~s_stable & s_prev_stable);
+  s_released = static_cast<uint16_t>(~s_stable & s_prev_stable);
   s_prev_stable = s_stable;
 }
 
@@ -164,18 +168,18 @@ bool turtle_input_held(int btn) {
   if (!valid_btn(btn)) {
     return false;
   }
-  return (s_stable & static_cast<uint8_t>(1u << btn)) != 0;
+  return (s_stable & static_cast<uint16_t>(1u << btn)) != 0;
 }
 
 bool turtle_input_pressed(int btn) {
   if (!valid_btn(btn)) {
     return false;
   }
-  const uint8_t bit = static_cast<uint8_t>(1u << btn);
+  const uint16_t bit = static_cast<uint16_t>(1u << btn);
   if ((s_pressed_latch & bit) == 0) {
     return false;
   }
-  s_pressed_latch &= static_cast<uint8_t>(~bit);
+  s_pressed_latch &= static_cast<uint16_t>(~bit);
   return true;
 }
 
@@ -183,10 +187,10 @@ bool turtle_input_released(int btn) {
   if (!valid_btn(btn)) {
     return false;
   }
-  return (s_released & static_cast<uint8_t>(1u << btn)) != 0;
+  return (s_released & static_cast<uint16_t>(1u << btn)) != 0;
 }
 
-uint8_t turtle_input_held_mask(void) {
+uint16_t turtle_input_held_mask(void) {
   return s_stable;
 }
 

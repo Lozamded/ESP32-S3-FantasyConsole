@@ -4,7 +4,7 @@
 
 struct lua_State;
 
-/** Indices de boton (v0: 8; futuro hasta 11). */
+/** Indices de boton (v0: 12 = D-pad + A-D + START/BACK + L/R). */
 enum TurtleBtn : int {
   TURTLE_BTN_LEFT = 0,
   TURTLE_BTN_RIGHT = 1,
@@ -14,7 +14,11 @@ enum TurtleBtn : int {
   TURTLE_BTN_B = 5,
   TURTLE_BTN_C = 6,
   TURTLE_BTN_D = 7,
-  TURTLE_BTN_COUNT = 8,
+  TURTLE_BTN_START = 8,
+  TURTLE_BTN_BACK = 9,
+  TURTLE_BTN_L = 10,
+  TURTLE_BTN_R = 11,
+  TURTLE_BTN_COUNT = 12,
 };
 
 /*
@@ -46,6 +50,22 @@ enum TurtleBtn : int {
 #ifndef TURTLE_BTN_PIN_D
 #define TURTLE_BTN_PIN_D 18
 #endif
+/*
+ * START/BACK/L/R: GPIO libres y sin strapping (no 0/3/45/46), fuera de UART0 (43/44) y del
+ * LED RGB de algunas placas N16R8 (48). Audio usa 14 y 42.
+ */
+#ifndef TURTLE_BTN_PIN_START
+#define TURTLE_BTN_PIN_START 1
+#endif
+#ifndef TURTLE_BTN_PIN_BACK
+#define TURTLE_BTN_PIN_BACK 2
+#endif
+#ifndef TURTLE_BTN_PIN_L
+#define TURTLE_BTN_PIN_L 38
+#endif
+#ifndef TURTLE_BTN_PIN_R
+#define TURTLE_BTN_PIN_R 39
+#endif
 
 /** Antirebote: lecturas consecutivas iguales antes de cambiar estado (1 = sin filtro extra). */
 #ifndef TURTLE_BTN_DEBOUNCE_SAMPLES
@@ -59,7 +79,7 @@ void turtle_input_poll(void);
 bool turtle_input_held(int btn);
 bool turtle_input_pressed(int btn);
 bool turtle_input_released(int btn);
-uint8_t turtle_input_held_mask(void);
+uint16_t turtle_input_held_mask(void);
 
 void turtle_input_register_lua(lua_State* L);
 

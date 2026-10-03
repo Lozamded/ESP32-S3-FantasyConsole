@@ -8,7 +8,7 @@ title: Input
 
 ## Button indices
 
-8 buttons are supported in v0. Typical wiring: one side to a GPIO, other to GND. Firmware uses `INPUT_PULLUP` (released = HIGH, pressed = LOW).
+12 buttons are supported in v0. Typical wiring: one side to a GPIO, other to GND. Firmware uses `INPUT_PULLUP` (released = HIGH, pressed = LOW).
 
 | Index | Name | Common use |
 |-------|------|------------|
@@ -20,8 +20,12 @@ title: Input
 | `5` | B | Action 2 / cancel |
 | `6` | C | Action 3 |
 | `7` | D | Action 4 |
+| `8` | START | Pause / confirm in menus |
+| `9` | BACK | Go back / select |
+| `10` | L | Left shoulder |
+| `11` | R | Right shoulder |
 
-Reserved for future expansion to 11 buttons (menu, start, etc.).
+In TurtleStudio's Play mode: arrows = D-pad, `Z/X/C/V` = A/B/C/D, `Enter` = START, `Backspace` = BACK, `A/S` = L/R.
 
 ## API
 
@@ -45,7 +49,7 @@ local dy = axis(3, 2)  -- -1=down (scene Y down), +1=up
 `axis` is not available in the ENTRY VM.
 
 :::warning
-An invalid button index (`< 0` or `> 7`) causes a **Lua error** (unlike color clamping which is silent).
+An invalid button index (`< 0` or `> 11`) causes a **Lua error** (unlike color clamping which is silent).
 :::
 
 ## Where input is available
@@ -58,4 +62,4 @@ An invalid button index (`< 0` or `> 7`) causes a **Lua error** (unlike color cl
 
 ## Pin configuration
 
-Button GPIO pins are defined in `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Set a pin to **-1** to disable that button. Avoid pins 36–39 (used by SD) and 8–12 (used by the display in the default config).
+Button GPIO pins are defined in `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Set a pin to **-1** to disable that button. Defaults: D-pad 4–7, A–D 15–18, START/BACK 1/2, L/R 38/39. Avoid SD (19, 20, 21, 47), display (8–13), audio (14, 42), octal PSRAM (33–37), strapping pins (0, 3, 45, 46) and UART0 (43/44).

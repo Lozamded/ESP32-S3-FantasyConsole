@@ -45,7 +45,7 @@ Reservados a partir de **`turtle_audio.h`** (aun no creado); documentados aqui p
 
 Criterio de eleccion (ESP32-S3-N16R8):
 
-- **GPIO 14** esta libre: no lo usan pantalla (8-13), botones (4-7, 15-18) ni SD (19, 20, 21, 47). No es strapping pin.
+- **GPIO 14** esta libre: no lo usan pantalla (8-13), botones (1, 2, 4-7, 15-18, 38, 39) ni SD (19, 20, 21, 47). No es strapping pin.
 - GPIO 33..37 estan **reservados por la PSRAM octal (R8)** y no se pueden tocar.
 - GPIO 42 es libre, sin strapping. La conexion a SHDN del PAM8403 es opcional: si no se cablea, dejar el SHDN del modulo tirado a VCC con su pull-up de fabrica y omitir `TURTLE_AUDIO_MUTE_PIN` en el firmware.
 

@@ -1,6 +1,6 @@
 # Entrada de control (v0)
 
-## Botones (fase actual: 8)
+## Botones (fase actual: 12)
 
 Cableado tipico: un lado del pulsador a **GPIO**, el otro a **GND**. Firmware con `INPUT_PULLUP` (reposo = suelto = alto; pulsado = bajo).
 
@@ -14,8 +14,12 @@ Cableado tipico: un lado del pulsador a **GPIO**, el otro a **GND**. Firmware co
 | 5 | B | Accion 2 |
 | 6 | C | Accion 3 |
 | 7 | D | Accion 4 |
+| 8 | START | Pausa / confirmar en menus |
+| 9 | BACK | Volver / select |
+| 10 | L | Gatillo izquierdo |
+| 11 | R | Gatillo derecho |
 
-Reservado para ampliar a **11** botones (menu, start, etc.) en una revision posterior.
+Un indice fuera de `0..11` es un error de Lua.
 
 ## API Lua
 
@@ -35,4 +39,17 @@ En scripts de objeto tambien existe **`axis(neg, pos)`** (helper sobre `btn`, do
 
 ## Pines
 
-Se configuran en `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Valor **-1** desactiva ese boton. Ajusta a tu placa sin chocar con SD (36–39) ni pantalla (8–12 en la config por defecto del repo).
+Se configuran en `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Valor **-1** desactiva ese boton. Ajusta a tu placa sin chocar con SD (19, 20, 21, 47), pantalla (8–13), audio (14, 42) ni PSRAM octal (33–37).
+
+| Boton | GPIO por defecto |
+|-------|------------------|
+| LEFT / RIGHT / UP / DOWN | 4 / 5 / 6 / 7 |
+| A / B / C / D | 15 / 16 / 17 / 18 |
+| START / BACK | 1 / 2 |
+| L / R | 38 / 39 |
+
+Los pines de START/BACK/L/R evitan strapping (0, 3, 45, 46), UART0 (43/44, monitor serie) y GPIO 48 (LED RGB en algunas placas N16R8).
+
+## TurtleStudio (modo Play)
+
+Flechas = D-pad, `Z/X/C/V` = A/B/C/D, `Enter` = START, `Backspace` = BACK, `A/S` = L/R.
