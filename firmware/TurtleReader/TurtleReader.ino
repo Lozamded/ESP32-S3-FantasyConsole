@@ -24,7 +24,7 @@ extern "C" {
 
 // microSD (FSPI). No uses GPIO 33-37 con PSRAM OPI (N16R8).
 // 19/20 = USB nativo en muchas placas S3: OK si programas por UART (no USB CDC en 19/20).
-// Pantalla = 8-13, botones = 1, 2, 4-7, 15-18, 38, 39 (ver turtle_gpu.h / turtle_input.h).
+// Pantalla = 8-13, botones = 1, 2, 4-7, 15-18, 39, 40 (ver turtle_gpu.h / turtle_input.h).
 static const int SD_SCK_PIN = 19; //azul
 static const int SD_MISO_PIN = 20; //morado
 static const int SD_MOSI_PIN = 21; //gris

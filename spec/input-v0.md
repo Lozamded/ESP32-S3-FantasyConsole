@@ -46,9 +46,9 @@ Se configuran en `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Va
 | LEFT / RIGHT / UP / DOWN | 4 / 5 / 6 / 7 |
 | A / B / C / D | 15 / 16 / 17 / 18 |
 | START / BACK | 1 / 2 |
-| L / R | 38 / 39 |
+| L / R | 40 / 39 |
 
-Los pines de START/BACK/L/R evitan strapping (0, 3, 45, 46), UART0 (43/44, monitor serie) y GPIO 48 (LED RGB en algunas placas N16R8).
+Los pines de START/BACK/L/R evitan strapping (0, 3, 45, 46), UART0 (43/44, monitor serie) y el LED RGB integrado (IO38 en la DevKitC-1 v1.1, IO48 en la v1.0).
 
 ## TurtleStudio (modo Play)
 

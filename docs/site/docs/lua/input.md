@@ -62,4 +62,4 @@ An invalid button index (`< 0` or `> 11`) causes a **Lua error** (unlike color c
 
 ## Pin configuration
 
-Button GPIO pins are defined in `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Set a pin to **-1** to disable that button. Defaults: D-pad 4–7, A–D 15–18, START/BACK 1/2, L/R 38/39. Avoid SD (19, 20, 21, 47), display (8–13), audio (14, 42), octal PSRAM (33–37), strapping pins (0, 3, 45, 46) and UART0 (43/44).
+Button GPIO pins are defined in `firmware/TurtleReader/turtle_input.h` (`TURTLE_BTN_PIN_*`). Set a pin to **-1** to disable that button. Defaults: D-pad 4–7, A–D 15–18, START/BACK 1/2, L/R 40/39. Avoid SD (19, 20, 21, 47), display (8–13), audio (14, 42), octal PSRAM (33–37), strapping pins (0, 3, 45, 46), UART0 (43/44) and the on-board RGB LED (IO38 on DevKitC-1 v1.1, IO48 on v1.0).

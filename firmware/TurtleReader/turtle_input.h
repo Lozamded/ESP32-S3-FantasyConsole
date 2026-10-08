@@ -52,7 +52,7 @@ enum TurtleBtn : int {
 #endif
 /*
  * START/BACK/L/R: GPIO libres y sin strapping (no 0/3/45/46), fuera de UART0 (43/44) y del
- * LED RGB de algunas placas N16R8 (48). Audio usa 14 y 42.
+ * LED RGB integrado (IO38 en la DevKitC-1 v1.1, IO48 en la v1.0). Audio usa 14 y 42.
  */
 #ifndef TURTLE_BTN_PIN_START
 #define TURTLE_BTN_PIN_START 1
@@ -61,7 +61,7 @@ enum TurtleBtn : int {
 #define TURTLE_BTN_PIN_BACK 2
 #endif
 #ifndef TURTLE_BTN_PIN_L
-#define TURTLE_BTN_PIN_L 38
+#define TURTLE_BTN_PIN_L 40
 #endif
 #ifndef TURTLE_BTN_PIN_R
 #define TURTLE_BTN_PIN_R 39
