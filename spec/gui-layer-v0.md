@@ -291,6 +291,7 @@ Si `captures_input=false` (default), los actores siguen recibiendo input aunque 
 ## Compositing y hud_border
 
 - Las capas ignoran el rect del playfield: pueden pintar en cualquier pixel del framebuffer, incluyendo la franja HUD del metodo 1.
+- **Pintado en dos fases** (`turtle_gui_layer_paint_all`): (1) para todas las capas visibles se restaura desde la capa estatica el rect que el texto de cada label y el area de cada pip bar ocuparon el frame previo (asi un texto/valor que cambia sobre `transparent_bg` no acumula tinta); (2) recien entonces se pintan todas las capas en orden z (fondo → tiles → rects → progress bars → pips → iconos → texto). Restaurar dentro de la fase 2 borraria los tiles/rects/barras que la misma capa (o una de z menor) ya pinto debajo del texto.
 - El pintado usa `turtle_gpu_pixel_absolute` / `turtle_gpu_fill_rect_absolute` internamente... con una excepcion clave: **`turtle_gpu_pixel_absolute` normalmente rechaza escrituras dentro del playfield** (para proteger la zona de juego de bindings HUD). Las capas GUI usan un camino paralelo (`turtle_gpu_pixel_raw`, agregado por este spec) que **si** escribe en playfield — necesario para pintar un menu que cubra la accion del juego.
 - Orden por fotograma:
   1. `paint_scene_static_layers` (mundo + tiles + labels) → playfield.

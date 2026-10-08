@@ -92,10 +92,10 @@ struct GuiLabel {
   char text[kGuiLayerTextCap];
   int8_t color_index;  // -1 = sin tinte, 0..30 = tinte plano
   // spec/gui-layer-v0.md: rastro del rect que ocupo el texto en el frame previo (coords fb,
-  // Y-abajo). paint_one_layer lo restaura desde s_static_fb antes de repintar el nuevo texto,
-  // para evitar acumulacion de tinta cuando el texto cambia sobre transparent_bg (un label
-  // "x0" -> "x1" dejaba los pixeles del "0" pegados detras del "1"). has_prev_blit false =
-  // primer paint del label (no hay nada que borrar todavia).
+  // Y-abajo). erase_layer_dynamic_regions lo restaura desde s_static_fb antes de pintar las
+  // capas, para evitar acumulacion de tinta cuando el texto cambia sobre transparent_bg (un
+  // label "x0" -> "x1" dejaba los pixeles del "0" pegados detras del "1"). has_prev_blit
+  // false = primer paint del label (no hay nada que borrar todavia).
   int16_t prev_blit_x;
   int16_t prev_blit_y;
   int16_t prev_blit_w;
@@ -132,6 +132,13 @@ struct GuiPipBar {
   int16_t max_value;
   int range_count;
   GuiBarRange ranges[kMaxGuiBarRanges];
+  // Area (coords fb) que ocuparon todos los pips (max_value) en el frame previo; se borra en
+  // erase_layer_dynamic_regions. Mismo motivo que GuiLabel::prev_blit_*.
+  int16_t prev_area_x;
+  int16_t prev_area_y;
+  int16_t prev_area_w;
+  int16_t prev_area_h;
+  bool has_prev_area;
 };
 
 struct GuiSpriteIcon {
@@ -996,7 +1003,8 @@ void paint_progress_bar(const GuiLayer* ly, const GuiProgressBar* bar) {
   }
 }
 
-void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
+void paint_pip_bar(const GuiLayer* ly, GuiPipBar* bar) {
+  bar->has_prev_area = false;
   int val = bar->value;
   int maxv = bar->max_value > 0 ? bar->max_value : 1;
   if (val < 0) val = 0;
@@ -1024,12 +1032,18 @@ void paint_pip_bar(const GuiLayer* ly, const GuiPipBar* bar) {
   }
   if (sw <= 0 || sh <= 0) return;
 
-  // Borra el area de todos los pips (max_value) desde la capa estatica antes de repintar.
+  // Recuerda el area de todos los pips (max_value): el proximo frame
+  // erase_layer_dynamic_regions la restaura desde la capa estatica ANTES de pintar las capas.
   // Sin esto, reducir `value` deja los pips sobrantes visibles en capas transparent_bg.
+  // (Restaurarla aca mismo borraba los tiles/rects/barras de la capa ya pintados debajo.)
   const int step = (bar->direction == GuiPipDir::Horizontal ? sw : sh) + bar->gap_px;
   const int total_w = (bar->direction == GuiPipDir::Horizontal) ? (maxv * step - bar->gap_px) : sw;
   const int total_h = (bar->direction == GuiPipDir::Vertical)   ? (maxv * step - bar->gap_px) : sh;
-  turtle_gpu_restore_static_rect_fb(ly->x + bar->x, ly->y + bar->y, total_w, total_h);
+  bar->prev_area_x = static_cast<int16_t>(ly->x + bar->x);
+  bar->prev_area_y = static_cast<int16_t>(ly->y + bar->y);
+  bar->prev_area_w = static_cast<int16_t>(total_w);
+  bar->prev_area_h = static_cast<int16_t>(total_h);
+  bar->has_prev_area = true;
 
   if (val == 0) return;  // sin pips que pintar (region ya borrada)
 
@@ -1087,66 +1101,51 @@ void paint_one_layer(GuiLayer* ly) {
     paint_sprite_icon(ly, &ly->sprites[i]);
   }
   // Etiquetas de texto. Usan turtle_scene_draw_text_absolute-like pero sin
-  // proteccion de playfield -- ver turtle_font_draw_fb_raw. Antes de dibujar cada label
-  // restauramos su rect previo (union con el nuevo) desde s_static_fb: sin esto, un label
-  // sobre transparent_bg cuya cadena cambia (ej. contador de gears "x0"->"x1"->...) acumula
-  // los pixeles de todas las cadenas anteriores porque nada limpia la region entre frames.
+  // proteccion de playfield -- ver turtle_font_draw_fb_raw. El rect del texto del frame previo
+  // ya lo borro erase_layer_dynamic_regions (antes de pintar cualquier capa); aca solo se pinta
+  // y se recuerda el rect nuevo para borrarlo el proximo frame.
   for (int i = 0; i < ly->label_count; ++i) {
     GuiLabel& lbl = ly->labels[i];
+    lbl.has_prev_blit = false;
     if (!s_bundle_json || s_bundle_json_len == 0) continue;
-    if (!lbl.font_id[0]) continue;
+    if (!lbl.font_id[0] || !lbl.text[0]) continue;
     const int glyph_px =
         turtle_scene_font_glyph_px(s_bundle_json, s_bundle_json_len, lbl.font_id);
     if (glyph_px <= 0) continue;
-    const int text_w = lbl.text[0]
-                           ? turtle_scene_measure_text(s_bundle_json, s_bundle_json_len,
-                                                       lbl.font_id, lbl.text)
-                           : 0;
+    const int text_w =
+        turtle_scene_measure_text(s_bundle_json, s_bundle_json_len, lbl.font_id, lbl.text);
+    if (text_w <= 0) continue;
     const int cur_x = ly->x + lbl.x;
     const int cur_y = ly->y + lbl.y;
-    const int cur_w = text_w;
-    const int cur_h = text_w > 0 ? glyph_px : 0;
-    // Union del rect previo (si hay) con el actual: cubre tanto el caso de cadena mas corta
-    // (rect previo mayor -> hay que borrar el sobrante) como el de cadena mas larga (rect
-    // actual mayor -> el sobrante nunca vio un restore).
-    int ux0, uy0, ux1, uy1;
-    bool have_union = false;
+    const int tint = (lbl.color_index >= 0) ? static_cast<int>(lbl.color_index) : -1;
+    turtle_scene_draw_text_raw(s_bundle_json, s_bundle_json_len, lbl.font_id, cur_x, cur_y,
+                               lbl.text, tint);
+    lbl.prev_blit_x = static_cast<int16_t>(cur_x);
+    lbl.prev_blit_y = static_cast<int16_t>(cur_y);
+    lbl.prev_blit_w = static_cast<int16_t>(text_w);
+    lbl.prev_blit_h = static_cast<int16_t>(glyph_px);
+    lbl.has_prev_blit = true;
+  }
+}
+
+// Fase 1 del pintado: restaura desde s_static_fb las regiones que el contenido dinamico
+// (texto de labels, pips) ocupo el frame previo, para que un texto/valor que cambia sobre
+// transparent_bg no acumule tinta. Debe correr para TODAS las capas visibles ANTES de pintar
+// cualquiera: si se restaurara en medio del pintado de una capa, borraria lo que esa capa (u
+// otra de z menor) ya pinto debajo -- tiles, rects, barras (el texto "agujereaba" la caja).
+void erase_layer_dynamic_regions(const GuiLayer* ly) {
+  for (int i = 0; i < ly->pip_bar_count; ++i) {
+    const GuiPipBar& bar = ly->pip_bars[i];
+    if (bar.has_prev_area && bar.prev_area_w > 0 && bar.prev_area_h > 0) {
+      turtle_gpu_restore_static_rect_fb(bar.prev_area_x, bar.prev_area_y, bar.prev_area_w,
+                                        bar.prev_area_h);
+    }
+  }
+  for (int i = 0; i < ly->label_count; ++i) {
+    const GuiLabel& lbl = ly->labels[i];
     if (lbl.has_prev_blit && lbl.prev_blit_w > 0 && lbl.prev_blit_h > 0) {
-      ux0 = lbl.prev_blit_x;
-      uy0 = lbl.prev_blit_y;
-      ux1 = lbl.prev_blit_x + lbl.prev_blit_w - 1;
-      uy1 = lbl.prev_blit_y + lbl.prev_blit_h - 1;
-      have_union = true;
-    }
-    if (cur_w > 0 && cur_h > 0) {
-      if (!have_union) {
-        ux0 = cur_x;
-        uy0 = cur_y;
-        ux1 = cur_x + cur_w - 1;
-        uy1 = cur_y + cur_h - 1;
-        have_union = true;
-      } else {
-        if (cur_x < ux0) ux0 = cur_x;
-        if (cur_y < uy0) uy0 = cur_y;
-        if (cur_x + cur_w - 1 > ux1) ux1 = cur_x + cur_w - 1;
-        if (cur_y + cur_h - 1 > uy1) uy1 = cur_y + cur_h - 1;
-      }
-    }
-    if (have_union) {
-      turtle_gpu_restore_static_rect_fb(ux0, uy0, ux1 - ux0 + 1, uy1 - uy0 + 1);
-    }
-    if (cur_w > 0 && cur_h > 0) {
-      const int tint = (lbl.color_index >= 0) ? static_cast<int>(lbl.color_index) : -1;
-      turtle_scene_draw_text_raw(s_bundle_json, s_bundle_json_len, lbl.font_id, cur_x, cur_y,
-                                 lbl.text, tint);
-      lbl.prev_blit_x = static_cast<int16_t>(cur_x);
-      lbl.prev_blit_y = static_cast<int16_t>(cur_y);
-      lbl.prev_blit_w = static_cast<int16_t>(cur_w);
-      lbl.prev_blit_h = static_cast<int16_t>(cur_h);
-      lbl.has_prev_blit = true;
-    } else {
-      // Texto vacio: ya restauramos el rect previo, no dejamos nada por borrar la proxima vez.
-      lbl.has_prev_blit = false;
+      turtle_gpu_restore_static_rect_fb(lbl.prev_blit_x, lbl.prev_blit_y, lbl.prev_blit_w,
+                                        lbl.prev_blit_h);
     }
   }
 }
@@ -1243,6 +1242,11 @@ void turtle_gui_layer_paint_all(void) {
       --j;
     }
     order[j + 1] = cur;
+  }
+  // Dos fases: primero se borra el contenido dinamico del frame previo de todas las capas,
+  // despues se pintan todas en orden z (ver erase_layer_dynamic_regions).
+  for (int i = 0; i < active; ++i) {
+    erase_layer_dynamic_regions(&s_layers[order[i]]);
   }
   for (int i = 0; i < active; ++i) {
     paint_one_layer(&s_layers[order[i]]);
